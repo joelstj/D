@@ -1,0 +1,141 @@
+openapi: 3.1.0
+info:
+  title: L2 Arbitrage GUI API
+  version: 0.1.0
+  description: >
+    Language-agnostic REST + WebSocket API for the L2 flash-loan arbitrage
+    dashboard. Any language can drive the engine through these endpoints; the
+    React GUI uses exactly the same surface. A WebSocket stream at `/ws` pushes
+    `snapshot`, `opportunity`, `opportunity:remove`, `execution`, `stats`,
+    `settings`, and `alert` messages in real time.
+  license:
+    name: MIT
+servers:
+  - url: http://localhost:8787
+paths:
+  /api/health:
+    get:
+      summary: Liveness and runtime mode
+      responses:
+        "200":
+          description: OK
+  /api/networks:
+    get:
+      summary: Supported L2 networks and their DEX venues
+      responses:
+        "200":
+          description: OK
+  /api/flash-loan-providers:
+    get:
+      summary: Supported flash-loan providers and fees
+      responses:
+        "200":
+          description: OK
+  /api/settings:
+    get:
+      summary: Current engine settings
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Settings"
+    put:
+      summary: Replace the entire settings object
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/Settings"
+      responses:
+        "200": { description: Updated settings }
+        "400": { description: Validation error }
+    patch:
+      summary: Merge a partial settings update (takes effect immediately)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SettingsPatch"
+      responses:
+        "200": { description: Updated settings }
+        "400": { description: Validation error }
+  /api/settings/reset:
+    post:
+      summary: Reset settings to defaults
+      responses:
+        "200": { description: Default settings }
+  /api/opportunities:
+    get:
+      summary: Currently active arbitrage opportunities
+      parameters:
+        - in: query
+          name: limit
+          schema: { type: integer, minimum: 1, maximum: 500, default: 100 }
+        - in: query
+          name: network
+          schema: { type: string }
+      responses:
+        "200":
+          description: OK
+  /api/stats:
+    get:
+      summary: Engine statistics and PnL
+      responses:
+        "200": { description: OK }
+  /api/execute/{id}:
+    post:
+      summary: Manually execute an opportunity by id (paper or live per mode)
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string }
+      responses:
+        "200": { description: Execution result }
+        "400": { description: Unknown or expired opportunity }
+  /api/engine/toggle:
+    post:
+      summary: Enable or disable the scanning engine
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                enabled: { type: boolean }
+      responses:
+        "200": { description: Updated settings }
+components:
+  schemas:
+    Settings:
+      type: object
+      properties:
+        engineEnabled: { type: boolean }
+        executionMode: { type: string, enum: [paper, live] }
+        autoExecute: { type: boolean }
+        networks: { type: array, items: { type: string } }
+        baseToken: { type: string }
+        tokens: { type: array, items: { type: string } }
+        dexes: { type: array, items: { type: string } }
+        flashLoanProvider: { type: string, enum: [aave-v3, balancer-v2, uniswap-v3] }
+        loanAmountUsd: { type: number }
+        minProfitUsd: { type: number }
+        minProfitBps: { type: number }
+        slippageBps: { type: number }
+        maxGasGwei: { type: number }
+        priorityFeeGwei: { type: number }
+        gasLimit: { type: integer }
+        scanIntervalMs: { type: integer }
+        maxConcurrentTrades: { type: integer }
+        cooldownMs: { type: integer }
+        deadlineSec: { type: integer }
+        maxDailyLossUsd: { type: number }
+        maxPositionUsd: { type: number }
+    SettingsPatch:
+      allOf:
+        - $ref: "#/components/schemas/Settings"
+      description: Any subset of Settings fields.

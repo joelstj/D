@@ -1,0 +1,25 @@
+[package]
+name = "l2i-engine-client"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "EngineClient trait + keep-alive HTTP and subprocess impls for the l2arb detection engine"
+
+[lints]
+workspace = true
+
+[dependencies]
+l2i-core = { path = "../core" }
+alloy-primitives.workspace = true
+reqwest.workspace = true
+serde_json.workspace = true
+async-trait.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+tokio = { workspace = true, features = ["process", "io-util", "time", "rt"] }
+
+[dev-dependencies]
+wiremock = "0.6"
+tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread"] }

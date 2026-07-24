@@ -1,0 +1,81 @@
+{
+  "count": 1,
+  "opportunities": [
+    {
+      "strategy": "two_hop",
+      "numeraire": {
+        "chain_id": 42161,
+        "address": "0x82af49447d8a07e3bd95bd0d56f35241523fbab1",
+        "decimals": 18,
+        "symbol": "WETH"
+      },
+      "input_amount": "1000000000000000000",
+      "output_amount": "1045000000000000000",
+      "gross_profit": "45000000000000000",
+      "gas_cost": "5000000000000000",
+      "bridge_cost": "0",
+      "net_profit": "40000000000000000",
+      "profit_bps": 400.0,
+      "expected_net": "24000000000000000",
+      "score": 2.4e+16,
+      "hops": 2,
+      "chain_ids": [
+        42161
+      ],
+      "is_cross_chain": false,
+      "settle_seconds": 0,
+      "verified": true,
+      "block": {
+        "chain_id": 42161,
+        "number": 200000000,
+        "hash": "0xfbb039d0d0e358b4d65f3df3058026fe5576beee3ed1fa2c1ad677d2efe0f3c1",
+        "timestamp": 1712862552
+      },
+      "risk": {
+        "success_probability": 0.9,
+        "capture_ratio": 0.6,
+        "frontrun_risk": 0.1,
+        "notes": [
+          "hops=2",
+          "same-chain"
+        ]
+      },
+      "legs": [
+        {
+          "pool": "0x2222222222222222222222222222222222222222",
+          "token_in": {
+            "chain_id": 42161,
+            "address": "0x82af49447d8a07e3bd95bd0d56f35241523fbab1",
+            "decimals": 18,
+            "symbol": "WETH"
+          },
+          "token_out": {
+            "chain_id": 42161,
+            "address": "0xaf88d065e77c8cc2239327c5edb3a432268e5831",
+            "decimals": 6,
+            "symbol": "USDC"
+          },
+          "amount_in": "1000000000000000000",
+          "amount_out": "1873000000"
+        },
+        {
+          "pool": "0x3333333333333333333333333333333333333333",
+          "token_in": {
+            "chain_id": 42161,
+            "address": "0xaf88d065e77c8cc2239327c5edb3a432268e5831",
+            "decimals": 6,
+            "symbol": "USDC"
+          },
+          "token_out": {
+            "chain_id": 42161,
+            "address": "0x82af49447d8a07e3bd95bd0d56f35241523fbab1",
+            "decimals": 18,
+            "symbol": "WETH"
+          },
+          "amount_in": "1873000000",
+          "amount_out": "1045000000000000000"
+        }
+      ]
+    }
+  ]
+}

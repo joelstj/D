@@ -1,0 +1,26 @@
+# One-command run:  docker compose up --build
+# Then open http://localhost:8080  (API at :8787, or same-origin via the frontend).
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    environment:
+      PORT: "8787"
+      DATA_SOURCE: "${DATA_SOURCE:-simulated}"
+      EXECUTION_MODE: "${EXECUTION_MODE:-paper}"
+      CORS_ORIGIN: "http://localhost:8080"
+      # For live data, pass RPC URLs through:
+      RPC_URL_BASE: "${RPC_URL_BASE:-}"
+      RPC_URL_ARBITRUM: "${RPC_URL_ARBITRUM:-}"
+    ports:
+      - "8787:8787"
+
+  frontend:
+    build:
+      context: .
+      dockerfile: frontend/Dockerfile
+    depends_on:
+      - backend
+    ports:
+      - "8080:80"

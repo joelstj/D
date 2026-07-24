@@ -1,0 +1,18 @@
+[package]
+name = "l2i-amm"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Pure AMM math: V2 getAmountOut/spot, V3/V4 tick math, native-price derivation (no I/O)"
+
+[lints]
+workspace = true
+
+[dependencies]
+alloy-primitives.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true
+serde_json.workspace = true

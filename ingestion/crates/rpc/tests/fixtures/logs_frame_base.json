@@ -1,0 +1,22 @@
+{
+  "jsonrpc": "2.0",
+  "method": "eth_subscription",
+  "params": {
+    "subscription": "0x1a2b3c4d5e6f70819293a4b5c6d7e8f9",
+    "result": {
+      "address": "0x4200000000000000000000000000000000000006",
+      "blockHash": "0x2ca6f6bc97c4a533e12eb10c06c6d2297d5fe2b1030913481cab5414719bed02",
+      "blockNumber": "0x2e6cf68",
+      "blockTimestamp": "0x6a57fbb3",
+      "data": "0x00000000000000000000000000000000000000000000000000005a0a3bd53000",
+      "logIndex": "0x6",
+      "removed": false,
+      "topics": [
+        "0xe1fffcc4923d04b559f4d29a8bfc6cda04eb5b0d3c460751c2402c5c5cc9109c",
+        "0x000000000000000000000000d8ba9d1a99fc21f0eca24e9b85737c28a194a4e2"
+      ],
+      "transactionHash": "0x6c5f9be80888b04ff798664b390f5d9cddfd9abee21a8a66a2b37e1f14c4bbc1",
+      "transactionIndex": "0xa"
+    }
+  }
+}

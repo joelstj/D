@@ -1,0 +1,33 @@
+{
+  "jsonrpc": "2.0",
+  "method": "eth_subscription",
+  "params": {
+    "subscription": "0x9cef47ca6b4b6f8a4e7b8c9d0e1f2a3b",
+    "result": {
+      "baseFeePerGas": "0x4c4b40",
+      "blobGasUsed": "0x57a914",
+      "difficulty": "0x0",
+      "excessBlobGas": "0x0",
+      "extraData": "0x01000000640000000500000000004c4b40",
+      "gasLimit": "0x17d78400",
+      "gasUsed": "0x1bb971d",
+      "hash": "0x3b9a6689ca46c6cbb712eb8f1d46fc31aeb980965264ecdf4f8819be5719ae4b",
+      "logsBloom": "0xa1097dd4efd4f07df244194e5ee85db455dd047d09e6258c3bb79b573761bf2d49fe4d801da7f713d57be9f77227f9fd6f3995ac9415776837d7c7cb5dec33897c0b631e1dfbefb853fb7e1b9019762f45d2ad0f36ff58b19fc20bacd675fbf405d14cb2ca9abad4b329ab81e766ae6e8d727c0eaaa43e7c3e97f71bc64ad744db2d3baf7f0f76b84d7a8a81cfec4200ffb6f6533ae7fc037c4ba70d019e57c8824480b6db49cc2c1248b7c0b2ddf9a3bfbde171583e944a2dfb6b01861931f74e77d17b1fb1d057ebb94fee4567da99377e908dec4d7bdeed780bf68e9dea7ed15fbc407a14aec872560738135eb7fec6279dab65e764689272fe74f7ab4a20",
+      "miner": "0x4200000000000000000000000000000000000011",
+      "mixHash": "0x0185e044815f2608836a161f67eacc7a85bf1fd03e88a5a737ffa818ecb43924",
+      "nonce": "0x0000000000000000",
+      "number": "0x2e6cf6b",
+      "parentBeaconBlockRoot": "0x3ab9acd395642f17ba91b5e92d0f61c30f5cb008230887c29a4183115b436772",
+      "parentHash": "0x06d7c9159162c7e5943b28723ca89bf3906956b53690c19970d44df7e8ac99e8",
+      "receiptsRoot": "0xb268a06d81c4461dbd2dbf1a85edf6ef00753f5881915da13d58222e5e118ad4",
+      "requestsHash": "0xe3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "sha3Uncles": "0x1dcc4de8dec75d7aab85b567b6ccd41ad312451b948a7413f0a142fd40d49347",
+      "size": "0x1b56d",
+      "stateRoot": "0x0d263bcb1916cf2c57278677d5df199dc217d5f102565a5d5bf8d081527f35b2",
+      "timestamp": "0x6a57fbb9",
+      "transactionsRoot": "0x634d7f78492c62c7d8280ec7af6641cdbe74064791cc1ab5c4b39cf721a439ec",
+      "uncles": [],
+      "withdrawalsRoot": "0xf2b3f827330f977af5f0fe723c0d1f78afbcb2bed010521d58b37438a3c59490"
+    }
+  }
+}

@@ -1,0 +1,86 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://l2-on-chain/config/chains/schema.json",
+  "title": "L2 chain registry",
+  "description": "Per-chain addresses & capabilities for the flash-loan arbitrage engine. Any entry with _verify:true (or a zero address) is UNCONFIRMED and must not be used by a live code path until verified with a cited _source. See config/chains/README.md.",
+  "type": "object",
+  "additionalProperties": true,
+  "required": ["name", "chainId", "stack", "gasModel", "cancun", "constants", "flashProviders", "dexes", "tokens"],
+  "properties": {
+    "$schema": { "type": "string" },
+    "name": { "type": "string" },
+    "chainId": { "type": "integer", "minimum": 1 },
+    "stack": { "enum": ["op-stack", "arbitrum-nitro"] },
+    "gasModel": { "enum": ["op-stack", "arbitrum-nitro"] },
+    "cancun": { "type": ["boolean", "null"], "description": "EIP-1153/MCOPY support in the shipped env. null = unverified." },
+    "blockTimeSeconds": { "type": ["number", "null"] },
+    "canonicalBridge": { "$ref": "#/$defs/addressRef" },
+    "constants": { "$ref": "#/$defs/addressMap" },
+    "predeploys": { "$ref": "#/$defs/addressMap" },
+    "precompiles": { "$ref": "#/$defs/addressMap" },
+    "flashProviders": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "properties": {
+          "available": { "type": ["boolean", "null"], "description": "Is this provider deployed on this chain? null = unverified." },
+          "_note": { "type": "string" }
+        },
+        "additionalProperties": true
+      }
+    },
+    "dexes": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "required": ["family"],
+        "properties": {
+          "family": { "type": "string", "description": "e.g. uniswap-v2, uniswap-v3, uniswap-v4, solidly-cl, algebra, curve, balancer-v2, traderjoe-lb" },
+          "available": { "type": ["boolean", "null"] },
+          "feeTiers": { "type": "array", "items": { "type": "integer" } },
+          "_note": { "type": "string" }
+        },
+        "additionalProperties": true
+      }
+    },
+    "tokens": {
+      "type": "object",
+      "additionalProperties": { "$ref": "#/$defs/tokenRef" }
+    },
+    "_sources": { "type": "object", "additionalProperties": true }
+  },
+  "$defs": {
+    "address": {
+      "type": "string",
+      "pattern": "^0x[0-9a-fA-F]{40}$"
+    },
+    "addressRef": {
+      "type": "object",
+      "required": ["address", "_verify"],
+      "properties": {
+        "address": { "$ref": "#/$defs/address" },
+        "_verify": { "type": "boolean", "description": "true = UNCONFIRMED placeholder; do not use in a live path." },
+        "_source": { "type": "string", "description": "citation URL for a verified address" },
+        "_note": { "type": "string" }
+      },
+      "additionalProperties": true
+    },
+    "addressMap": {
+      "type": "object",
+      "additionalProperties": { "$ref": "#/$defs/addressRef" }
+    },
+    "tokenRef": {
+      "type": "object",
+      "required": ["address", "decimals", "_verify"],
+      "properties": {
+        "address": { "$ref": "#/$defs/address" },
+        "decimals": { "type": "integer", "minimum": 0, "maximum": 36 },
+        "symbol": { "type": "string" },
+        "_verify": { "type": "boolean" },
+        "_source": { "type": "string" },
+        "_note": { "type": "string" }
+      },
+      "additionalProperties": true
+    }
+  }
+}

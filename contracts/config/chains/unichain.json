@@ -1,0 +1,36 @@
+{
+  "$schema": "./schema.json",
+  "name": "Unichain",
+  "chainId": 130,
+  "stack": "op-stack",
+  "gasModel": "op-stack",
+  "cancun": null,
+  "blockTimeSeconds": 1,
+  "canonicalBridge": { "address": "0x0000000000000000000000000000000000000000", "_verify": true, "_note": "L1 StandardBridge / portal — Phase 9 rebalancing only" },
+  "constants": {
+    "permit2": { "address": "0x000000000022D473030F116dDEE9F6B43aC78BA3", "_verify": false, "_source": "Uniswap Permit2 canonical deployment (identical on all chains)" },
+    "multicall3": { "address": "0xcA11bde05977b3631167028862bE2a173976CA11", "_verify": true, "_note": "confirm Multicall3 is deployed on Unichain" }
+  },
+  "predeploys": {
+    "weth": { "address": "0x4200000000000000000000000000000000000006", "_verify": false, "_source": "OP Stack predeploy (WETH9)" },
+    "gasPriceOracle": { "address": "0x420000000000000000000000000000000000000F", "_verify": false, "_source": "OP Stack predeploy (GasPriceOracle)" },
+    "l1Block": { "address": "0x4200000000000000000000000000000000000015", "_verify": false, "_source": "OP Stack predeploy (L1Block)" }
+  },
+  "flashProviders": {
+    "uniswapV4Flash": { "available": null, "_note": "PREFERRED on Unichain — V4 flash-accounting; uses dexes.uniswapV4" },
+    "uniswapV3Flash": { "available": null, "_note": "uses dexes.uniswapV3 if present" },
+    "aaveV3": { "available": null, "pool": { "address": "0x0000000000000000000000000000000000000000", "_verify": true }, "_note": "verify Aave V3 deployment on Unichain (may be absent)" },
+    "balancerV2": { "available": null, "vault": { "address": "0xBA12222222228d8Ba445958a75a0704d566BF2C8", "_verify": true }, "_note": "verify whether Balancer V2 is deployed on Unichain" }
+  },
+  "dexes": {
+    "uniswapV4": { "family": "uniswap-v4", "available": null, "poolManager": { "address": "0x0000000000000000000000000000000000000000", "_verify": true }, "universalRouter": { "address": "0x0000000000000000000000000000000000000000", "_verify": true }, "_note": "primary venue on Unichain — verify PoolManager first" },
+    "uniswapV3": { "family": "uniswap-v3", "available": null, "factory": { "address": "0x0000000000000000000000000000000000000000", "_verify": true }, "swapRouter": { "address": "0x0000000000000000000000000000000000000000", "_verify": true }, "quoterV2": { "address": "0x0000000000000000000000000000000000000000", "_verify": true }, "feeTiers": [100, 500, 3000, 10000] }
+  },
+  "tokens": {
+    "WETH": { "address": "0x4200000000000000000000000000000000000006", "decimals": 18, "_verify": false, "_source": "OP Stack predeploy WETH9" },
+    "USDC": { "address": "0x0000000000000000000000000000000000000000", "decimals": 6, "_verify": true, "_note": "verify canonical/bridged USDC on Unichain" }
+  },
+  "_sources": {
+    "note": "Unichain is Uniswap-V4-first — prefer V4 flash-accounting & V4 swaps. Verify all addresses before use. Do not invent addresses."
+  }
+}

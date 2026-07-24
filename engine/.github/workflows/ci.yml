@@ -1,0 +1,111 @@
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+# `uv sync` installs core deps + the default `dev` dependency group (the lint/
+# type/test toolchain), resolved from the committed uv.lock for reproducibility.
+# The heavy `analytics` extra is opt-in (`--extra analytics`) and gets its own
+# job once Phase 9 code exists.
+env:
+  UV_CACHE_GLOB: "uv.lock"
+
+jobs:
+  quality:
+    name: lint · types · pairing · tests · audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          enable-cache: true
+          cache-dependency-glob: ${{ env.UV_CACHE_GLOB }}
+
+      - name: Sync dependencies (core + dev group)
+        run: uv sync
+
+      - name: Lint (syntax/style tier)
+        run: make lint
+
+      - name: Types (logic/interface tier)
+        run: make types
+
+      - name: Test pairing (every module is tested)
+        run: make pairing
+
+      - name: Secret scan
+        run: uv run python scripts/check_no_secrets.py $(git ls-files)
+
+      - name: Tests + coverage gate
+        run: make test
+
+      - name: Security audit (deps + code)
+        run: make audit
+
+  integration:
+    name: integration · db (services)
+    runs-on: ubuntu-latest
+    services:
+      redis:
+        image: redis:7
+        ports: ["6379:6379"]
+        options: >-
+          --health-cmd "redis-cli ping" --health-interval 5s
+          --health-timeout 3s --health-retries 5
+      timescale:
+        image: timescale/timescaledb:latest-pg16
+        env:
+          POSTGRES_USER: l2arb
+          POSTGRES_PASSWORD: l2arb
+          POSTGRES_DB: l2arb
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U l2arb" --health-interval 5s
+          --health-timeout 3s --health-retries 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v3
+        with:
+          enable-cache: true
+          cache-dependency-glob: ${{ env.UV_CACHE_GLOB }}
+      - run: uv sync
+
+      # `integration`/`db` tiers appear from Phase 1 onward. Treat "no tests
+      # collected yet" (pytest exit code 5) as success so the scaffold stays
+      # green; real failures still fail the job.
+      - name: Integration + DB tiers
+        env:
+          L2ARB__REDIS_URL: redis://localhost:6379/0
+          L2ARB__POSTGRES_DSN: postgresql+asyncpg://l2arb:l2arb@localhost:5432/l2arb
+        run: |
+          set +e
+          uv run pytest -m "integration or db" -q
+          code=$?
+          if [ "$code" -eq 5 ]; then echo "no integration/db tests yet — ok"; exit 0; fi
+          exit $code
+
+  benchmark:
+    name: latency gate (benchmark)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v3
+        with:
+          enable-cache: true
+          cache-dependency-glob: ${{ env.UV_CACHE_GLOB }}
+      - run: uv sync
+      - name: Benchmark tier
+        run: |
+          set +e
+          uv run pytest -m "benchmark" -q
+          code=$?
+          if [ "$code" -eq 5 ]; then echo "no benchmark tests yet — ok"; exit 0; fi
+          exit $code

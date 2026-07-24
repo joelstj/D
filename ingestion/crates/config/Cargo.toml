@@ -1,0 +1,21 @@
+[package]
+name = "l2i-config"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Typed configuration: the plug-and-play config.toml surface + loader"
+
+[lints]
+workspace = true
+
+[dependencies]
+l2i-aggregator = { path = "../aggregator" }
+l2i-chains = { path = "../chains" }
+alloy-primitives.workspace = true
+serde.workspace = true
+toml.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]

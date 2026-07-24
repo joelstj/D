@@ -1,0 +1,22 @@
+{
+  "_note": "Real Arbitrum pinned-block AMM data + independently-computed expected values (python big-int). token0=WETH(18), token1=USDC(6).",
+  "block": 484254173,
+  "v2": {
+    "pool": "0x54b26fAF3671677C19f70C4b879a6f7B898F732c",
+    "weth_is_token0": true,
+    "reserve0": "492648882772985574",
+    "reserve1": "946295230",
+    "amount_in_weth": "1000000000000000000",
+    "fee_pips": 3000,
+    "expected_out_usdc": "633341423"
+  },
+  "v3": {
+    "pool": "0xC6962004f452bE9203591991D15f6b388e09E8D0",
+    "sqrt_price_x96": "3471441003415396879153077",
+    "tick": -200721,
+    "dec0": 18,
+    "dec1": 6,
+    "expected_price_weth_in_usdc": 1919.819551793729,
+    "expected_native_price_in_usdc": 1.919819551793729e-09
+  }
+}

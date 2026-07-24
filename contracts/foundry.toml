@@ -1,0 +1,43 @@
+# Foundry configuration.
+#
+# The contracts are toolchain-agnostic; this repo is verified end-to-end with
+# Hardhat (see README), and these Foundry settings let you build/test/deploy the
+# same sources with Forge. To use Foundry:
+#
+#   curl -L https://foundry.paradigm.xyz | bash && foundryup
+#   forge install foundry-rs/forge-std OpenZeppelin/openzeppelin-contracts@v5.0.2
+#   forge build
+#   forge test --match-path 'test/foundry/*' --fork-url "$ARBITRUM_RPC_URL" -vvv
+
+[profile.default]
+src = "contracts"
+out = "out"
+test = "test/foundry"
+libs = ["lib", "node_modules"]
+solc_version = "0.8.20"
+optimizer = true
+optimizer_runs = 1000000
+via_ir = true
+evm_version = "paris"
+fs_permissions = [{ access = "read", path = "./" }]
+
+# Resolve the OZ import path whether OZ comes from npm (node_modules) or
+# `forge install` (lib/openzeppelin-contracts). node_modules wins if present.
+remappings = [
+  "@openzeppelin/contracts/=node_modules/@openzeppelin/contracts/",
+  "forge-std/=lib/forge-std/src/",
+]
+
+[rpc_endpoints]
+optimism = "${OPTIMISM_RPC_URL}"
+base = "${BASE_RPC_URL}"
+arbitrum = "${ARBITRUM_RPC_URL}"
+ink = "${INK_RPC_URL}"
+unichain = "${UNICHAIN_RPC_URL}"
+polygon = "${POLYGON_RPC_URL}"
+
+[etherscan]
+optimism = { key = "${ETHERSCAN_API_KEY}" }
+base = { key = "${ETHERSCAN_API_KEY}" }
+arbitrum = { key = "${ETHERSCAN_API_KEY}" }
+polygon = { key = "${ETHERSCAN_API_KEY}" }

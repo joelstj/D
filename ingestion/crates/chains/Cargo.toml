@@ -1,0 +1,15 @@
+[package]
+name = "l2i-chains"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Per-chain static parameters, predeploy addresses, and gas-model tags for the five L2s"
+
+[lints]
+workspace = true
+
+[dependencies]
+alloy-primitives.workspace = true
+serde.workspace = true

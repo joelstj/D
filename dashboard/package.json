@@ -1,0 +1,22 @@
+{
+  "name": "l2-arbitrage-gui",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Plug-and-play Layer-2 flash-loan arbitrage dashboard: real-time opportunities, live-tunable parameters, MetaMask integration, language-agnostic API.",
+  "license": "MIT",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "dev": "concurrently -n backend,frontend -c blue,magenta \"pnpm --filter @l2/backend dev\" \"pnpm --filter @l2/frontend dev\"",
+    "build": "pnpm --filter @l2/backend build && pnpm --filter @l2/frontend build",
+    "test": "pnpm --filter @l2/backend test && pnpm --filter @l2/frontend test",
+    "typecheck": "pnpm --filter @l2/backend typecheck && pnpm --filter @l2/frontend typecheck",
+    "lint": "pnpm -r --if-present lint",
+    "start": "pnpm --filter @l2/backend start",
+    "verify": "pnpm typecheck && pnpm test && pnpm build"
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.0"
+  }
+}

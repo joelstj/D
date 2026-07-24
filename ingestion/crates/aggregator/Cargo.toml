@@ -1,0 +1,21 @@
+[package]
+name = "l2i-aggregator"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Atomic per-chain snapshots, DetectRequest builder, incremental mode, cadence/debounce, cross_chain wiring"
+
+[lints]
+workspace = true
+
+[dependencies]
+l2i-core = { path = "../core" }
+alloy-primitives.workspace = true
+serde.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true
+serde_json.workspace = true

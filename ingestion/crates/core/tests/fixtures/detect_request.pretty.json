@@ -1,0 +1,111 @@
+{
+  "top_n": 10,
+  "max_hops": 4,
+  "incremental": false,
+  "chains": [
+    {
+      "chain_id": 42161,
+      "gas_price_wei": 10000000,
+      "l1_data_fee_wei": 0,
+      "base_gas": 150000,
+      "per_hop_gas": 100000,
+      "gas_safety_multiplier": 1.5,
+      "min_profit_bps": 5.0,
+      "native_price_in": {
+        "0x82af49447d8a07e3bd95bd0d56f35241523fbab1": 1.0,
+        "0xaf88d065e77c8cc2239327c5edb3a432268e5831": 3e-10
+      },
+      "hubs": [
+        "0x82af49447d8a07e3bd95bd0d56f35241523fbab1",
+        "0xaf88d065e77c8cc2239327c5edb3a432268e5831"
+      ]
+    }
+  ],
+  "pools": [
+    {
+      "address": "0x1111111111111111111111111111111111111111",
+      "kind": "v2",
+      "fee_pips": 3000,
+      "verified": true,
+      "token0": {
+        "chain_id": 42161,
+        "address": "0x82af49447d8a07e3bd95bd0d56f35241523fbab1",
+        "decimals": 18,
+        "symbol": "WETH"
+      },
+      "token1": {
+        "chain_id": 42161,
+        "address": "0xaf88d065e77c8cc2239327c5edb3a432268e5831",
+        "decimals": 6,
+        "symbol": "USDC"
+      },
+      "blockstamp": {
+        "chain_id": 42161,
+        "number": 200000000,
+        "block_hash": "0xfbb039d0d0e358b4d65f3df3058026fe5576beee3ed1fa2c1ad677d2efe0f3c1",
+        "timestamp": 1712862552
+      },
+      "v2": {
+        "reserve0": "1234567890000000000000",
+        "reserve1": "3210000000000"
+      }
+    }
+  ],
+  "cross_chain": {
+    "assets": [
+      {
+        "symbol": "WETH",
+        "representations": [
+          {
+            "token": {
+              "chain_id": 42161,
+              "address": "0x82af49447d8a07e3bd95bd0d56f35241523fbab1",
+              "decimals": 18
+            },
+            "native": true,
+            "bridgeable": true
+          },
+          {
+            "token": {
+              "chain_id": 8453,
+              "address": "0x4200000000000000000000000000000000000006",
+              "decimals": 18
+            },
+            "native": true,
+            "bridgeable": true
+          }
+        ]
+      },
+      {
+        "symbol": "USDC",
+        "representations": [
+          {
+            "token": {
+              "chain_id": 42161,
+              "address": "0xaf88d065e77c8cc2239327c5edb3a432268e5831",
+              "decimals": 6
+            },
+            "native": true,
+            "bridgeable": true
+          }
+        ]
+      }
+    ],
+    "bridges": [
+      {
+        "symbol": "WETH",
+        "from_chain": 42161,
+        "to_chain": 8453,
+        "fee_bps": 10.0,
+        "fixed_fee": 0,
+        "settle_seconds": 600
+      }
+    ],
+    "pairs": [
+      [
+        "WETH",
+        "USDC"
+      ]
+    ]
+  }
+}

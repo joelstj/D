@@ -1,0 +1,6 @@
+# Pinned for deterministic `clippy -D warnings` / `fmt --check` gating.
+# Integrators may bump this; the Tier-A suite is what proves a bump is safe.
+[toolchain]
+channel = "1.94.1"
+components = ["rustfmt", "clippy"]
+profile = "minimal"

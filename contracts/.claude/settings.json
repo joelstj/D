@@ -1,0 +1,44 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-settings.json",
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash scripts/bootstrap.sh --quiet || true"
+          }
+        ]
+      }
+    ]
+  },
+  "permissions": {
+    "allow": [
+      "Bash(bash scripts/bootstrap.sh)",
+      "Bash(bash scripts/verify.sh)",
+      "Bash(forge build)",
+      "Bash(forge build:*)",
+      "Bash(forge test)",
+      "Bash(forge test:*)",
+      "Bash(forge fmt)",
+      "Bash(forge fmt:*)",
+      "Bash(forge snapshot)",
+      "Bash(forge snapshot:*)",
+      "Bash(forge coverage:*)",
+      "Bash(forge install:*)",
+      "Bash(slither:*)",
+      "Bash(git add:*)",
+      "Bash(git commit:*)",
+      "Bash(git status)",
+      "Bash(git diff:*)",
+      "Bash(git log:*)"
+    ],
+    "deny": [
+      "Bash(forge script:* --broadcast)",
+      "Bash(cast send:*)",
+      "Bash(cast publish:*)",
+      "Read(./.env)",
+      "Read(./.env.*)"
+    ]
+  }
+}

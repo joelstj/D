@@ -1,0 +1,2 @@
+# Foundry deploy/ops scripts. Deterministic CREATE2 deploy for cross-chain address parity (P10-T4).
+# The Ralph loop NEVER runs these with --broadcast; live deploys are a human-gated action.

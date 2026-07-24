@@ -1,0 +1,132 @@
+@import "tailwindcss";
+
+/*
+ * Design tokens. Chrome (surfaces/ink/accent) uses a cool-slate dark theme for a
+ * premium fintech feel; data-meaning colors (profit/loss, network identity) use
+ * the validated status + categorical palette so they stay CVD-safe and are always
+ * paired with a sign or text label — never color alone.
+ */
+@theme {
+  --color-plane: #090c14;
+  --color-surface: #0f1522;
+  --color-surface-2: #151d2e;
+  --color-surface-3: #1b2438;
+  --color-border: #232d44;
+  --color-border-soft: #1a2234;
+
+  --color-ink: #eaf0fb;
+  --color-ink-muted: #93a1bd;
+  --color-ink-faint: #5b6885;
+
+  --color-accent: #6d5efc;
+  --color-accent-2: #8b7cff;
+  --color-accent-soft: #211f47;
+
+  /* Data-meaning (semantic) */
+  --color-pos: #16c784;
+  --color-pos-soft: #0e2a24;
+  --color-neg: #ea3943;
+  --color-neg-soft: #2a1620;
+  --color-warn: #fab219;
+
+  /* Network categorical slots (validated order; text label always present) */
+  --color-net-base: #3987e5;
+  --color-net-arbitrum: #199e70;
+  --color-net-optimism: #d55181;
+  --color-net-polygon: #9085e9;
+
+  --font-sans: "Inter", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, monospace;
+}
+
+* {
+  border-color: var(--color-border);
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background:
+    radial-gradient(1200px 600px at 15% -10%, rgba(109, 94, 252, 0.12), transparent 60%),
+    radial-gradient(1000px 500px at 100% 0%, rgba(22, 199, 132, 0.07), transparent 55%),
+    var(--color-plane);
+  color: var(--color-ink);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+  font-feature-settings: "cv02", "cv03", "cv04";
+}
+
+.tabular {
+  font-variant-numeric: tabular-nums;
+}
+
+/* Thin custom scrollbars for the data-dense panels */
+.scroll-thin::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+.scroll-thin::-webkit-scrollbar-thumb {
+  background: var(--color-border);
+  border-radius: 8px;
+}
+.scroll-thin::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+@keyframes pulse-dot {
+  0%,
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.45;
+    transform: scale(0.82);
+  }
+}
+.live-dot {
+  animation: pulse-dot 1.6s ease-in-out infinite;
+}
+
+@keyframes row-in {
+  from {
+    background-color: rgba(109, 94, 252, 0.16);
+  }
+  to {
+    background-color: transparent;
+  }
+}
+.row-in {
+  animation: row-in 1.1s ease-out;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+.spin {
+  animation: spin 1s linear infinite;
+}
+
+.card {
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.02), rgba(255, 255, 255, 0)) ,
+    var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: 16px;
+}
+
+.glass {
+  backdrop-filter: blur(12px);
+  background: rgba(15, 21, 34, 0.72);
+}
+
+.focusable:focus-visible {
+  outline: 2px solid var(--color-accent-2);
+  outline-offset: 2px;
+}

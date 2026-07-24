@@ -1,0 +1,42 @@
+[package]
+name = "l2i-rpc"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "RPC & transport: alloy WS/HTTP providers, Multicall3, ChainProvider trait, reconnect/backoff"
+
+[lints]
+workspace = true
+
+[features]
+# Exposes `mock::MockProvider`, a `ChainProvider` that replays recorded reads —
+# for downstream crates' deterministic (Tier-A) tests. Not compiled in prod.
+testing = []
+
+[dependencies]
+l2i-chains = { path = "../chains" }
+alloy-primitives.workspace = true
+alloy-sol-types.workspace = true
+alloy = { workspace = true, features = [
+    "provider-http",
+    "provider-ws",
+    "reqwest-rustls-tls",
+    "rpc-types-eth",
+    "pubsub",
+    "json-rpc",
+    "contract",
+] }
+serde.workspace = true
+serde_json.workspace = true
+url.workspace = true
+thiserror.workspace = true
+async-trait.workspace = true
+futures.workspace = true
+tokio = { workspace = true }
+tracing.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true
+tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread", "time", "test-util"] }
