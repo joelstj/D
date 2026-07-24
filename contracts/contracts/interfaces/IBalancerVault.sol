@@ -13,12 +13,8 @@ interface IBalancerVault {
     /// @param tokens The tokens to borrow.
     /// @param amounts The amounts to borrow, index-aligned with `tokens`.
     /// @param userData Arbitrary bytes passed back to receiveFlashLoan.
-    function flashLoan(
-        address recipient,
-        address[] memory tokens,
-        uint256[] memory amounts,
-        bytes memory userData
-    ) external;
+    function flashLoan(address recipient, address[] memory tokens, uint256[] memory amounts, bytes memory userData)
+        external;
 }
 
 /// @title IBalancerFlashLoanRecipient

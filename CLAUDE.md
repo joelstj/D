@@ -86,8 +86,12 @@ The components already spoke a common contract; the merge makes them one product
   `contracts/FlashLoanArbitrage.sol::executeArbitrage(ArbParams)` and stays
   human-authorised (see invariant 3).
 - **Orchestration:** `launcher/` starts engine + ingestion + dashboard, serves the
-  UI single-origin (`SERVE_STATIC_DIR`), health-gates startup, and opens the
-  browser. `docker-compose.yml` is the container alternative.
+  UI single-origin (`SERVE_STATIC_DIR`), health-gates startup, opens the browser,
+  and then runs a continuous **health monitor** (a live HUD, `launcher/l2arb/health.py`)
+  that probes each service's process + `/health`, self-diagnoses faults, and
+  self-heals by restarting a crashed/wedged process with backoff and a bounded
+  restart budget — infra recovery only, never touching the human-gated execution
+  path. `docker-compose.yml` is the container alternative.
 
 The mapper is **honest about units**: engine amounts are numeraire base units;
 they read as USD only when the numeraire is a stablecoin — no ETH price is
@@ -132,6 +136,15 @@ cd contracts && bash scripts/verify.sh               # fmt + build + test (needs
 # launcher
 python3 -m unittest discover -s launcher/tests
 ```
+
+**Cross-component integration smoke** (all four seams, on live data):
+```bash
+cd engine && uv run python ../scripts/e2e_smoke.py
+```
+Reads real Arbitrum pool state → engine `/detect` → WS envelope → dashboard
+`ExternalProvider` → REST/UI controls → paper execute, and asserts the
+`LiveExecutor` refuses to broadcast. Skips cleanly (exit 0) when the dashboard
+isn't built or there's no outbound Arbitrum RPC, so it's safe offline.
 
 **The `.exe`:** `python scripts/build_exe.py` (any OS, for testing) or
 `scripts/build_windows_exe.ps1` on Windows / the `build-windows-exe` CI workflow

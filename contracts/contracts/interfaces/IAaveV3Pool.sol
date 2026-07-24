@@ -29,11 +29,7 @@ interface IAaveV3Pool {
 interface IAaveFlashLoanSimpleReceiver {
     /// @notice Called by the Aave Pool mid-flash-loan; must repay by approving `amount + premium`.
     /// @return success Must return true for the pool to complete the loan.
-    function executeOperation(
-        address asset,
-        uint256 amount,
-        uint256 premium,
-        address initiator,
-        bytes calldata params
-    ) external returns (bool success);
+    function executeOperation(address asset, uint256 amount, uint256 premium, address initiator, bytes calldata params)
+        external
+        returns (bool success);
 }

@@ -10,6 +10,8 @@ typechain-types/
 out/
 cache_forge/
 broadcast/**/dry-run/
+# Vendored Solidity libs, installed by scripts/bootstrap.sh (forge install).
+lib/
 
 # Env & secrets
 .env

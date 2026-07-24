@@ -35,14 +35,22 @@ module.exports = {
       // Yul IR pipeline: better optimisation for the assembly/struct-heavy
       // hot path and avoids stack-too-deep without manual scratch structs.
       viaIR: true,
+      // Compile target stays at solc 0.8.20's default (Paris) — the conservative
+      // deploy bytecode. Cancun is an *execution*-spec concern (see the network
+      // `hardfork` below), and solc 0.8.20 cannot target Cancun anyway (support
+      // landed in 0.8.24). Foundry mirrors this: its `evm_version = "cancun"`
+      // clamps the solc target to Shanghai while executing REVM at Cancun.
       metadata: { bytecodeHash: "none" },
     },
   },
   networks: {
     hardhat: {
-      // Pin the local EVM to a stable hardfork (the bundled EDR otherwise
-      // defaults to a bleeding-edge fork that mismatches the L2 fork history).
-      hardfork: "shanghai",
+      // Pin the local EVM to Cancun — the hardfork all five target L2s run
+      // today (the bundled EDR otherwise defaults to a bleeding-edge fork that
+      // mismatches the L2 fork history). Cancun is required to execute live
+      // Aave V3.3 flash loans on a fork: their reentrancy guard uses EIP-1153
+      // transient storage, which reverts with NotActivated under Shanghai.
+      hardfork: "cancun",
       // When FORK_RPC_URL is set, the in-process node forks that chain so the
       // fork test-suite can exercise live pools. Otherwise it's a clean chain
       // for the offline unit tests.
@@ -52,12 +60,12 @@ module.exports = {
       // L2s aren't in Hardhat's built-in hardfork history, so tell it these
       // chains have been on a modern hardfork for the whole (recent) fork range.
       chains: {
-        10: { hardforkHistory: { shanghai: 0 } }, // Optimism
-        137: { hardforkHistory: { shanghai: 0 } }, // Polygon PoS
-        130: { hardforkHistory: { shanghai: 0 } }, // Unichain
-        8453: { hardforkHistory: { shanghai: 0 } }, // Base
-        42161: { hardforkHistory: { shanghai: 0 } }, // Arbitrum One
-        57073: { hardforkHistory: { shanghai: 0 } }, // Ink
+        10: { hardforkHistory: { cancun: 0 } }, // Optimism
+        137: { hardforkHistory: { cancun: 0 } }, // Polygon PoS
+        130: { hardforkHistory: { cancun: 0 } }, // Unichain
+        8453: { hardforkHistory: { cancun: 0 } }, // Base
+        42161: { hardforkHistory: { cancun: 0 } }, // Arbitrum One
+        57073: { hardforkHistory: { cancun: 0 } }, // Ink
       },
     },
     optimism: { url: OPTIMISM_RPC_URL, chainId: 10, accounts },

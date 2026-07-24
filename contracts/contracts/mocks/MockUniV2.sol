@@ -27,22 +27,14 @@ contract MockUniV2 {
     }
 
     /// @notice UniswapV2-style reserves (live balances of token0/token1).
-    function getReserves()
-        external
-        view
-        returns (uint112 reserve0, uint112 reserve1, uint32 blockTimestampLast)
-    {
+    function getReserves() external view returns (uint112 reserve0, uint112 reserve1, uint32 blockTimestampLast) {
         reserve0 = uint112(IERC20(token0).balanceOf(address(this)));
         reserve1 = uint112(IERC20(token1).balanceOf(address(this)));
         blockTimestampLast = 0;
     }
 
     /// @notice Constant-product output for a given input.
-    function getAmountOut(uint256 amountIn, uint256 reserveIn, uint256 reserveOut)
-        public
-        view
-        returns (uint256)
-    {
+    function getAmountOut(uint256 amountIn, uint256 reserveIn, uint256 reserveOut) public view returns (uint256) {
         uint256 amountInWithFee = amountIn * (10_000 - feeBps);
         return (amountInWithFee * reserveOut) / (reserveIn * 10_000 + amountInWithFee);
     }

@@ -19,6 +19,7 @@ import urllib.request
 import webbrowser
 
 from . import config, console, state
+from .health import HealthMonitor
 from .paths import Layout
 from .proc import Service
 
@@ -37,8 +38,15 @@ def wait_http(url: str, timeout: float = 30.0) -> bool:
     return False
 
 
-def _service(lo: Layout, name: str, cmd, cwd, env) -> Service:
-    return Service(name, cmd, cwd, env, lo.logs_dir / f"{name}.log")
+def _service(lo: Layout, name: str, cmd, cwd, env, *, port: int) -> Service:
+    return Service(
+        name,
+        cmd,
+        cwd,
+        env,
+        lo.logs_dir / f"{name}.log",
+        health_url=config.health_url(name, port),
+    )
 
 
 def run(lo: Layout, *, live: bool, port: int, open_browser: bool = True) -> int:
@@ -64,19 +72,19 @@ def run(lo: Layout, *, live: bool, port: int, open_browser: bool = True) -> int:
 
     if live:
         console.banner("Starting live stack (engine → ingestion → dashboard)")
-        engine = _service(lo, "engine", config.engine_cmd(lo), lo.engine, {})
+        engine = _service(lo, "engine", config.engine_cmd(lo), lo.engine, {}, port=port)
         engine.start()
         services.append(engine)
         if not wait_http(f"http://127.0.0.1:{config.ENGINE_PORT}/health", 40):
             console.warn("engine did not become healthy in time; check .l2arb/logs/engine.log")
-        ingestion = _service(lo, "ingestion", config.ingestion_cmd(lo), lo.ingestion, {})
+        ingestion = _service(lo, "ingestion", config.ingestion_cmd(lo), lo.ingestion, {}, port=port)
         ingestion.start()
         services.append(ingestion)
     else:
         console.banner("Starting dashboard (paper / simulation mode)")
 
     dash_env = config.dashboard_env(lo, live=live, port=port)
-    dashboard = _service(lo, "dashboard", config.dashboard_cmd(lo), lo.dashboard / "backend", dash_env)
+    dashboard = _service(lo, "dashboard", config.dashboard_cmd(lo), lo.dashboard / "backend", dash_env, port=port)
     dashboard.start()
     services.append(dashboard)
 
@@ -92,27 +100,9 @@ def run(lo: Layout, *, live: bool, port: int, open_browser: bool = True) -> int:
         except OSError:
             pass
 
-    console.info("press Ctrl+C to stop")
-    return _supervise(services)
-
-
-def _supervise(services: list[Service]) -> int:
-    """Block until interrupted or a service dies; then stop everything cleanly."""
-    try:
-        while True:
-            time.sleep(0.5)
-            for svc in services:
-                if not svc.is_alive():
-                    console.warn(f"service '{svc.name}' exited (code {svc.returncode()}); shutting down")
-                    raise _ServiceDown()
-    except (KeyboardInterrupt, _ServiceDown):
-        console.step("stopping services…")
-    finally:
-        for svc in reversed(services):
-            svc.stop()
-        console.ok("all services stopped")
-    return 0
-
-
-class _ServiceDown(Exception):
-    pass
+    # Hand off to the continuous health monitor: a live HUD that probes each
+    # service, self-diagnoses faults, and self-heals by restarting a crashed or
+    # wedged process (with backoff + a bounded budget). Recovery restarts infra
+    # only — it never signs, submits, or re-broadcasts anything; execution stays
+    # paper-by-default and human-gated.
+    return HealthMonitor(services).run()

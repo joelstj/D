@@ -24,16 +24,27 @@ Expected: `Compiled N Solidity files successfully` with **zero warnings**.
 ```bash
 npm test                                            # 24 offline unit tests
 FORK_RPC_URL=https://arb1.arbitrum.io/rpc \
-  npm run test:fork                                 # 3 live Arbitrum-fork tests
+  npm run test:fork                                 # 4 live Arbitrum-fork tests
 ```
+
+The fork tests execute under the **Cancun** hardfork (`hardhat.config.js`
+`hardfork: "cancun"`) because live contracts reached over the fork use post-Paris
+opcodes — see [A note on Aave V3 on forks](#a-note-on-aave-v3-on-forks). They both
+manufacture a price dislocation and capture it atomically via a real flash loan,
+once from **Balancer V2** and once from **Aave V3**.
 
 Foundry (same sources):
 
 ```bash
 forge install foundry-rs/forge-std OpenZeppelin/openzeppelin-contracts@v5.0.2
 forge build
-forge test --match-path 'test/foundry/*' --fork-url "$ARBITRUM_RPC_URL" -vvv
+ARBITRUM_RPC_URL=https://arb1.arbitrum.io/rpc \
+  forge test --match-path 'test/foundry/*' --fork-url "$ARBITRUM_RPC_URL" -vvv
 ```
+
+`foundry.toml` sets `evm_version = "cancun"` so Forge executes the fork suite
+under the same spec (it clamps the solc 0.8.20 compile target to Shanghai
+automatically).
 
 > This repo is **verified end-to-end with Hardhat** in CI-equivalent runs. The
 > Foundry config and tests are provided as first-class, equivalent sources; if
@@ -114,25 +125,32 @@ Balancer V2 is **0-fee** for flash loans on most L2s (Aave charges
 
 ---
 
-## A note on Aave V3 on forks
+## A note on Aave V3 on forks — the EVM hardfork matters
 
-The live-fork suite borrows from **Balancer**, not Aave, on purpose. Aave V3's
-`Pool` is a proxy that delegatecalls to external logic libraries; that call path
-**does not execute inside a Hardhat/EDR mainnet fork served by a public RPC** —
-a *bare, correct* Aave flash-loan receiver reverts with empty data there too
-(reproduced on both Arbitrum and Base forks). It is a **fork-tooling
-limitation, not a contract defect**:
+The live-fork suite borrows from **both Balancer V2 and Aave V3**, and both
+execute against live Arbitrum state — *provided the fork runs under the Cancun
+EVM spec*. Getting this wrong looks like a "fork-tooling limitation" but is
+really a hardfork mismatch. The failure mode is a bare `EvmError: NotActivated`
+revert deep inside the Aave `Pool`, and the spec ladder explains it exactly:
 
-- Aave flash loans work on real chains (used by production bots daily).
-- The Aave callback path (`executeOperation` → route → approve → repay) is fully
-  exercised by the offline unit tests via `MockAavePool`.
-- The live-fork suite still **reads the live Aave Pool** (`aavePremiumBps()`) to
-  prove real integration, and uses Balancer (which forks perfectly) to prove the
-  full borrow→swap→repay→profit lifecycle against live contracts.
+| Fork EVM spec | Aave premium read (`FLASHLOAN_PREMIUM_TOTAL`) | Aave `flashLoanSimple` | Balancer `flashLoan` |
+|---------------|:---:|:---:|:---:|
+| Paris         | ❌ `NotActivated` (impl emits **PUSH0**, a Shanghai opcode) | ❌ | ❌ |
+| Shanghai      | ✅ | ❌ `NotActivated` (guard uses **TSTORE/TLOAD**, Cancun) | ✅ |
+| **Cancun**    | ✅ | ✅ | ✅ |
 
-If you specifically need Aave exercised on a fork, use an archival node and (if
-still needed) `hardhat_setCode`/impersonation to substitute the Pool — or simply
-rely on the mock-based coverage plus a small mainnet canary trade.
+Aave V3.3's flash-loan reentrancy guard uses **EIP-1153 transient storage**, so
+`flashLoanSimple` only runs under Cancun. Both `hardhat.config.js`
+(`hardfork: "cancun"`) and `foundry.toml` (`evm_version = "cancun"`) pin it, so
+the suites exercise the **full atomic borrow → cross-DEX route → repay → profit**
+lifecycle against the *live* Aave Pool, not a mock.
+
+This is why an earlier revision of this doc reported Aave as un-forkable: the
+Foundry profile was on Paris and Hardhat on Shanghai. It was never a contract
+defect or a proxy/delegatecall limitation (the premium read delegatecalls too,
+and works under Shanghai) — only the wrong execution spec. The Aave callback
+path (`executeOperation` → route → approve → repay) also remains covered offline
+via `MockAavePool`.
 
 ---
 

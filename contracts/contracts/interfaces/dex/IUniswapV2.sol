@@ -19,10 +19,7 @@ interface IUniswapV2Router {
 /// @notice Minimal pair surface used to read reserves for optimal loan sizing.
 interface IUniswapV2Pair {
     /// @notice Returns the pair reserves and the last update timestamp.
-    function getReserves()
-        external
-        view
-        returns (uint112 reserve0, uint112 reserve1, uint32 blockTimestampLast);
+    function getReserves() external view returns (uint112 reserve0, uint112 reserve1, uint32 blockTimestampLast);
 
     /// @notice The lower-sorted token of the pair.
     function token0() external view returns (address);

@@ -30,10 +30,7 @@ library DexRouter {
     /// @param amountIn The exact amount of `step.tokenIn` to spend.
     /// @param index The hop index (for error reporting only).
     /// @return amountOut The measured increase in `step.tokenOut` balance.
-    function execute(SwapStep memory step, uint256 amountIn, uint256 index)
-        internal
-        returns (uint256 amountOut)
-    {
+    function execute(SwapStep memory step, uint256 amountIn, uint256 index) internal returns (uint256 amountOut) {
         // Approve exactly what this hop spends (forceApprove tolerates tokens
         // like USDT that require the allowance to be zeroed first).
         IERC20(step.tokenIn).forceApprove(step.router, amountIn);
@@ -44,37 +41,36 @@ library DexRouter {
             address[] memory path = new address[](2);
             path[0] = step.tokenIn;
             path[1] = step.tokenOut;
-            IUniswapV2Router(step.router).swapExactTokensForTokens(
-                amountIn, step.minOut, path, address(this), block.timestamp
-            );
+            IUniswapV2Router(step.router)
+                .swapExactTokensForTokens(amountIn, step.minOut, path, address(this), block.timestamp);
         } else if (step.dexType == DexType.UNISWAP_V3_SINGLE) {
-            ISwapRouter02(step.router).exactInputSingle(
-                ISwapRouter02.ExactInputSingleParams({
-                    tokenIn: step.tokenIn,
-                    tokenOut: step.tokenOut,
-                    fee: step.poolFee,
-                    recipient: address(this),
-                    amountIn: amountIn,
-                    amountOutMinimum: step.minOut,
-                    sqrtPriceLimitX96: 0
-                })
-            );
+            ISwapRouter02(step.router)
+                .exactInputSingle(
+                    ISwapRouter02.ExactInputSingleParams({
+                        tokenIn: step.tokenIn,
+                        tokenOut: step.tokenOut,
+                        fee: step.poolFee,
+                        recipient: address(this),
+                        amountIn: amountIn,
+                        amountOutMinimum: step.minOut,
+                        sqrtPriceLimitX96: 0
+                    })
+                );
         } else if (step.dexType == DexType.UNISWAP_V3_MULTI) {
-            ISwapRouter02(step.router).exactInput(
-                ISwapRouter02.ExactInputParams({
-                    path: step.data,
-                    recipient: address(this),
-                    amountIn: amountIn,
-                    amountOutMinimum: step.minOut
-                })
-            );
+            ISwapRouter02(step.router)
+                .exactInput(
+                    ISwapRouter02.ExactInputParams({
+                        path: step.data, recipient: address(this), amountIn: amountIn, amountOutMinimum: step.minOut
+                    })
+                );
         } else if (step.dexType == DexType.CURVE) {
             // Low-level call: some Curve pools' `exchange` returns nothing.
-            (bool ok,) = step.router.call(
-                abi.encodeWithSelector(
-                    ICurvePool.exchange.selector, step.curveI, step.curveJ, amountIn, step.minOut
-                )
-            );
+            (bool ok,) = step.router
+                .call(
+                    abi.encodeWithSelector(
+                        ICurvePool.exchange.selector, step.curveI, step.curveJ, amountIn, step.minOut
+                    )
+                );
             if (!ok) revert SwapCallFailed(index);
         } else {
             // GENERIC: raw calldata, optionally patched with the runtime amountIn.

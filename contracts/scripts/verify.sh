@@ -36,10 +36,21 @@ step "forge build"
 if forge build; then ok "contracts compile"; else bad "compilation failed"; fi
 
 # 3. Tests ------------------------------------------------------------------
+# By default forge only scans test/foundry (see foundry.toml) and the fork
+# suite there self-skips without an RPC, so the base run is deterministic and
+# offline. VERIFY_FORK=1 wires a live RPC in so the fork suite actually borrows,
+# swaps, and settles against real on-chain state.
 step "forge test"
 TEST_ARGS=("-vvv")
-[[ "${VERIFY_FORK:-0}" == "1" ]] || TEST_ARGS+=("--no-match-path" "test/fork/**")
-if forge test "${TEST_ARGS[@]}"; then ok "tests pass"; else bad "tests failed"; fi
+if [[ "${VERIFY_FORK:-0}" == "1" ]]; then
+  if [[ -z "${ARBITRUM_RPC_URL:-}" ]]; then
+    bad "VERIFY_FORK=1 requires ARBITRUM_RPC_URL (an Arbitrum One endpoint)"
+  else
+    TEST_ARGS+=("--fork-url" "$ARBITRUM_RPC_URL")
+    [[ -n "${FORK_BLOCK:-}" ]] && TEST_ARGS+=("--fork-block-number" "$FORK_BLOCK")
+  fi
+fi
+if [[ $fail -eq 0 ]] && forge test "${TEST_ARGS[@]}"; then ok "tests pass"; else bad "tests failed"; fi
 
 # 4. Gas snapshot (optional, non-blocking) ----------------------------------
 if [[ "${VERIFY_GAS:-0}" == "1" ]]; then

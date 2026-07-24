@@ -126,8 +126,11 @@ pass the result as `amount`; the engine executes any size safely.
 
 ## 4. Gas & optimization notes
 
-- **`viaIR` + optimizer at 1,000,000 runs**, `evm_version = paris` (portable
-  across all target L2s; no `PUSH0` reliance).
+- **`viaIR` + optimizer at 1,000,000 runs**. The **compile** target is `paris`
+  (portable across all target L2s; no `PUSH0` reliance in our own bytecode).
+  Mainnet-fork **tests** execute under the `cancun` spec — required to run live
+  contracts that use post-Paris opcodes (e.g. Aave V3.3's EIP-1153 transient
+  storage); see [`DEPLOYMENT.md`](DEPLOYMENT.md#a-note-on-aave-v3-on-forks--the-evm-hardfork-matters).
 - **Custom errors** instead of revert strings.
 - **Yul** for the hot-path `balanceOf` (single staticcall, scratch memory) and
   the integer `sqrt`.

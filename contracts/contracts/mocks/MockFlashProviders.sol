@@ -28,14 +28,15 @@ contract MockAavePool {
         uint256 amount,
         bytes calldata params,
         uint16 /*referralCode*/
-    ) external {
+    )
+        external
+    {
         uint256 premium = (amount * premiumBps) / 10_000;
         uint256 balBefore = IERC20(asset).balanceOf(address(this));
 
         IERC20(asset).transfer(receiverAddress, amount);
-        bool ok = IAaveFlashLoanSimpleReceiver(receiverAddress).executeOperation(
-            asset, amount, premium, msg.sender, params
-        );
+        bool ok =
+            IAaveFlashLoanSimpleReceiver(receiverAddress).executeOperation(asset, amount, premium, msg.sender, params);
         if (!ok) revert CallbackFailed();
 
         // Pull principal + premium back (receiver approved us).

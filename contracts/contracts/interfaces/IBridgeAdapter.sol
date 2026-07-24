@@ -14,11 +14,7 @@ interface IBridgeAdapter {
     /// @param dstChainId The destination chain id.
     /// @param recipient The recipient address on the destination chain.
     /// @param options Bridge-specific encoded options (fees, slippage, relayer data...).
-    function bridge(
-        address token,
-        uint256 amount,
-        uint256 dstChainId,
-        address recipient,
-        bytes calldata options
-    ) external payable;
+    function bridge(address token, uint256 amount, uint256 dstChainId, address recipient, bytes calldata options)
+        external
+        payable;
 }

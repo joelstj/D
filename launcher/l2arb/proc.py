@@ -45,20 +45,40 @@ def run(cmd: list[str], cwd: Path | None = None, env: dict | None = None, prefix
 
 
 class Service:
-    """A supervised long-running child process writing to its own log file."""
+    """A supervised long-running child process writing to its own log file.
 
-    def __init__(self, name: str, cmd: list[str], cwd: Path, env: dict, log_path: Path):
+    A ``Service`` is *restartable*: the health monitor (``health.py``) calls
+    :meth:`restart` to recover a crashed or wedged process. The first
+    :meth:`start` truncates the log; restarts append, so a run's log keeps the
+    full crash/restart history for diagnosis. ``health_url`` (optional) is the
+    liveness endpoint the monitor probes beyond bare process liveness.
+    """
+
+    def __init__(
+        self,
+        name: str,
+        cmd: list[str],
+        cwd: Path,
+        env: dict,
+        log_path: Path,
+        health_url: str | None = None,
+    ):
         self.name = name
         self.cmd = cmd
         self.cwd = cwd
         self.env = env
         self.log_path = log_path
+        self.health_url = health_url
         self.proc: subprocess.Popen | None = None
         self._log_fh = None
+        self._started_once = False
 
     def start(self) -> None:
         self.log_path.parent.mkdir(parents=True, exist_ok=True)
-        self._log_fh = open(self.log_path, "w", encoding="utf-8", buffering=1)
+        # Truncate on the first start of a run; append on every restart so the
+        # log preserves the history that explains why a restart was needed.
+        mode = "a" if self._started_once else "w"
+        self._log_fh = open(self.log_path, mode, encoding="utf-8", buffering=1)
         kwargs: dict = {
             "cwd": str(self.cwd),
             "env": {**os.environ, **self.env},
@@ -71,6 +91,25 @@ class Service:
         else:
             kwargs["start_new_session"] = True
         self.proc = subprocess.Popen(self.cmd, **kwargs)
+        self._started_once = True
+
+    def restart(self) -> None:
+        """Stop the current process (if any) and start a fresh one."""
+        self.stop()
+        self.start()
+
+    @property
+    def pid(self) -> int | None:
+        return self.proc.pid if self.proc else None
+
+    def tail_log(self, n: int = 3) -> list[str]:
+        """Return the last ``n`` non-blank lines of the log, for diagnostics."""
+        try:
+            with open(self.log_path, encoding="utf-8", errors="replace") as fh:
+                lines = fh.readlines()
+        except OSError:
+            return []
+        return [ln.rstrip("\n") for ln in lines if ln.strip()][-n:]
 
     def is_alive(self) -> bool:
         return self.proc is not None and self.proc.poll() is None
