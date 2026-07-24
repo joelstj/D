@@ -1,0 +1,28 @@
+[package]
+name = "l2i-output"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Outbound fan-out: versioned envelope + sink trait (WebSocket server, NDJSON stdout)"
+
+[lints]
+workspace = true
+
+[dependencies]
+l2i-core = { path = "../core" }
+serde.workspace = true
+serde_json.workspace = true
+async-trait.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+tokio = { workspace = true, features = ["rt", "net", "sync", "macros", "io-util"] }
+tokio-tungstenite.workspace = true
+futures.workspace = true
+
+[dev-dependencies]
+alloy-primitives.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time"] }
+tokio-tungstenite.workspace = true
+futures.workspace = true

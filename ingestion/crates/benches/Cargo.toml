@@ -1,0 +1,26 @@
+[package]
+name = "l2i-benches"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Criterion hot-path benchmarks (decode → mirror → snapshot → build request)"
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+l2i-core = { path = "../core" }
+l2i-ingest = { path = "../ingest" }
+l2i-aggregator = { path = "../aggregator" }
+l2i-amm = { path = "../amm" }
+alloy-primitives.workspace = true
+
+[dev-dependencies]
+criterion.workspace = true
+
+[[bench]]
+name = "hotpath"
+harness = false

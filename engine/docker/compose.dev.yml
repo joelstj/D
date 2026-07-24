@@ -1,0 +1,37 @@
+# Local services for the integration/db test tiers.
+#   make services-up      # start
+#   make services-down     # stop + wipe volumes
+#
+# These back the `integration` and `db` test tiers only. They hold derived data
+# (opportunity history, pool snapshots) — never keys, never the source of truth.
+# The source of truth is always live on-chain state (docs/DATA_INTEGRITY.md).
+services:
+  redis:
+    image: redis:7
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  timescale:
+    image: timescale/timescaledb:latest-pg16
+    environment:
+      POSTGRES_USER: l2arb
+      POSTGRES_PASSWORD: l2arb
+      POSTGRES_DB: l2arb
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U l2arb"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    volumes:
+      - timescale_data:/var/lib/postgresql/data
+
+volumes:
+  timescale_data:

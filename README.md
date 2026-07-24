@@ -1,0 +1,107 @@
+<div align="center">
+
+# ⚡ L2 Arbitrage Flash-Loan Bot
+
+**Four components, one product.** A Rust ingestion layer, a Python detection
+engine, Solidity flash-loan contracts, and a React dashboard — merged, wired
+end-to-end, and packaged behind a single launcher and a self-bootstrapping
+Windows `.exe`.
+
+</div>
+
+> [!IMPORTANT]
+> **Safe by default.** Ships in **paper / simulation mode** — opportunities are
+> detected from real on-chain state but **no transactions are broadcast**. Live
+> execution is deliberately gated and human-authorised. Flash-loan arbitrage
+> carries real financial and smart-contract risk. Nothing here is financial advice.
+
+---
+
+## What it does
+
+Reads live DEX state across five L2s → detects arbitrage → ranks it by net profit
+after gas / flash-loan / bridge costs → streams it to a dashboard → (optionally,
+and only when a human authorises it) executes it atomically via audited
+flash-loan contracts that **revert unless profit ≥ your minimum**.
+
+```
+ ingestion (Rust)            engine (Python)          dashboard (Node + React)
+ reads 5 L2s over WS/RPC  ─▶ detects 2-hop /       ─▶ live opportunities,
+ (Arbitrum, Base,            triangular /             wired settings, KPIs,
+ Optimism, Unichain, Ink)    multi-hop / x-chain      MetaMask, paper/live split
+        │  POST /detect :8080        │  ranked opps            │  POST /api/execute/:id
+        └────────────────────────────┘                         ▼  (paper by default)
+        └──── ws :9001 opportunity feed ───▶ dashboard    contracts (Solidity)
+                                              backend      atomic flash-loan executor
+                                              (ExternalProvider)   — gated, human-only
+```
+
+See **[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)** for the full data flow and
+the three integration seams.
+
+## Quick start
+
+### Option A — the launcher (recommended, cross-platform)
+
+```bash
+cd launcher
+python3 -m l2arb doctor      # check toolchains (Python 3.11/3.12, Node 20+, Rust 1.94+)
+python3 -m l2arb run         # paper mode: builds the dashboard if needed, opens it
+```
+
+`python3 -m l2arb run` with no config launches the **paper dashboard** at
+<http://localhost:8787> — real detection wiring, simulated fills, zero setup. For
+the full live stack:
+
+```bash
+python3 -m l2arb install     # build engine venv + dashboard + ingestion binary
+# edit .l2arb/config.toml — real RPC endpoints + pool registries per chain
+python3 -m l2arb run --live  # engine + ingestion + dashboard on real data
+```
+
+### Option B — the Windows `.exe`
+
+A single **`L2ArbBot.exe`** that installs everything on first run, then just
+launches and opens the dashboard on subsequent runs. Build it with the
+`build-windows-exe` GitHub Actions workflow (or `scripts/build_windows_exe.ps1`
+on Windows). See **[`docs/INSTALL.md`](docs/INSTALL.md)**.
+
+### Option C — Docker
+
+```bash
+cp ingestion/config/config.example.toml ingestion/config.toml   # then fill endpoints
+docker compose up --build
+# open http://localhost:8080
+```
+
+## Repository layout
+
+| Path | What | Build / test |
+|------|------|--------------|
+| [`engine/`](engine/) | Python `l2arb` detection engine (FastAPI `/detect`) | `make check` |
+| [`ingestion/`](ingestion/) | Rust `l2-ingest` data feed (5 L2s → engine → ws) | `cargo test --workspace` |
+| [`contracts/`](contracts/) | Solidity flash-loan executor (profit-or-revert) | `bash scripts/verify.sh` |
+| [`dashboard/`](dashboard/) | Node backend + React UI (REST + WebSocket) | `pnpm verify` |
+| [`launcher/`](launcher/) | Stdlib-Python installer / launcher / supervisor | `python3 -m unittest discover -s launcher/tests` |
+| [`scripts/`](scripts/) | `.exe` build (PyInstaller spec + drivers) | — |
+| [`docs/`](docs/) | Architecture + install guides | — |
+
+Each component keeps its own README and `CLAUDE.md`/`AGENTS.md` for internals.
+
+## Safety
+
+- **Paper by default.** `EXECUTION_MODE=paper`, `autoExecute=false`; the live
+  executor refuses to broadcast.
+- **Detection holds no keys.** The engine signs nothing and submits nothing.
+- **Real data only.** Every number is derived from live on-chain state and
+  block-stamped; nothing synthetic reaches a runtime path. The dashboard's
+  opportunity mapper never fabricates prices.
+- **Live execution is double-gated** and targets audited, atomic contracts that
+  revert below your `minProfit`. Broadcasting is a separate, human-authorised
+  step — never initiated by the bot.
+
+See **[`CLAUDE.md`](CLAUDE.md) §2** for the full, binding invariant list.
+
+## License
+
+[MIT](LICENSE). Each component retains its own license (see its subdirectory).

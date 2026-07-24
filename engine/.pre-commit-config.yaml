@@ -1,0 +1,45 @@
+# Pre-commit runs the FAST tiers of the test taxonomy on every commit so the
+# repo is never committed red. The slow/chain/db tiers run in CI (see
+# .github/workflows/ci.yml). Install with: uv run pre-commit install
+minimum_pre_commit_version: "4.0.0"
+default_language_version:
+  python: python3.11
+
+repos:
+  - repo: local
+    hooks:
+      - id: ruff-format
+        name: ruff-format (syntax/style)
+        entry: uv run ruff format --check .
+        language: system
+        pass_filenames: false
+
+      - id: ruff-lint
+        name: ruff-lint (syntax/style/security)
+        entry: uv run ruff check .
+        language: system
+        pass_filenames: false
+
+      - id: mypy
+        name: mypy (types/logic)
+        entry: uv run mypy src tests scripts
+        language: system
+        pass_filenames: false
+
+      - id: test-pairing
+        name: test-pairing (every module is tested)
+        entry: uv run python scripts/check_test_pairing.py
+        language: system
+        pass_filenames: false
+
+      - id: no-secrets
+        name: block committed secrets / private keys
+        entry: uv run python scripts/check_no_secrets.py
+        language: system
+        pass_filenames: false
+
+      - id: unit-tests
+        name: unit tests (logic tier, fast)
+        entry: uv run pytest -m "unit" -q
+        language: system
+        pass_filenames: false

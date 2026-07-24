@@ -1,0 +1,27 @@
+# Dependencies
+node_modules/
+
+# Hardhat
+artifacts/
+cache/
+typechain-types/
+
+# Foundry
+out/
+cache_forge/
+broadcast/**/dry-run/
+
+# Env & secrets
+.env
+.env.local
+*.key
+deployments.local.json
+
+# Logs & OS
+*.log
+.DS_Store
+coverage/
+coverage.json
+
+# Deployment records from local runs
+deployments/

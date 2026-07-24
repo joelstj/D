@@ -1,0 +1,15 @@
+# Rust build artifacts
+/target
+**/*.rs.bk
+
+# Local config with real endpoints (never commit endpoints with keys)
+/config.toml
+/config.local.toml
+
+# Editor / OS
+.DS_Store
+*.swp
+.idea/
+.vscode/
+
+# Ralph loop logs are gitignored via ralph/logs/.gitignore

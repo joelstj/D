@@ -1,0 +1,45 @@
+{
+  "$comment": "Example strategy / risk parameters. Copy to config/strategies.json (git-ignored) and tune. Values marked NEEDS_HUMAN are risk decisions with NO safe default — confirm before live use. See docs/specs/05 and 06.",
+  "global": {
+    "minProfitBps": 8,
+    "minProfitAbsUsd": 2.0,
+    "maxPriceImpactBps": 30,
+    "tipProfitFraction": 0.25,
+    "tipCeilingUsd": "NEEDS_HUMAN",
+    "maxNotionalUsdPerTrade": "NEEDS_HUMAN",
+    "maxPoolReserveFraction": 0.02,
+    "simulateBeforeSubmit": true,
+    "submitMode": "private"
+  },
+  "sizing": {
+    "method": "auto",
+    "$comment_method": "auto = closed-form CPMM where applicable, else ternary search (docs/specs/05)",
+    "ternaryIterations": 60,
+    "ternaryRelTolerance": 1e-9,
+    "clampToFlashLiquidity": true
+  },
+  "perChain": {
+    "optimism": { "enabled": true, "gasCeilingGwei": "NEEDS_HUMAN", "maxNotionalUsdPerTrade": "NEEDS_HUMAN" },
+    "base": { "enabled": true, "gasCeilingGwei": "NEEDS_HUMAN", "maxNotionalUsdPerTrade": "NEEDS_HUMAN" },
+    "ink": { "enabled": false, "_note": "enable after Phase 1 verifies providers/DEXes on Ink" },
+    "unichain": { "enabled": true, "preferFlashProvider": "uniswapV4Flash" },
+    "arbitrum": { "enabled": true, "submitMode": "timeboost", "gasCeilingGwei": "NEEDS_HUMAN" }
+  },
+  "strategies": {
+    "sameChain2Hop": { "enabled": true, "maxHops": 2 },
+    "triangular": { "enabled": true, "maxHops": 3 },
+    "crossDex": { "enabled": true },
+    "crossChain2Hop": {
+      "enabled": false,
+      "_note": "Phase 9 — non-atomic. Do NOT enable without exposure caps + hedging (docs/specs/10).",
+      "maxInFlightUsd": "NEEDS_HUMAN",
+      "requireHedge": true,
+      "settlementPolicy": "NEEDS_HUMAN"
+    }
+  },
+  "risk": {
+    "killSwitchOnNegativePnlWindowUsd": "NEEDS_HUMAN",
+    "maxConsecutiveReverts": 50,
+    "pauseOnInventoryDriftPct": 5
+  }
+}

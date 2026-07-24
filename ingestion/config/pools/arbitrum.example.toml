@@ -1,0 +1,27 @@
+# Example Arbitrum One pool registry.
+#
+# These are REAL, currently-live pools (WETH/USDC) included as a concrete starting
+# point; the startup validation gate (docs/ARCHITECTURE.md §7) re-proves every entry
+# on-chain before it enters the live set, so a stale entry is rejected loudly, never
+# silently trusted. Copy to arbitrum.toml and curate for your deployment. See
+# config/pools/README.md for the full schema.
+
+# Uniswap V3 — WETH/USDC 0.05%.
+[[pool]]
+dex      = "uniswap_v3"
+kind     = "v3"
+address  = "0xC6962004f452bE9203591991D15f6b388e09E8D0"
+fee_pips = 500
+token0   = "0x82aF49447D8a07e3bd95BD0d56f35241523fBab1"  # WETH
+token1   = "0xaf88d065e77c8cC2239327C5EDb3A432268e5831"  # USDC (native)
+factory  = "0x1F98431c8aD98523631AE4a59f267346ea31F984"  # Uniswap V3 factory
+
+# Camelot V2 — WETH/USDC (constant-product path).
+[[pool]]
+dex      = "camelot_v2"
+kind     = "v2"
+address  = "0x54b26fAF3671677C19f70C4b879a6f7B898F732c"
+fee_pips = 3000
+token0   = "0x82aF49447D8a07e3bd95BD0d56f35241523fBab1"  # WETH
+token1   = "0xaf88d065e77c8cC2239327C5EDb3A432268e5831"  # USDC (native)
+factory  = "0x6EcCab422D763aC031210895C81787E87B43A652"  # Camelot V2 factory

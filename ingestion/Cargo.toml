@@ -1,0 +1,81 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/core",
+    "crates/chains",
+    "crates/rpc",
+    "crates/registry",
+    "crates/amm",
+    "crates/ingest",
+    "crates/v4",
+    "crates/gas",
+    "crates/aggregator",
+    "crates/engine-client",
+    "crates/output",
+    "crates/observability",
+    "crates/config",
+    "crates/app",
+    "crates/benches",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.94"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/joelstj/l2_bots"
+description = "L2 Data Ingestion Layer for the Cross-Chain Flash-Loan Arbitrage app"
+
+# Shared, pinned dependency versions. Members opt in via `dep.workspace = true`.
+# Versions are resolved from crates.io at build time; pinned here for one coherent
+# graph across every crate (AGENTS.md rule 11: boring, proven crates only).
+[workspace.dependencies]
+# Ethereum primitives — exact 256-bit ints, ABI/event decode, typed bindings.
+alloy-primitives = { version = "1.6", features = ["serde"] }
+alloy-sol-types = { version = "1.6" }
+alloy = { version = "1.0", default-features = false }
+# Serialization / JSON contract.
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.150"
+# Async runtime + helpers.
+tokio = { version = "1.52", features = ["full"] }
+futures = "0.3"
+async-trait = "0.1"
+# Config.
+figment = { version = "0.10", features = ["toml", "env"] }
+toml = "0.9"
+# HTTP client to the engine.
+reqwest = { version = "0.13", default-features = false, features = ["json", "rustls", "webpki-roots"] }
+# Output sinks + observability HTTP.
+tokio-tungstenite = "0.30"
+axum = "0.8"
+# Observability.
+metrics = "0.24"
+metrics-exporter-prometheus = { version = "0.18", default-features = false }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+# URL parsing (also used by reqwest/alloy).
+url = "2"
+# In-memory sharded mirror.
+dashmap = "6"
+# Errors.
+thiserror = "2"
+anyhow = "1"
+# Test-only.
+proptest = "1"
+criterion = "0.8"
+
+# Applied to every workspace crate via `[lints] workspace = true`. We are a pure
+# read path — no `unsafe` is warranted anywhere in our own code.
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+panic = "abort"
+
+[profile.bench]
+opt-level = 3
+lto = "thin"

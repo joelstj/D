@@ -1,0 +1,19 @@
+{
+  "name": "@l2/sdk",
+  "version": "0.1.0",
+  "description": "Dependency-free JS/TS client for the L2 Arbitrage GUI REST + WebSocket API.",
+  "license": "MIT",
+  "type": "module",
+  "main": "index.js",
+  "types": "index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./index.d.ts",
+      "default": "./index.js"
+    }
+  },
+  "files": ["index.js", "index.d.ts", "README.md"],
+  "engines": {
+    "node": ">=20"
+  }
+}

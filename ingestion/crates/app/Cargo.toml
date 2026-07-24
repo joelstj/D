@@ -1,0 +1,36 @@
+[package]
+name = "l2i-app"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "The l2-ingest binary: load config -> validate -> supervise ingestors -> feed engine -> fan out"
+
+[[bin]]
+name = "l2-ingest"
+path = "src/main.rs"
+
+[lints]
+workspace = true
+
+[dependencies]
+l2i-core = { path = "../core" }
+l2i-chains = { path = "../chains" }
+l2i-rpc = { path = "../rpc" }
+l2i-registry = { path = "../registry" }
+l2i-amm = { path = "../amm" }
+l2i-ingest = { path = "../ingest" }
+l2i-v4 = { path = "../v4" }
+l2i-gas = { path = "../gas" }
+l2i-aggregator = { path = "../aggregator" }
+l2i-engine-client = { path = "../engine-client" }
+l2i-output = { path = "../output" }
+l2i-observability = { path = "../observability" }
+l2i-config = { path = "../config" }
+alloy-primitives.workspace = true
+metrics.workspace = true
+tokio = { workspace = true, features = ["full"] }
+futures.workspace = true
+tracing.workspace = true
+anyhow.workspace = true

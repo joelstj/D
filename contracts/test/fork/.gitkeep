@@ -1,0 +1,2 @@
+# Fork tests (real pools/providers per chain). Run with VERIFY_FORK=1 and *_RPC_URL set.
+# Skipped by scripts/verify.sh unless VERIFY_FORK=1. See docs/specs/08-security.md.

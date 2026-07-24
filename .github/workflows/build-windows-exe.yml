@@ -1,0 +1,49 @@
+name: build-windows-exe
+
+# Builds the self-bootstrapping L2ArbBot.exe on a real Windows runner and
+# uploads it as a downloadable artifact (and attaches it to tagged releases).
+# A Windows PE cannot be produced from Linux, so this is the canonical way to
+# get the .exe — run it on demand or on a version tag.
+
+on:
+  workflow_dispatch: {}
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Build L2ArbBot.exe
+        shell: powershell
+        run: powershell -ExecutionPolicy Bypass -File scripts/build_windows_exe.ps1
+
+      - name: Smoke-test the exe
+        shell: powershell
+        run: |
+          ./launcher/dist/L2ArbBot.exe --version
+          ./launcher/dist/L2ArbBot.exe doctor
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: L2ArbBot-windows-x64
+          path: launcher/dist/L2ArbBot.exe
+          if-no-files-found: error
+
+      - name: Attach to release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: launcher/dist/L2ArbBot.exe

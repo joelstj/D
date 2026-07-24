@@ -1,0 +1,33 @@
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - name: Compile (solc 0.8.20, zero warnings)
+        run: npm run compile
+      - name: Offline unit tests
+        run: npm test
+      # Optional live mainnet-fork tests. Add an ARBITRUM_RPC_URL secret to enable;
+      # the suite self-skips when FORK_RPC_URL is empty. (The `secrets` context is
+      # not permitted in step `if:` conditions, so gate via env + a shell check.)
+      - name: Mainnet-fork tests (Arbitrum, optional)
+        env:
+          FORK_RPC_URL: ${{ secrets.ARBITRUM_RPC_URL }}
+        run: |
+          if [ -z "$FORK_RPC_URL" ]; then
+            echo "No ARBITRUM_RPC_URL secret set — skipping live fork tests."
+          else
+            npm run test:fork
+          fi

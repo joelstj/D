@@ -1,0 +1,79 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# D — unified L2 arbitrage flash-loan bot monorepo
+# Root .gitignore covering all four component toolchains + the launcher/installer.
+# Each component also keeps its own ignore rules; this is the umbrella.
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Secrets — NEVER commit. Only *.example is tracked.
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+config.toml
+config.local.toml
+
+# ── Python (engine/) ─────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+.venv/
+venv/
+.env-venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.hypothesis/
+htmlcov/
+.coverage
+.coverage.*
+coverage.xml
+dist/
+build/
+
+# ── Rust (ingestion/) ────────────────────────────────────────────────────────
+target/
+**/*.rs.bk
+
+# ── Node / pnpm (dashboard/, launcher tooling) ───────────────────────────────
+node_modules/
+.pnpm-store/
+frontend/dist/
+backend/dist/
+*.tsbuildinfo
+npm-debug.log*
+pnpm-debug.log*
+
+# ── Solidity / Foundry / Hardhat (contracts/) ────────────────────────────────
+out/
+cache/
+cache_hardhat/
+artifacts/
+broadcast/
+lib/forge-std/
+lib/openzeppelin-contracts/
+typechain-types/
+
+# ── Launcher / PyInstaller (.exe build) ──────────────────────────────────────
+launcher/build/
+launcher/dist/
+launcher/__pycache__/
+*.spec.bak
+release/
+*.exe
+!scripts/**/*.ps1
+
+# ── Runtime state written by the orchestrator ────────────────────────────────
+.l2arb/
+run/
+logs/
+*.log
+*.pid
+
+# ── OS / editor junk ─────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp

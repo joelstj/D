@@ -1,0 +1,2 @@
+# Flash-loan provider adapters (IFlashProvider) land here. See docs/specs/02-flash-loans.md.
+# Phase 3: Aave V3, Balancer V2 Vault, Uniswap V3 flash, Uniswap V4 flash-accounting, DEX-native.

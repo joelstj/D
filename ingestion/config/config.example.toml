@@ -1,0 +1,208 @@
+# =============================================================================
+# L2 Data Ingestion Layer — example configuration
+#
+# Copy to config.toml, fill in your RPC endpoints, and run. This file is the
+# entire plug-and-play surface: chains, endpoints, pool registries, gas params,
+# cross-chain wiring, the engine URL, and the output sink.
+#
+# NOTHING in the code hardcodes endpoints, pools, or addresses — it all lives
+# here (or in config/pools/<chain>.toml). Addresses below are the stable,
+# on-chain-verified infrastructure addresses; pool addresses go in the per-chain
+# registries and are validated on-chain at startup (see docs/ARCHITECTURE.md §7).
+# =============================================================================
+
+schema_version = 1
+
+# ── The Python detection engine (l2arb) ──────────────────────────────────────
+[engine]
+transport        = "http"                      # "http" (default, hot path) | "subprocess"
+http_url         = "http://127.0.0.1:8080"     # long-running: uvicorn l2arb.api.http:app --port 8080
+subprocess_cmd   = "python -m l2arb.api.runner" # used only when transport = "subprocess"
+health_path      = "/health"                   # GET -> {"status":"ok"}
+detect_path      = "/detect"                    # POST DetectRequest -> ranked opportunities
+top_n            = 10
+max_hops         = 4                            # 2..8
+call_timeout_ms  = 50
+keep_alive       = true                         # persistent connection pool
+first_request_incremental = false               # first request of a session is full; then true
+
+# ── When to build + send a DetectRequest ─────────────────────────────────────
+[cadence]
+mode            = "hybrid"       # "on_change" | "interval" | "hybrid"
+min_interval_ms = 25             # debounce floor (don't spam the engine faster than this)
+max_interval_ms = 1000           # heartbeat ceiling (send even if quiet, to stay fresh)
+incremental     = true           # after the first request, send only changed pools
+
+# ── Outbound fan-out to GUI + execution engine ───────────────────────────────
+[output]
+sink       = "ws"                # "ws" (default) | "stdout" | "redis" | "grpc"
+ws_bind    = "0.0.0.0:9001"
+# redis_url = "redis://127.0.0.1:6379"
+# grpc_bind = "0.0.0.0:9002"
+# Emits a versioned envelope: { schema_version, kind, chain_blocks, payload }
+
+# ── Health / metrics / logs ──────────────────────────────────────────────────
+[observability]
+health_bind  = "0.0.0.0:9090"
+metrics_bind = "0.0.0.0:9100"    # Prometheus
+log_level    = "info"            # trace|debug|info|warn|error
+log_format   = "json"            # "json" | "pretty"
+
+# ── Stable infrastructure addresses (verified on-chain; see docs) ────────────
+[infra]
+multicall3            = "0xcA11bde05977b3631167028862bE2a173976CA11"  # preinstalled on all 5 chains
+op_gas_price_oracle   = "0x420000000000000000000000000000000000000F"  # OP Stack predeploy
+op_l1_block           = "0x4200000000000000000000000000000000000015"  # OP Stack predeploy
+arb_gas_info          = "0x000000000000000000000000000000000000006C"  # Arbitrum precompile
+
+# =============================================================================
+# One [[chains]] block per chain. block_time_ms is a hint; real timing is driven
+# by newHeads. gas_model selects the L1-data-fee adapter.
+# =============================================================================
+
+[[chains]]
+name          = "arbitrum"
+chain_id      = 42161
+enabled       = true
+ws_url        = "wss://YOUR_ARBITRUM_WS"      # low-latency / co-located endpoint (hot path)
+http_url      = "https://YOUR_ARBITRUM_ARCHIVE" # archive, for seeding + reconciliation
+block_time_ms = 250
+gas_model     = "arbitrum"                     # uses ArbGasInfo; l1_data_fee_wei defaults to 0
+min_profit_bps        = 5.0
+base_gas              = 150000
+per_hop_gas           = 100000
+gas_safety_multiplier = 1.6                    # slightly higher for Arbitrum's folded L1 cost
+reconcile_interval_ms = 2000
+hubs        = ["0xWETH", "0xUSDC", "0xUSDT"]   # numeraire/base tokens (fill real addresses)
+numeraires  = ["0xWETH", "0xUSDC", "0xUSDT"]
+# weth: the wrapped-native address. When set (recommended, per chain), native-price
+# derivation verifies each native_price_pools entry actually pairs the numeraire with
+# WETH and omits any that don't — so a mis-wired pool can't produce a wrong price.
+weth        = "0xWETH"
+pool_registry = "config/pools/arbitrum.toml"
+# native_price_pools maps numeraire -> the WETH/<numeraire> pool used to price ETH in it
+[chains.native_price_pools]
+"0xUSDC" = "0xWETH_USDC_POOL"
+"0xUSDT" = "0xWETH_USDT_POOL"
+
+[[chains]]
+name          = "base"
+chain_id      = 8453
+enabled       = true
+ws_url        = "wss://YOUR_BASE_WS"
+http_url      = "https://YOUR_BASE_ARCHIVE"
+block_time_ms = 2000
+gas_model     = "op_stack"                     # GasPriceOracle.getL1Fee for l1_data_fee_wei
+flashblocks   = false                          # M10: 200ms pre-confirmations (verified:false until full block)
+min_profit_bps        = 5.0
+base_gas              = 150000
+per_hop_gas           = 100000
+gas_safety_multiplier = 1.5
+reconcile_interval_ms = 2000
+hubs        = ["0xWETH", "0xUSDC"]
+numeraires  = ["0xWETH", "0xUSDC"]
+pool_registry = "config/pools/base.toml"
+[chains.native_price_pools]
+"0xUSDC" = "0xWETH_USDC_POOL"
+
+[[chains]]
+name          = "optimism"
+chain_id      = 10
+enabled       = true
+ws_url        = "wss://YOUR_OPTIMISM_WS"
+http_url      = "https://YOUR_OPTIMISM_ARCHIVE"
+block_time_ms = 2000
+gas_model     = "op_stack"
+min_profit_bps        = 5.0
+base_gas              = 150000
+per_hop_gas           = 100000
+gas_safety_multiplier = 1.5
+reconcile_interval_ms = 2000
+hubs        = ["0xWETH", "0xUSDC"]
+numeraires  = ["0xWETH", "0xUSDC"]
+pool_registry = "config/pools/optimism.toml"
+[chains.native_price_pools]
+"0xUSDC" = "0xWETH_USDC_POOL"
+
+[[chains]]
+name          = "unichain"
+chain_id      = 130
+enabled       = true
+ws_url        = "wss://YOUR_UNICHAIN_WS"
+http_url      = "https://YOUR_UNICHAIN_ARCHIVE"
+block_time_ms = 1000
+gas_model     = "op_stack"
+flashblocks   = false
+min_profit_bps        = 5.0
+base_gas              = 150000
+per_hop_gas           = 100000
+gas_safety_multiplier = 1.5
+reconcile_interval_ms = 2000
+hubs        = ["0xWETH", "0xUSDC"]
+numeraires  = ["0xWETH", "0xUSDC"]
+pool_registry = "config/pools/unichain.toml"
+# Unichain liquidity is Uniswap V4 (singleton). Registry entries carry poolId +
+# PoolKey; the V4 adapter reads via PoolManager/StateView. Only 0x0 or safe-list
+# hooks are ingested (see docs/ENGINE_CONTRACT.md §4).
+uniswap_v4_pool_manager = "0xUNICHAIN_V4_POOLMANAGER"   # validate on-chain at startup
+uniswap_v4_state_view   = "0xUNICHAIN_V4_STATEVIEW"
+safe_hooks   = []                              # allow-list of vetted hook addresses (else 0x0 only)
+[chains.native_price_pools]
+"0xUSDC" = "0xWETH_USDC_V4_POOLID"
+
+[[chains]]
+name          = "ink"
+chain_id      = 57073
+enabled       = true
+ws_url        = "wss://YOUR_INK_WS"
+http_url      = "https://YOUR_INK_ARCHIVE"
+block_time_ms = 1000
+gas_model     = "op_stack"
+min_profit_bps        = 5.0
+base_gas              = 150000
+per_hop_gas           = 100000
+gas_safety_multiplier = 1.5
+reconcile_interval_ms = 2000
+hubs        = ["0xWETH", "0xUSDC"]
+numeraires  = ["0xWETH", "0xUSDC"]
+pool_registry = "config/pools/ink.toml"
+[chains.native_price_pools]
+"0xUSDC" = "0xWETH_USDC_POOL"
+
+# =============================================================================
+# Cross-chain detection (optional). Canonical assets + their per-chain
+# representations, real bridge economics, and the (asset, numeraire) pairs to
+# scan. Bridge params are config (sourced from bridge docs, kept current) — they
+# are not on-chain-derivable. See docs/ENGINE_CONTRACT.md §8.
+# =============================================================================
+[cross_chain]
+enabled = true
+pairs   = [["WETH", "USDC"]]
+
+[[cross_chain.assets]]
+symbol = "WETH"
+representations = [
+  { chain_id = 42161, address = "0xWETH_ARB",  decimals = 18, native = true, bridgeable = true },
+  { chain_id = 8453,  address = "0xWETH_BASE", decimals = 18, native = true, bridgeable = true },
+  { chain_id = 10,    address = "0xWETH_OP",   decimals = 18, native = true, bridgeable = true },
+  { chain_id = 130,   address = "0xWETH_UNI",  decimals = 18, native = true, bridgeable = true },
+  { chain_id = 57073, address = "0xWETH_INK",  decimals = 18, native = true, bridgeable = true },
+]
+
+[[cross_chain.assets]]
+symbol = "USDC"
+representations = [
+  { chain_id = 42161, address = "0xUSDC_ARB",  decimals = 6, native = true, bridgeable = true },
+  { chain_id = 8453,  address = "0xUSDC_BASE", decimals = 6, native = true, bridgeable = true },
+  { chain_id = 10,    address = "0xUSDC_OP",   decimals = 6, native = true, bridgeable = true },
+]
+
+# One entry per supported directed bridge route. fee_bps + fixed_fee + settle
+# time drive the engine's cross-chain net-profit and risk model.
+[[cross_chain.bridges]]
+symbol = "WETH"
+from_chain = 42161
+to_chain   = 8453
+fee_bps    = 10.0
+fixed_fee  = 0
+settle_seconds = 600

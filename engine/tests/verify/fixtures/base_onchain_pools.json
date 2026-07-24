@@ -1,0 +1,93 @@
+{
+  "_README": "REAL on-chain pool state captured from live Base (chain 8453) at a pinned block via Blockscout MCP raw eth_call (/json-rpc), decoded from hex for exact integers. Each pool carries independent-oracle probes: the amount_out an on-chain contract (UniswapV2Router02.getAmountsOut / UniswapV3 QuoterV2.quoteExactInputSingle) returned for a given input at the SAME block. tests/verify/test_onchain_amm.py reconstructs the PoolState and asserts the engine's quote.amount_out reproduces each oracle value BIT-FOR-BIT. This is the docs/DATA_INTEGRITY \u00a73 'two independent sources agree' bar, frozen for deterministic offline replay. Do NOT edit values by hand; re-capture from chain if refreshing. NB: Blockscout read_contract returns large uints as JSON floats (lossy > 2**53); these values come from raw eth_call hex, not that path.",
+  "captured_utc": "2026-07-14",
+  "chain_id": 8453,
+  "chain_name": "Base",
+  "block_number": 48609800,
+  "block_hash": "0x561c949b96241358857c5594025805f60d9cfe7cbf3b02fa8032b07f3d3c7760",
+  "block_timestamp": 1784008947,
+  "pools": [
+    {
+      "label": "Uniswap V2 WETH/USDC (Base)",
+      "kind": "v2",
+      "address": "0x88A43bbDF9D098eEC7bCEda4e2494615dfD9bB9C",
+      "fee_pips": 3000,
+      "oracle": "UniswapV2Router02.getAmountsOut @ 0x4752ba5DBc23f44D87826276BF6Fd6b1C372aD24",
+      "token0": {
+        "address": "0x4200000000000000000000000000000000000006",
+        "decimals": 18,
+        "symbol": "WETH"
+      },
+      "token1": {
+        "address": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+        "decimals": 6,
+        "symbol": "USDC"
+      },
+      "state": {
+        "reserve0": 323763158617284218593,
+        "reserve1": 578127617482
+      },
+      "probes": [
+        {
+          "token_in": "token0",
+          "amount_in": 1000000000000000000,
+          "amount_out": 1774827420
+        },
+        {
+          "token_in": "token0",
+          "amount_in": 10000000000000000000,
+          "amount_out": 17271080794
+        },
+        {
+          "token_in": "token0",
+          "amount_in": 50000000000000000000,
+          "amount_out": 77137705315
+        },
+        {
+          "token_in": "token1",
+          "amount_in": 1000000000,
+          "amount_out": 557378946425922201
+        },
+        {
+          "token_in": "token1",
+          "amount_in": 100000000000,
+          "amount_out": 47621528072364835590
+        }
+      ]
+    },
+    {
+      "label": "Uniswap V3 WETH/USDC 0.05% (Base)",
+      "kind": "v3",
+      "address": "0xd0b53D9277642d899DF5C87A3966A349A798F224",
+      "fee_pips": 500,
+      "oracle": "UniswapV3 QuoterV2.quoteExactInputSingle @ 0x3d4e44Eb1374240CE5F1B871ab261CD16335B76a",
+      "token0": {
+        "address": "0x4200000000000000000000000000000000000006",
+        "decimals": 18,
+        "symbol": "WETH"
+      },
+      "token1": {
+        "address": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+        "decimals": 6,
+        "symbol": "USDC"
+      },
+      "state": {
+        "sqrt_price_x96": 3347659315599882991570925,
+        "tick": -201447,
+        "liquidity": 1281434808162523082
+      },
+      "probes": [
+        {
+          "token_in": "token0",
+          "amount_in": 10000000000000000,
+          "amount_out": 17844566
+        },
+        {
+          "token_in": "token1",
+          "amount_in": 100000000,
+          "amount_out": 55983320720910745
+        }
+      ]
+    }
+  ]
+}

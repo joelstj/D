@@ -1,0 +1,22 @@
+{
+  "_note": "Recorded real gas reads at pinned blocks: eth_gasPrice + OP-Stack GasPriceOracle.getL1Fee(sample) on Base; eth_gasPrice on Arbitrum (L1 folded into gas -> l1_data_fee 0).",
+  "op_gas_price_oracle": "0x420000000000000000000000000000000000000F",
+  "chains": {
+    "base": {
+      "chain_id": 8453,
+      "gas_model": "op_stack",
+      "block": 48683445,
+      "gas_price_wei": 6000000,
+      "sample_tx": "02f8720182031e8459682f008503b9aca0008252089442000000000000000000000000000000000000068806f05b59d3b2000080c0",
+      "getl1fee_calldata": "0x49948e0e0000000000000000000000000000000000000000000000000000000000000020000000000000000000000000000000000000000000000000000000000000003502f8720182031e8459682f008503b9aca0008252089442000000000000000000000000000000000000068806f05b59d3b2000080c00000000000000000000000",
+      "l1_data_fee_wei": 567920048
+    },
+    "arbitrum": {
+      "chain_id": 42161,
+      "gas_model": "arbitrum",
+      "block": 484261880,
+      "gas_price_wei": 20000000,
+      "l1_data_fee_wei": 0
+    }
+  }
+}

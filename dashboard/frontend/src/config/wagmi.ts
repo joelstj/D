@@ -1,0 +1,41 @@
+import { http, createConfig } from "wagmi";
+import { arbitrum, base, optimism, polygon } from "wagmi/chains";
+import { coinbaseWallet, injected } from "wagmi/connectors";
+
+/**
+ * wagmi v2 configuration. `injected()` covers MetaMask (and any EIP-1193
+ * browser wallet) with no project id required; Coinbase Wallet is offered as a
+ * second option. Chains match the L2s the engine scans.
+ */
+export const wagmiConfig = createConfig({
+  chains: [base, arbitrum, optimism, polygon],
+  connectors: [injected(), coinbaseWallet({ appName: "L2 Arbitrage GUI" })],
+  transports: {
+    [base.id]: http(),
+    [arbitrum.id]: http(),
+    [optimism.id]: http(),
+    [polygon.id]: http(),
+  },
+  ssr: false,
+});
+
+/** Map an EVM chain id to our internal network key. */
+export const CHAIN_ID_TO_KEY: Record<number, string> = {
+  [base.id]: "base",
+  [arbitrum.id]: "arbitrum",
+  [optimism.id]: "optimism",
+  [polygon.id]: "polygon",
+};
+
+export const KEY_TO_CHAIN_ID: Record<string, number> = {
+  base: base.id,
+  arbitrum: arbitrum.id,
+  optimism: optimism.id,
+  polygon: polygon.id,
+};
+
+declare module "wagmi" {
+  interface Register {
+    config: typeof wagmiConfig;
+  }
+}

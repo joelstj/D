@@ -1,0 +1,42 @@
+{
+  "$schema": "./schema.json",
+  "name": "Arbitrum One",
+  "chainId": 42161,
+  "stack": "arbitrum-nitro",
+  "gasModel": "arbitrum-nitro",
+  "cancun": null,
+  "blockTimeSeconds": 0.25,
+  "canonicalBridge": { "address": "0x0000000000000000000000000000000000000000", "_verify": true, "_note": "L1 gateway/bridge — Phase 9 rebalancing only" },
+  "constants": {
+    "permit2": { "address": "0x000000000022D473030F116dDEE9F6B43aC78BA3", "_verify": false, "_source": "Uniswap Permit2 canonical deployment (identical on all chains)" },
+    "multicall3": { "address": "0xcA11bde05977b3631167028862bE2a173976CA11", "_verify": false, "_source": "Multicall3 canonical deployment (identical on most chains)" }
+  },
+  "precompiles": {
+    "arbGasInfo": { "address": "0x000000000000000000000000000000000000006C", "_verify": false, "_source": "Arbitrum Nitro precompile (ArbGasInfo) — L1 fee / gas pricing" },
+    "arbSys": { "address": "0x0000000000000000000000000000000000000064", "_verify": false, "_source": "Arbitrum Nitro precompile (ArbSys) — L2 block/tx context" }
+  },
+  "flashProviders": {
+    "aaveV3": { "available": null, "pool": { "address": "0x0000000000000000000000000000000000000000", "_verify": true }, "_note": "Aave V3 Pool — verify address on Arbitrum One" },
+    "balancerV2": { "available": null, "vault": { "address": "0xBA12222222228d8Ba445958a75a0704d566BF2C8", "_verify": false, "_source": "Balancer V2 Vault canonical (constant where deployed)" }, "_note": "confirm Balancer V2 is live on Arbitrum" },
+    "uniswapV3Flash": { "available": null, "_note": "uses dexes.uniswapV3" },
+    "uniswapV4Flash": { "available": null, "_note": "uses dexes.uniswapV4" }
+  },
+  "dexes": {
+    "uniswapV3": { "family": "uniswap-v3", "available": null, "factory": { "address": "0x0000000000000000000000000000000000000000", "_verify": true }, "swapRouter": { "address": "0x0000000000000000000000000000000000000000", "_verify": true }, "quoterV2": { "address": "0x0000000000000000000000000000000000000000", "_verify": true }, "feeTiers": [100, 500, 3000, 10000] },
+    "uniswapV4": { "family": "uniswap-v4", "available": null, "poolManager": { "address": "0x0000000000000000000000000000000000000000", "_verify": true }, "universalRouter": { "address": "0x0000000000000000000000000000000000000000", "_verify": true } },
+    "camelotV2": { "family": "uniswap-v2", "available": null, "router": { "address": "0x0000000000000000000000000000000000000000", "_verify": true }, "factory": { "address": "0x0000000000000000000000000000000000000000", "_verify": true }, "_note": "Camelot V2 (UniV2-style with referral fees) — verify" },
+    "camelotV3": { "family": "algebra", "available": null, "router": { "address": "0x0000000000000000000000000000000000000000", "_verify": true }, "factory": { "address": "0x0000000000000000000000000000000000000000", "_verify": true }, "_note": "Camelot V3 uses Algebra dynamic fees — read fee from pool at quote time" },
+    "traderJoeLB": { "family": "traderjoe-lb", "available": null, "router": { "address": "0x0000000000000000000000000000000000000000", "_verify": true }, "factory": { "address": "0x0000000000000000000000000000000000000000", "_verify": true }, "_note": "Liquidity Book (bins) — verify" },
+    "curve": { "family": "curve", "available": null, "_note": "enumerate relevant Curve pools individually; index coins by pool index not address" }
+  },
+  "tokens": {
+    "WETH": { "address": "0x0000000000000000000000000000000000000000", "decimals": 18, "_verify": true, "_note": "Arbitrum WETH9 is NOT the OP predeploy 0x42..06 — verify the Arbitrum WETH address" },
+    "USDC": { "address": "0x0000000000000000000000000000000000000000", "decimals": 6, "_verify": true, "_note": "native USDC (Circle) — verify" },
+    "USDCe": { "address": "0x0000000000000000000000000000000000000000", "decimals": 6, "_verify": true, "_note": "bridged USDC.e — verify" },
+    "USDT": { "address": "0x0000000000000000000000000000000000000000", "decimals": 6, "_verify": true },
+    "ARB": { "address": "0x0000000000000000000000000000000000000000", "decimals": 18, "_verify": true }
+  },
+  "_sources": {
+    "note": "Arbitrum Nitro — different gas model (ArbGasInfo) and its own WETH (NOT 0x42..06). Verify all addresses. Do not invent addresses."
+  }
+}

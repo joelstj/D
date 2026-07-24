@@ -1,0 +1,12 @@
+**/node_modules
+**/dist
+**/.turbo
+**/coverage
+.git
+.github
+ralph/logs
+ralph/.state
+**/*.log
+.env
+.env.*
+!.env.example

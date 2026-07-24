@@ -1,0 +1,2 @@
+# Invariant tests: profit invariant, no-token-loss, reentrancy, sizing monotonicity.
+# See docs/specs/08-security.md (P2-T7, P6-T6, P10-T1).
