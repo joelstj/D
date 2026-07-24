@@ -20,6 +20,10 @@ from .paths import Layout
 
 ENGINE_PORT = 8080
 INGEST_WS_PORT = 9001
+# The ingestion observability router (GET /health + /metrics) is bound to
+# `metrics_bind` in app/pipeline.rs, i.e. :9100 in config.example.toml — so the
+# health probe targets 9100, not the (currently unserved) health_bind :9090.
+INGEST_METRICS_PORT = 9100
 DASHBOARD_PORT = 8787
 
 # Substrings that mark an unfilled example config (placeholders, not real state).
@@ -64,6 +68,21 @@ def ingestion_cmd(lo: Layout) -> list[str]:
 
 def dashboard_cmd(lo: Layout) -> list[str]:
     return ["node", str(lo.dashboard_backend_entry)]
+
+
+def health_url(name: str, port: int) -> str | None:
+    """The liveness endpoint the health monitor probes for a service.
+
+    Returns ``None`` for a service with no HTTP health surface, in which case the
+    monitor falls back to bare process liveness.
+    """
+    if name == "engine":
+        return f"http://127.0.0.1:{ENGINE_PORT}/health"
+    if name == "ingestion":
+        return f"http://127.0.0.1:{INGEST_METRICS_PORT}/health"
+    if name == "dashboard":
+        return f"http://127.0.0.1:{port}/api/health"
+    return None
 
 
 def dashboard_env(lo: Layout, *, live: bool, port: int) -> dict[str, str]:

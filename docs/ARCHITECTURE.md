@@ -106,9 +106,16 @@ Two equivalent ways to run the wired stack:
 
 - **`launcher/`** (primary, smoke-tested): `python -m l2arb run` starts the
   services in order (engine → ingestion → dashboard), health-gates each, serves
-  the built UI on one origin (`SERVE_STATIC_DIR`), opens the browser, and
-  supervises — a clean Ctrl-C stops everything. Paper mode needs only the
-  dashboard; `--live` runs all three.
+  the built UI on one origin (`SERVE_STATIC_DIR`), opens the browser, and then
+  hands off to a **continuous health monitor** — a live terminal HUD that probes
+  each service's process *and* its `/health` endpoint every tick, self-diagnoses
+  faults (exit code + last log lines, or "up but unresponsive"), and **self-heals**
+  by restarting a crashed or wedged process with exponential backoff and a bounded
+  restart budget. A service it can't recover is isolated as `failed` while the rest
+  keep running; a clean Ctrl-C stops everything. Recovery restarts infrastructure
+  only — it never signs, submits, or re-broadcasts anything (execution stays
+  paper-by-default and human-gated). Paper mode needs only the dashboard; `--live`
+  runs all three.
 - **`docker-compose.yml`** (container alternative): four services on one network
   (`engine`, `ingestion`, `backend`, `frontend`), pre-wired with
   `DATA_SOURCE=external` and `INGEST_FEED_URL=ws://ingestion:9001`.
@@ -121,7 +128,9 @@ Two equivalent ways to run the wired stack:
   refactor.
 - **One artifact, isolated failure domains.** The launcher (and the `.exe` it
   becomes) is a single entry point, but each service is its own supervised
-  process — one dying doesn't panic the others.
+  process — one dying doesn't panic the others; the health monitor restarts it
+  (backoff + bounded budget) and, if it can't be recovered, isolates it as
+  `failed` while the rest keep running.
 - **Safety preserved across the seam.** Detection-only engine, paper-by-default
   execution, and "real on-chain data only" survive the merge unchanged; the
   dashboard's mapper is written to never fabricate data.

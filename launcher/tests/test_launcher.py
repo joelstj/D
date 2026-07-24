@@ -78,6 +78,13 @@ class ConfigTest(unittest.TestCase):
         self.assertEqual(env["DATA_SOURCE"], "simulated")
         self.assertEqual(env["PORT"], "9000")
 
+    def test_health_urls_target_the_served_ports(self):
+        # Ingestion's /health is served on metrics_bind (:9100), not health_bind.
+        self.assertEqual(config.health_url("engine", 8787), "http://127.0.0.1:8080/health")
+        self.assertEqual(config.health_url("ingestion", 8787), "http://127.0.0.1:9100/health")
+        self.assertEqual(config.health_url("dashboard", 9000), "http://127.0.0.1:9000/api/health")
+        self.assertIsNone(config.health_url("contracts", 8787))
+
 
 class PrereqParsingTest(unittest.TestCase):
     def test_version_regex(self):

@@ -59,6 +59,11 @@ python3 -m l2arb install     # build engine venv + dashboard + ingestion binary
 python3 -m l2arb run --live  # engine + ingestion + dashboard on real data
 ```
 
+Once running, `l2arb run` shows a live **health HUD** and continuously
+self-heals: it probes each service's process + `/health`, diagnoses faults, and
+restarts a crashed or wedged one (with backoff) — infrastructure only, never the
+human-gated execution path. Ctrl-C stops the stack cleanly.
+
 ### Option B — the Windows `.exe`
 
 A single **`L2ArbBot.exe`** that installs everything on first run, then just
@@ -82,7 +87,7 @@ docker compose up --build
 | [`ingestion/`](ingestion/) | Rust `l2-ingest` data feed (5 L2s → engine → ws) | `cargo test --workspace` |
 | [`contracts/`](contracts/) | Solidity flash-loan executor (profit-or-revert) | `bash scripts/verify.sh` |
 | [`dashboard/`](dashboard/) | Node backend + React UI (REST + WebSocket) | `pnpm verify` |
-| [`launcher/`](launcher/) | Stdlib-Python installer / launcher / supervisor | `python3 -m unittest discover -s launcher/tests` |
+| [`launcher/`](launcher/) | Stdlib-Python installer / launcher / self-healing supervisor (health HUD) | `python3 -m unittest discover -s launcher/tests` |
 | [`scripts/`](scripts/) | `.exe` build (PyInstaller spec + drivers) | — |
 | [`docs/`](docs/) | Architecture + install guides | — |
 

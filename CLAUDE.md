@@ -86,8 +86,12 @@ The components already spoke a common contract; the merge makes them one product
   `contracts/FlashLoanArbitrage.sol::executeArbitrage(ArbParams)` and stays
   human-authorised (see invariant 3).
 - **Orchestration:** `launcher/` starts engine + ingestion + dashboard, serves the
-  UI single-origin (`SERVE_STATIC_DIR`), health-gates startup, and opens the
-  browser. `docker-compose.yml` is the container alternative.
+  UI single-origin (`SERVE_STATIC_DIR`), health-gates startup, opens the browser,
+  and then runs a continuous **health monitor** (a live HUD, `launcher/l2arb/health.py`)
+  that probes each service's process + `/health`, self-diagnoses faults, and
+  self-heals by restarting a crashed/wedged process with backoff and a bounded
+  restart budget — infra recovery only, never touching the human-gated execution
+  path. `docker-compose.yml` is the container alternative.
 
 The mapper is **honest about units**: engine amounts are numeraire base units;
 they read as USD only when the numeraire is a stablecoin — no ETH price is
