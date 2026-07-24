@@ -7,7 +7,8 @@
 #   curl -L https://foundry.paradigm.xyz | bash && foundryup
 #   forge install foundry-rs/forge-std OpenZeppelin/openzeppelin-contracts@v5.0.2
 #   forge build
-#   forge test --match-path 'test/foundry/*' --fork-url "$ARBITRUM_RPC_URL" -vvv
+#   ARBITRUM_RPC_URL="https://arb1.arbitrum.io/rpc" \
+#     forge test --match-path 'test/foundry/*' --fork-url "$ARBITRUM_RPC_URL" -vvv
 
 [profile.default]
 src = "contracts"
@@ -17,8 +18,21 @@ libs = ["lib", "node_modules"]
 solc_version = "0.8.20"
 optimizer = true
 optimizer_runs = 1000000
+# evm_version sets the REVM *execution* spec for tests (and requests the solc
+# compile target). solc 0.8.20 caps its target at Shanghai — cancun support
+# landed in 0.8.24 — so forge clamps the compiler to Shanghai automatically while
+# still executing at Cancun. Cancun execution is required for mainnet-fork tests:
+#   - Paris rejects PUSH0 (Shanghai) — the live Aave V3 Pool implementation emits
+#     it, so even a premium read reverts with `NotActivated` under Paris.
+#   - Shanghai runs PUSH0 but rejects TSTORE/TLOAD (Cancun) — Aave V3.3's flash
+#     loan uses EIP-1153 transient storage for its reentrancy guard, so a real
+#     Aave `flashLoanSimple` reverts with `NotActivated` under Shanghai.
+#   - Cancun runs both, so the full fork suite (Aave *and* Balancer flash loans)
+#     executes against real on-chain state. All five target L2s run Cancun today.
+# This mirrors the Hardhat config: Paris compile target + `hardfork: "cancun"`
+# execution.
 via_ir = true
-evm_version = "paris"
+evm_version = "cancun"
 fs_permissions = [{ access = "read", path = "./" }]
 
 # Resolve the OZ import path whether OZ comes from npm (node_modules) or

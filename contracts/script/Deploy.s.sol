@@ -21,10 +21,7 @@ contract Deploy is Script {
         // Default admin to the broadcasting key if ADMIN is unset.
         address admin = vm.envOr("ADMIN", msg.sender);
 
-        require(
-            aavePool != address(0) || balancerVault != address(0),
-            "Set AAVE_POOL and/or BALANCER_VAULT"
-        );
+        require(aavePool != address(0) || balancerVault != address(0), "Set AAVE_POOL and/or BALANCER_VAULT");
 
         vm.startBroadcast();
         arb = new FlashLoanArbitrage(aavePool, balancerVault, admin);

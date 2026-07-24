@@ -71,12 +71,11 @@ library OptimalArbitrage {
 
     /// @notice Constant-product output for `amountIn`, with a bps fee on input.
     /// @dev Mirrors UniswapV2Library.getAmountOut.
-    function getAmountOut(
-        uint256 amountIn,
-        uint256 reserveIn,
-        uint256 reserveOut,
-        uint256 feeBps
-    ) internal pure returns (uint256) {
+    function getAmountOut(uint256 amountIn, uint256 reserveIn, uint256 reserveOut, uint256 feeBps)
+        internal
+        pure
+        returns (uint256)
+    {
         if (amountIn == 0 || reserveIn == 0 || reserveOut == 0 || feeBps >= BPS) return 0;
         uint256 amountInWithFee = amountIn * (BPS - feeBps);
         uint256 numerator = amountInWithFee * reserveOut;

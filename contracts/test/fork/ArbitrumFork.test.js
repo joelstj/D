@@ -22,13 +22,13 @@ const { DexType, Provider, MAX_DEADLINE, v2Step } = require("../helpers");
  * infrastructure — not that risk-free profit is lying around on mainnet.
  *
  * NOTE on the flash provider: the executable arbitrage legs below borrow from
- * Balancer V2 because Aave V3's Pool (a proxy that delegatecalls external logic
- * libraries) does not execute inside a Hardhat/EDR mainnet fork served by a
- * public RPC — a bare, correct Aave receiver reverts with empty data there too,
- * so this is a fork-tooling limitation, not a contract bug. Aave works on real
- * chains; the Aave callback path is fully covered by the offline unit tests
- * (MockAavePool), and the live Aave Pool is still read below to prove real
- * integration. See docs/DEPLOYMENT.md for details.
+ * BOTH Balancer V2 and Aave V3, against the live pools. Aave requires the fork
+ * to run under the Cancun EVM spec (hardhat.config.js `hardfork: "cancun"`):
+ * Aave V3.3's flash-loan reentrancy guard uses EIP-1153 transient storage, which
+ * reverts with NotActivated under older specs. This is an execution-spec detail,
+ * not a contract bug (an earlier revision mistook it for a fork-tooling limit).
+ * The Aave callback path is also covered offline via MockAavePool.
+ * See docs/DEPLOYMENT.md for the full spec ladder.
  */
 
 const AAVE_POOL = "0x794a61358D6845594F94dc1DB02A252b5b4814aD";
@@ -180,6 +180,49 @@ describe("FlashLoanArbitrage — Arbitrum mainnet fork (live contracts)", functi
     console.log(`      captured profit: ${ethers.formatEther(profit)} WETH on a ${ethers.formatEther(borrow)} WETH loan`);
     expect(profit).to.be.gt(minProfit);
     // The engine must never retain the borrowed asset after settling.
+    expect(await weth.balanceOf(await arb.getAddress())).to.equal(0n);
+  });
+
+  it("executes the same arb borrowing from live Aave V3 (net of premium)", async () => {
+    const { arb, bot, receiver, manipulator, weth, pair } = await loadFixture(fixture);
+
+    // Same manufactured dislocation, but the flash loan comes from the live Aave
+    // V3 Pool. Aave V3.3's flash-loan reentrancy guard uses EIP-1153 transient
+    // storage, so this only executes under the Cancun hardfork (see
+    // hardhat.config.js). Profit is net of Aave's ~5 bps premium.
+    const [r0, r1] = await pair.getReserves();
+    const token0 = await pair.token0();
+    const wethReserve = token0.toLowerCase() === WETH.toLowerCase() ? r0 : r1;
+
+    const dump = (wethReserve * 50n) / 100n;
+    await weth.connect(manipulator).deposit({ value: dump + ethers.parseEther("1") });
+    await weth.connect(manipulator).approve(SUSHI_ROUTER, ethers.MaxUint256);
+    const sushi = await ethers.getContractAt(
+      ["function swapExactTokensForTokens(uint256,uint256,address[],address,uint256) returns (uint256[])"],
+      SUSHI_ROUTER
+    );
+    await sushi
+      .connect(manipulator)
+      .swapExactTokensForTokens(dump, 0, [WETH, USDCe], manipulator.address, MAX_DEADLINE);
+
+    const borrow = (wethReserve * 2n) / 100n;
+    const minProfit = ethers.parseEther("0.001");
+    const params = {
+      provider: Provider.AAVE_V3,
+      asset: WETH,
+      amount: borrow,
+      minProfit,
+      profitReceiver: receiver.address,
+      deadline: MAX_DEADLINE,
+      steps: [v3SingleStep(UNIV3_ROUTER02, WETH, USDCe, 500), v2Step(SUSHI_ROUTER, USDCe, WETH)],
+    };
+
+    const before = await weth.balanceOf(receiver.address);
+    await expect(arb.connect(bot).executeArbitrage(params)).to.emit(arb, "ArbitrageExecuted");
+    const profit = (await weth.balanceOf(receiver.address)) - before;
+
+    console.log(`      captured profit (Aave): ${ethers.formatEther(profit)} WETH on a ${ethers.formatEther(borrow)} WETH loan`);
+    expect(profit).to.be.gt(minProfit);
     expect(await weth.balanceOf(await arb.getAddress())).to.equal(0n);
   });
 });

@@ -129,15 +129,14 @@ contract CrossChainArbitrageExecutor is AccessControl, ReentrancyGuard, Pausable
     /// @param inputAmount The amount to feed in (0 => use full held balance of inputToken).
     /// @param minOut Revert unless at least this much of the final token is produced.
     /// @dev Non-atomic across chains — see the contract-level notice.
-    function executeDestinationLeg(
-        SwapStep[] calldata steps,
-        address inputToken,
-        uint256 inputAmount,
-        uint256 minOut
-    ) external nonReentrant whenNotPaused onlyRole(EXECUTOR_ROLE) {
+    function executeDestinationLeg(SwapStep[] calldata steps, address inputToken, uint256 inputAmount, uint256 minOut)
+        external
+        nonReentrant
+        whenNotPaused
+        onlyRole(EXECUTOR_ROLE)
+    {
         if (steps.length == 0) revert EmptyRoute();
-        uint256 amountIn =
-            inputAmount == 0 ? DexRouter.balanceOf(inputToken, address(this)) : inputAmount;
+        uint256 amountIn = inputAmount == 0 ? DexRouter.balanceOf(inputToken, address(this)) : inputAmount;
 
         address outputToken = steps[steps.length - 1].tokenOut;
         uint256 outBefore = DexRouter.balanceOf(outputToken, address(this));
@@ -181,10 +180,7 @@ contract CrossChainArbitrageExecutor is AccessControl, ReentrancyGuard, Pausable
     }
 
     /// @notice Sweeps an ERC20 balance to `to` (inventory or stuck funds).
-    function rescueTokens(address token, address to, uint256 amount)
-        external
-        onlyRole(GUARDIAN_ROLE)
-    {
+    function rescueTokens(address token, address to, uint256 amount) external onlyRole(GUARDIAN_ROLE) {
         uint256 bal = IERC20(token).balanceOf(address(this));
         uint256 sweep = amount == 0 ? bal : amount;
         if (sweep == 0 || sweep > bal) revert NothingToRescue();

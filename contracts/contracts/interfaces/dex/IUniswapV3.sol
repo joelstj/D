@@ -19,10 +19,7 @@ interface ISwapRouter02 {
     }
 
     /// @notice Swaps `amountIn` of one token for as much as possible of another single-hop pool.
-    function exactInputSingle(ExactInputSingleParams calldata params)
-        external
-        payable
-        returns (uint256 amountOut);
+    function exactInputSingle(ExactInputSingleParams calldata params) external payable returns (uint256 amountOut);
 
     struct ExactInputParams {
         bytes path;
@@ -32,8 +29,5 @@ interface ISwapRouter02 {
     }
 
     /// @notice Swaps `amountIn` of the first token in `path` for as much as possible of the last token.
-    function exactInput(ExactInputParams calldata params)
-        external
-        payable
-        returns (uint256 amountOut);
+    function exactInput(ExactInputParams calldata params) external payable returns (uint256 amountOut);
 }

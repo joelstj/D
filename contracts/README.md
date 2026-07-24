@@ -34,7 +34,7 @@ Compiled with **solc 0.8.20** (zero warnings) and tested with Hardhat:
 | Suite | What it proves | Result |
 | --- | --- | --- |
 | `test/*.test.js` (offline) | Full mechanics on mock tokens/pools/providers: 2-hop & 3-hop arbs via Aave and Balancer, min-profit revert, access control, pause, griefer-callback rejection, optimal-sizing math | **24 passing** |
-| `test/fork/ArbitrumFork.test.js` (**live Arbitrum fork**) | A **real** atomic cross-DEX flash-loan arb against **live** Balancer V2 + Uniswap V3 + SushiSwap V2, plus a live Aave premium read and an atomic revert when no arb exists | **3 passing** |
+| `test/fork/ArbitrumFork.test.js` (**live Arbitrum fork**) | **Real** atomic cross-DEX flash-loan arbs against **live** Uniswap V3 + SushiSwap V2, borrowing from **both Balancer V2 and Aave V3**, plus a live Aave premium read and an atomic revert when no arb exists | **4 passing** |
 
 The live-fork test manufactures a price dislocation and then **captures it
 atomically**, e.g. a real run banked **`0.957 WETH` profit on a `0.82 WETH`
@@ -179,13 +179,11 @@ Stated plainly, because a senior engineer should:
 2. **Profitability is not guaranteed.** The contract enforces atomic
    profit-or-revert; it does not create opportunities. Efficient markets, gas,
    MEV competition and latency all bear on real PnL.
-3. **Aave V3 flash loans don't execute inside a Hardhat/EDR public-RPC fork**
-   (its proxy delegatecalls to logic libraries in a way the fork can't service —
-   a bare correct receiver fails identically). This is a **tooling** limitation,
-   not a contract bug: Aave works on real chains, its callback path is covered
-   by the offline unit tests, and the live-fork suite therefore borrows from
-   **Balancer** (which forks perfectly). See
-   [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md#a-note-on-aave-v3-on-forks).
+3. **Fork tests must run under the Cancun EVM spec.** Aave V3.3's flash-loan
+   guard uses EIP-1153 transient storage, so `flashLoanSimple` reverts with
+   `NotActivated` under older specs; both toolchains pin Cancun so the live-fork
+   suite borrows from **Aave V3 *and* Balancer V2**. See
+   [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md#a-note-on-aave-v3-on-forks--the-evm-hardfork-matters).
 4. **Fee-on-transfer and rebasing tokens are unsupported** — the balance-delta
    accounting would misprice them.
 5. **Addresses in `config/addresses.js` must be verified** against official docs

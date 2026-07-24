@@ -142,12 +142,7 @@ contract FlashLoanArbitrage is
     /// @dev Reverts (costing only gas) unless the route yields at least
     ///      `p.minProfit` in `p.asset` after repaying the loan. Simulate with
     ///      `eth_call` first; the InsufficientProfit error reports the shortfall.
-    function executeArbitrage(ArbParams calldata p)
-        external
-        nonReentrant
-        whenNotPaused
-        onlyRole(EXECUTOR_ROLE)
-    {
+    function executeArbitrage(ArbParams calldata p) external nonReentrant whenNotPaused onlyRole(EXECUTOR_ROLE) {
         if (block.timestamp > p.deadline) revert DeadlineExpired();
         uint256 nSteps = p.steps.length;
         if (nSteps < 2) revert InvalidRoute();
@@ -184,13 +179,11 @@ contract FlashLoanArbitrage is
     // --------------------------------------------------------------------- //
 
     /// @inheritdoc IAaveFlashLoanSimpleReceiver
-    function executeOperation(
-        address asset,
-        uint256 amount,
-        uint256 premium,
-        address initiator,
-        bytes calldata params
-    ) external override returns (bool) {
+    function executeOperation(address asset, uint256 amount, uint256 premium, address initiator, bytes calldata params)
+        external
+        override
+        returns (bool)
+    {
         if (msg.sender != AAVE_POOL) revert UnexpectedCaller(msg.sender);
         if (initiator != address(this)) revert UnexpectedInitiator(initiator);
         _consumeArmed();
@@ -233,15 +226,10 @@ contract FlashLoanArbitrage is
     /// @dev Runs the route, enforces min-profit, and forwards profit. Leaves
     ///      exactly `owed` (plus any pre-existing parked balance) in the
     ///      contract for the caller to repay.
-    function _settle(
-        address asset,
-        uint256 amount,
-        uint256 owed,
-        bytes calldata params,
-        FlashProvider provider
-    ) private {
-        (ArbParams memory p, uint256 preBalance, address executor) =
-            abi.decode(params, (ArbParams, uint256, address));
+    function _settle(address asset, uint256 amount, uint256 owed, bytes calldata params, FlashProvider provider)
+        private
+    {
+        (ArbParams memory p, uint256 preBalance, address executor) = abi.decode(params, (ArbParams, uint256, address));
         if (p.asset != asset || p.amount != amount) revert CallbackAssetMismatch();
 
         _runRoute(p.steps, amount);
@@ -258,9 +246,7 @@ contract FlashLoanArbitrage is
             IERC20(asset).safeTransfer(to, profit);
         }
 
-        emit ArbitrageExecuted(
-            asset, provider, p.profitReceiver, amount, owed, profit, p.steps.length
-        );
+        emit ArbitrageExecuted(asset, provider, p.profitReceiver, amount, owed, profit, p.steps.length);
     }
 
     /// @dev Feed-forward execution: the borrowed `amount` seeds hop 0, and each
@@ -364,10 +350,7 @@ contract FlashLoanArbitrage is
     /// @param token The token to sweep.
     /// @param to The recipient.
     /// @param amount The amount, or 0 to sweep the full balance.
-    function rescueTokens(address token, address to, uint256 amount)
-        external
-        onlyRole(GUARDIAN_ROLE)
-    {
+    function rescueTokens(address token, address to, uint256 amount) external onlyRole(GUARDIAN_ROLE) {
         uint256 bal = IERC20(token).balanceOf(address(this));
         uint256 sweep = amount == 0 ? bal : amount;
         if (sweep == 0 || sweep > bal) revert NothingToRescue();

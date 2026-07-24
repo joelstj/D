@@ -48,12 +48,12 @@ contract FlashLoanArbitrageFork is Test {
         return WETH.code.length != 0 && BALANCER_VAULT.code.length != 0;
     }
 
-    function testForkRealCrossDexArbitrage() public {
-        if (!_isArbitrumFork()) {
-            emit log("skipped: not an Arbitrum fork (pass --fork-url $ARBITRUM_RPC_URL)");
-            return;
-        }
+    uint256 internal constant MIN_PROFIT = 0.001 ether;
 
+    /// @dev Manufactures a live price dislocation on Sushi, then borrows via
+    ///      `provider` and captures it across Uni V3 -> Sushi V2. Returns the
+    ///      profit forwarded to `receiver`, and asserts the engine keeps nothing.
+    function _runManufacturedArb(FlashProvider provider) internal returns (uint256 profit) {
         // Live Sushi WETH reserve drives sizing.
         address pair = ISushiFactory(SUSHI_FACTORY).getPair(WETH, USDCe);
         (uint112 r0, uint112 r1,) = IUniswapV2Pair(pair).getReserves();
@@ -67,14 +67,10 @@ contract FlashLoanArbitrageFork is Test {
         address[] memory path = new address[](2);
         path[0] = WETH;
         path[1] = USDCe;
-        IUniswapV2Router(SUSHI_ROUTER).swapExactTokensForTokens(
-            dump, 0, path, address(this), block.timestamp
-        );
+        IUniswapV2Router(SUSHI_ROUTER).swapExactTokensForTokens(dump, 0, path, address(this), block.timestamp);
 
-        // 2) Capture it via a Balancer flash loan across Uni V3 then Sushi V2.
+        // 2) Capture it: borrow a modest slice, sell high on Uni V3, buy back cheap on Sushi.
         uint256 borrow = (wethReserve * 2) / 100;
-        uint256 minProfit = 0.001 ether;
-
         SwapStep[] memory steps = new SwapStep[](2);
         steps[0] = SwapStep({
             dexType: DexType.UNISWAP_V3_SINGLE,
@@ -102,10 +98,10 @@ contract FlashLoanArbitrageFork is Test {
         });
 
         ArbParams memory p = ArbParams({
-            provider: FlashProvider.BALANCER_V2,
+            provider: provider,
             asset: WETH,
             amount: borrow,
-            minProfit: minProfit,
+            minProfit: MIN_PROFIT,
             profitReceiver: receiver,
             deadline: type(uint256).max,
             steps: steps
@@ -113,11 +109,31 @@ contract FlashLoanArbitrageFork is Test {
 
         uint256 before = IWETH(WETH).balanceOf(receiver);
         arb.executeArbitrage(p);
-        uint256 profit = IWETH(WETH).balanceOf(receiver) - before;
-
-        console2.log("captured profit (wei):", profit);
-        assertGt(profit, minProfit, "arb did not clear min profit");
+        profit = IWETH(WETH).balanceOf(receiver) - before;
         assertEq(IWETH(WETH).balanceOf(address(arb)), 0, "engine retained the borrowed asset");
+    }
+
+    /// Balancer V2 flash loan (0-fee) — the atomic borrow -> cross-DEX -> repay path.
+    function testForkRealCrossDexArbitrage() public {
+        if (!_isArbitrumFork()) {
+            emit log("skipped: not an Arbitrum fork (set ARBITRUM_RPC_URL)");
+            return;
+        }
+        uint256 profit = _runManufacturedArb(FlashProvider.BALANCER_V2);
+        console2.log("Balancer captured profit (wei):", profit);
+        assertGt(profit, MIN_PROFIT, "arb did not clear min profit");
+    }
+
+    /// Aave V3 flash loan — same path, borrowing from the live Aave Pool. Its
+    /// flash-loan reentrancy guard uses EIP-1153 transient storage, so this only
+    /// executes under a Cancun EVM spec (see foundry.toml `evm_version`).
+    function testForkRealCrossDexArbitrageViaAave() public {
+        if (!_isArbitrumFork()) return;
+        uint256 profit = _runManufacturedArb(FlashProvider.AAVE_V3);
+        console2.log("Aave captured profit (wei):", profit);
+        // Aave charges a premium (~5 bps); profit is net of it since the receiver
+        // only ever sees post-repayment WETH.
+        assertGt(profit, MIN_PROFIT, "aave arb did not clear min profit");
     }
 
     function testForkReadsLiveAavePremium() public view {
