@@ -88,6 +88,14 @@ docker compose up --build
 
 Each component keeps its own README and `CLAUDE.md`/`AGENTS.md` for internals.
 
+**Integration smoke test.** `cd engine && uv run python ../scripts/e2e_smoke.py`
+wires all four seams together on live data — it reads real Arbitrum pool state,
+runs the engine's detection, streams the result through the ingestion WebSocket
+envelope into the dashboard's `ExternalProvider`, and exercises the REST/UI
+controls end to end (settings, one-click **paper** execute, and the
+`LiveExecutor` broadcast refusal). It skips cleanly when the dashboard isn't
+built or there's no outbound RPC.
+
 ## Safety
 
 - **Paper by default.** `EXECUTION_MODE=paper`, `autoExecute=false`; the live

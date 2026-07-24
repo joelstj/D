@@ -133,6 +133,15 @@ cd contracts && bash scripts/verify.sh               # fmt + build + test (needs
 python3 -m unittest discover -s launcher/tests
 ```
 
+**Cross-component integration smoke** (all four seams, on live data):
+```bash
+cd engine && uv run python ../scripts/e2e_smoke.py
+```
+Reads real Arbitrum pool state → engine `/detect` → WS envelope → dashboard
+`ExternalProvider` → REST/UI controls → paper execute, and asserts the
+`LiveExecutor` refuses to broadcast. Skips cleanly (exit 0) when the dashboard
+isn't built or there's no outbound Arbitrum RPC, so it's safe offline.
+
 **The `.exe`:** `python scripts/build_exe.py` (any OS, for testing) or
 `scripts/build_windows_exe.ps1` on Windows / the `build-windows-exe` CI workflow
 for the real `L2ArbBot.exe`. See `docs/INSTALL.md`.
