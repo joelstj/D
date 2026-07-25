@@ -19,8 +19,10 @@ from l2arb.api.schema import AssetSpec, ChainConfig, DetectRequest, opportunity_
 from l2arb.detect.cross_chain import BridgeQuote, StaticBridgeModel
 from l2arb.detect.profit import GasCostFn, GasModel, ProfitContext
 from l2arb.engine.engine import ArbitrageEngine
+from l2arb.engine.ranking import rank_opportunities
 from l2arb.model.canonical_asset import AssetRegistry, AssetRepresentation, CanonicalAsset
 from l2arb.model.token import TokenKey
+from l2arb.obs.latency import Stopwatch
 from l2arb.store.serde import pool_from_dict, token_from_dict
 
 __all__ = ["build_engine", "detect", "run_detection"]
@@ -87,12 +89,26 @@ def build_engine(request: DetectRequest) -> ArbitrageEngine:
 
 
 def detect(request: DetectRequest) -> dict[str, Any]:
-    """Run detection for an already-validated request and return the response."""
-    engine = build_engine(request)
-    opportunities = engine.compute(top_n=request.top_n, incremental=request.incremental)
+    """Run detection for an already-validated request and return the response.
+
+    The response carries an optional ``timing`` block (``build`` → ``detect`` →
+    ``rank`` → ``serialize``, milliseconds) for the latency-health-check pipeline.
+    It is pure instrumentation: measuring the stages never changes which
+    opportunities are found or their order.
+    """
+    sw = Stopwatch()
+    with sw.stage("build"):
+        engine = build_engine(request)
+    with sw.stage("detect"):
+        found = engine.detect_all(incremental=request.incremental)
+    with sw.stage("rank"):
+        opportunities = rank_opportunities(found, request.top_n)
+    with sw.stage("serialize"):
+        serialized = [opportunity_to_dict(opp) for opp in opportunities]
     return {
         "count": len(opportunities),
-        "opportunities": [opportunity_to_dict(opp) for opp in opportunities],
+        "opportunities": serialized,
+        "timing": sw.to_dict(),
     }
 
 
