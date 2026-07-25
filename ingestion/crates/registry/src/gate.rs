@@ -9,8 +9,8 @@
 use crate::abi;
 use crate::error::{GateError, RejectReason};
 use crate::schema::{PoolEntry, PoolRegistry, V2V3Entry, V4Entry, DYNAMIC_FEE_FLAG};
-use alloy_primitives::Address;
-use l2i_rpc::{BlockId, ChainProvider};
+use alloy_primitives::{Address, Bytes};
+use l2i_rpc::{BlockId, ChainProvider, PrefetchProvider};
 use std::collections::HashSet;
 
 /// Validated ERC-20 (or native) token metadata, read on-chain and cached.
@@ -95,16 +95,83 @@ pub async fn validate_pool<P: ChainProvider + ?Sized>(
     }
 }
 
+/// Add a `(to, calldata)` read to the batch, skipping exact duplicates so a token
+/// shared by many pools is fetched once.
+fn add_call(
+    calls: &mut Vec<(Address, Bytes)>,
+    seen: &mut HashSet<(Address, Vec<u8>)>,
+    to: Address,
+    data: Bytes,
+) {
+    if seen.insert((to, data.to_vec())) {
+        calls.push((to, data));
+    }
+}
+
+/// Queue an ERC-20's `decimals()`+`symbol()` reads (native ETH has neither).
+fn add_token_meta(
+    calls: &mut Vec<(Address, Bytes)>,
+    seen: &mut HashSet<(Address, Vec<u8>)>,
+    token: Address,
+) {
+    if token != NATIVE {
+        add_call(calls, seen, token, abi::decimals_calldata());
+        add_call(calls, seen, token, abi::symbol_calldata());
+    }
+}
+
 /// Validate a whole registry, logging every rejection loudly.
+///
+/// **Batched:** rather than one request per read per pool, this enumerates every
+/// read the per-pool gate will make — `eth_getCode` for each pool, and
+/// `token0`/`token1`/`fee`/`factory`/`decimals`/`symbol` `eth_call`s (deduped, so a
+/// token shared across pools is read once) — pre-fetches them all in a handful of
+/// batched round-trips (a single `eth_getCode` batch + chunked Multicall3
+/// `aggregate3`), and then runs the *identical* [`validate_pool`] logic against an
+/// offline [`PrefetchProvider`]. Same accept/reject decisions and reasons as the
+/// per-call path (Phase 2 is byte-for-byte the same code), at O(1) requests instead
+/// of O(pools) — so booting five chains no longer risks tripping RPC rate limits.
 pub async fn validate_registry<P: ChainProvider + ?Sized>(
     provider: &P,
     registry: &PoolRegistry,
     block: BlockId,
     policy: &GatePolicy,
 ) -> GateOutcome {
+    // Phase 1 — enumerate every read the per-pool gate needs (deduped).
+    let mut code_addrs: Vec<Address> = Vec::new();
+    let mut calls: Vec<(Address, Bytes)> = Vec::new();
+    let mut seen: HashSet<(Address, Vec<u8>)> = HashSet::new();
+    for e in &registry.pools {
+        match e {
+            PoolEntry::V2(x) | PoolEntry::V3(x) => {
+                if !code_addrs.contains(&x.address) {
+                    code_addrs.push(x.address);
+                }
+                add_call(&mut calls, &mut seen, x.address, abi::token0_calldata());
+                add_call(&mut calls, &mut seen, x.address, abi::token1_calldata());
+                if matches!(e, PoolEntry::V3(_)) {
+                    add_call(&mut calls, &mut seen, x.address, abi::fee_calldata());
+                }
+                if policy.check_factory && x.factory.is_some() {
+                    add_call(&mut calls, &mut seen, x.address, abi::factory_calldata());
+                }
+                add_token_meta(&mut calls, &mut seen, x.token0);
+                add_token_meta(&mut calls, &mut seen, x.token1);
+            }
+            PoolEntry::V4(x) => {
+                add_token_meta(&mut calls, &mut seen, x.currency0);
+                add_token_meta(&mut calls, &mut seen, x.currency1);
+            }
+        }
+    }
+
+    // Fetch them all in a few batched round-trips, then serve them offline.
+    let prefetched = PrefetchProvider::fetch(provider, &code_addrs, &calls, block).await;
+
+    // Phase 2 — the exact per-pool gate, now hitting the in-memory prefetch (0 RPCs).
     let mut outcome = GateOutcome::default();
     for entry in &registry.pools {
-        match validate_pool(provider, entry.clone(), block, policy).await {
+        match validate_pool(&prefetched, entry.clone(), block, policy).await {
             Ok(v) => {
                 tracing::debug!(pool = %entry.identity(), "validated");
                 outcome.accepted.push(v);
