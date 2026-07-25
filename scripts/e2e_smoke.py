@@ -101,14 +101,29 @@ def run_feed(detect_path: str) -> None:
     import websockets
 
     payload = json.loads(Path(detect_path).read_text())
-    envelope = json.dumps(
-        {"schema_version": 1, "kind": "opportunities", "chain_blocks": {str(CHAIN_ID): 0}, "payload": payload}
-    )
+
+    def frame() -> str:
+        # Stamp a fresh single-host wall-clock origin per send so the dashboard can
+        # compute a real end-to-end latency (mirrors the Rust ingestion envelope).
+        return json.dumps(
+            {
+                "schema_version": 1,
+                "kind": "opportunities",
+                "chain_blocks": {str(CHAIN_ID): 0},
+                "latency": {
+                    "origin_wall_ms": int(time.time() * 1000),
+                    "component": "ingestion",
+                    "stages": [{"stage": "build", "ms": 0.5}, {"stage": "engine_roundtrip", "ms": 6.0}],
+                    "total_ms": 6.5,
+                },
+                "payload": payload,
+            }
+        )
 
     async def handler(ws):
         try:
             while True:
-                await ws.send(envelope)
+                await ws.send(frame())
                 await asyncio.sleep(1)
         except Exception:
             return
@@ -232,6 +247,13 @@ def main() -> int:
         else:
             bad(f"engine failed to detect on the dislocation fixture: {st} {resp}")
             return 1
+        # Latency-health: the /detect response carries the engine's per-stage timing.
+        timing = resp.get("timing") or {}
+        stages = [s.get("stage") for s in timing.get("stages", [])]
+        if timing.get("component") == "engine" and stages == ["build", "detect", "rank", "serialize"]:
+            ok(f"engine reports per-stage timing (total {timing.get('total_ms')}ms)")
+        else:
+            bad(f"engine /detect response missing the timing block: {timing}")
         detect_path.write_text(json.dumps(resp))
 
         # 4. Feed server (ingestion WS sink stand-in)
@@ -269,6 +291,21 @@ def main() -> int:
         else:
             bad("no opportunity surfaced from the external feed")
             return 1
+
+        # 6b. Latency-health: the dashboard aggregated the end-to-end trace and the
+        #     separate execution-readiness probe is read-only + unconfigured in paper.
+        _, lat = http_json(f"{api}/latency")
+        comps = {c.get("component") for c in lat.get("components", [])}
+        if lat.get("anchored") and lat.get("endToEnd") and {"engine", "dashboard"} <= comps:
+            e2e = lat["endToEnd"]
+            ok(f"pipeline latency aggregated end-to-end (p50 {e2e.get('p50')}ms across {comps})")
+        else:
+            bad(f"/api/latency did not aggregate the pipeline trace: {lat}")
+        _, xlat = http_json(f"{api}/health/execution")
+        if xlat.get("configured") is False and xlat.get("healthy") is False:
+            ok("execution-readiness probe is read-only + unconfigured in paper (no broadcast path)")
+        else:
+            bad(f"execution probe unexpected in paper mode: {xlat}")
 
         # 7. Runtime controls
         _, patched = http_json(f"{api}/settings", "PATCH", {"slippageBps": 75, "maxGasGwei": 30})
