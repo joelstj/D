@@ -117,10 +117,11 @@ exact.
 **The whole thing (recommended):**
 ```bash
 cd launcher
-python3 -m l2arb doctor      # check toolchains + install state
+python3 -m l2arb doctor      # check toolchains + install state (+ next-step guidance)
 python3 -m l2arb install     # build engine venv + dashboard + ingestion binary
 python3 -m l2arb run         # paper mode, opens the dashboard at :8787
-python3 -m l2arb run --live  # full stack (needs .l2arb/config.toml filled)
+python3 -m l2arb setup       # guided live setup — paste one Arbitrum RPC URL
+python3 -m l2arb run --live  # full stack (setup writes a live-ready .l2arb/config.toml)
 ```
 
 **Per-component gates (must stay green when you touch that component):**
