@@ -3,6 +3,7 @@
 Subcommands:
   doctor            report toolchains, install state, and config readiness
   install           build the components (``--paper-only`` for dashboard alone)
+  setup             guided setup for live on-chain data (Arbitrum quick-start)
   run               start the stack (``--live`` for the full on-chain path)
   auto  (default)   install-if-needed, then run and open the dashboard
 
@@ -16,7 +17,7 @@ from __future__ import annotations
 import argparse
 import sys
 
-from . import __version__, console, config, installer, payload, prereqs, run, state
+from . import __version__, console, config, installer, payload, prereqs, run, setup, state
 from .paths import IS_WINDOWS, is_frozen, layout
 
 
@@ -38,6 +39,13 @@ def build_parser() -> argparse.ArgumentParser:
     p_install.add_argument("--paper-only", action="store_true", help="build only the dashboard (no engine/ingestion)")
     p_install.add_argument("--skip-engine", action="store_true")
     p_install.add_argument("--skip-ingestion", action="store_true")
+
+    p_setup = sub.add_parser("setup", help="guided setup for live on-chain data (Arbitrum quick-start)")
+    p_setup.add_argument("--provider", help="RPC provider preset (alchemy | infura)")
+    p_setup.add_argument("--key", help="your RPC provider API key (used with --provider)")
+    p_setup.add_argument("--http", help="Arbitrum HTTPS RPC URL (skips the prompt)")
+    p_setup.add_argument("--ws", help="Arbitrum WebSocket URL (default: derived from --http)")
+    p_setup.add_argument("--backup", help="backup HTTPS URL appended for rate-limit failover")
 
     p_run = sub.add_parser("run", help="start the stack")
     _add_run_flags(p_run)
@@ -74,6 +82,10 @@ def cmd_install(lo, args) -> int:
     return 0 if ok else 1
 
 
+def cmd_setup(lo, args) -> int:
+    return setup.run_setup(lo, args)
+
+
 def _effective_live(lo, args) -> bool:
     if getattr(args, "paper", False):
         return False
@@ -102,7 +114,7 @@ def cmd_auto(lo, args) -> int:
     return cmd_run(lo, args)
 
 
-_COMMANDS = {"doctor", "install", "run", "auto"}
+_COMMANDS = {"doctor", "install", "setup", "run", "auto"}
 _TOP_LEVEL = {"-h", "--help", "--version"}
 
 
@@ -128,6 +140,8 @@ def main(argv: list[str] | None = None) -> int:
             return cmd_doctor(lo)
         if command == "install":
             return cmd_install(lo, args)
+        if command == "setup":
+            return cmd_setup(lo, args)
         if command == "run":
             return cmd_run(lo, args)
         return cmd_auto(lo, args)
