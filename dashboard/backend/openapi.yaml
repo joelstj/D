@@ -86,6 +86,78 @@ paths:
       summary: Engine statistics and PnL
       responses:
         "200": { description: OK }
+  /api/latency:
+    get:
+      summary: End-to-end pipeline latency (ingest → detect → display)
+      description: >
+        Rolling per-stage latency for every component in the data path (ingestion,
+        engine, dashboard) plus the single-host end-to-end (ingest origin →
+        dashboard broadcast). Read-only observability. In paper/simulated mode
+        (no ingestion feed) `anchored` is false and `endToEnd` is null.
+      responses:
+        "200":
+          description: Latency snapshot
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  components:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        component: { type: string }
+                        stages:
+                          type: array
+                          items:
+                            type: object
+                            properties:
+                              stage: { type: string }
+                              last: { type: number }
+                              avg: { type: number }
+                              p50: { type: number }
+                              p95: { type: number }
+                              p99: { type: number }
+                              count: { type: integer }
+                  endToEnd:
+                    nullable: true
+                    type: object
+                  samples: { type: integer }
+                  anchored: { type: boolean }
+                  updatedAt: { type: integer }
+  /api/health/execution:
+    get:
+      summary: On-chain execution-readiness latency (read-only probe)
+      description: >
+        Separate from the opportunity pipeline. Times read-only chain access —
+        eth_blockNumber / eth_gasPrice and, only when FLASH_LOAN_EXECUTOR_ADDRESS
+        is set, a staticCall of the executor's aavePremiumBps() view. It NEVER
+        constructs a signer, sends a transaction, or touches live execution.
+        With no RPC configured (paper default) `configured` is false.
+      responses:
+        "200":
+          description: Execution-readiness sample
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  configured: { type: boolean }
+                  healthy: { type: boolean }
+                  chain: { type: string, nullable: true }
+                  blockNumber: { type: integer, nullable: true }
+                  gasPriceGwei: { type: number, nullable: true }
+                  stages:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        stage: { type: string }
+                        ms: { type: number }
+                  contractProbed: { type: boolean }
+                  error: { type: string, nullable: true }
+                  checkedAt: { type: integer }
   /api/execute/{id}:
     post:
       summary: Manually execute an opportunity by id (paper or live per mode)

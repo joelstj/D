@@ -122,3 +122,9 @@ execution + L1 data cost converted to the numeraire via your on-chain price;
 `risk` models MEV competition and front-/back-running so a downstream executor can
 prioritise the fills most likely to land. `net_profit` is never negative when an
 opportunity is reported.
+
+The response also carries an **additive, optional** `timing` block for latency
+monitoring — `{"component":"engine","stages":[{"stage","ms"},…],"total_ms"}` over
+the `build → detect → rank → serialize` stages. It is pure instrumentation (it
+never changes which opportunities are found); consumers that don't need it ignore
+it. See the repo-root `docs/LATENCY.md`.
