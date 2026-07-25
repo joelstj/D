@@ -98,6 +98,11 @@ uvicorn l2arb.api.http:app --port 8080             # start the engine (once, lon
 ./target/release/l2-ingest --config config.toml    # start the feed
 ```
 
+> **RPC endpoints & rate limits:** each chain's `ws_url`/`http_url` may be a
+> comma-separated `primary, backup` list. Off-loop reads (seed / gate / reconcile)
+> are Multicall3-batched to minimise request volume, and HTTP reads fail over to a
+> backup endpoint on a rate-limit (429) or transport error.
+
 Or with Docker: `docker build -t l2-ingest . && docker run -v $PWD/config.toml:/etc/l2-ingest/config.toml -p 9001:9001 -p 9090:9090 -p 9100:9100 l2-ingest`.
 
 Tier-A tests: `cargo test --workspace`. Hot-path benches: `cargo bench -p l2i-benches`.

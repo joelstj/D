@@ -4,7 +4,7 @@
 use alloy_primitives::{Address, B256, U256};
 use l2i_core::{Blockstamp, PoolAddress, PoolKind, Token};
 use l2i_ingest::mirror::{LiveState, Mirror, PoolState};
-use l2i_ingest::reconcile::{reconcile_pool, reconcile_v2, ReconcileResult};
+use l2i_ingest::reconcile::{reconcile_batch, reconcile_pool, reconcile_v2, ReconcileResult};
 use l2i_ingest::reorg::{BlockRef, ReorgOutcome, ReorgTracker};
 use l2i_rpc::mock::MockProvider;
 use l2i_rpc::BlockId;
@@ -175,4 +175,127 @@ async fn reconcile_pool_flips_verified_on_drift_at_pool_blockstamp() {
         intact.get(&id_b).unwrap().verified,
         "matching pool stays verified"
     );
+}
+
+// ─────────────────────────── batched reconcile ──────────────────────────────
+
+fn slot0_response(sqrt: u128, tick: i32) -> Vec<u8> {
+    let mut v = vec![0u8; 64];
+    v[0..32].copy_from_slice(&U256::from(sqrt).to_be_bytes::<32>());
+    v[60..64].copy_from_slice(&tick.to_be_bytes()); // int24 tick, right-aligned
+    v
+}
+
+fn liquidity_response(l: u128) -> Vec<u8> {
+    U256::from(l).to_be_bytes::<32>().to_vec()
+}
+
+fn pool_state_v3(addr: u8, sqrt: u128, tick: i32, liq: u128, number: u64) -> PoolState {
+    PoolState {
+        identity: PoolAddress::Contract(Address::from([addr; 20])),
+        kind: PoolKind::V3,
+        fee_pips: 500,
+        token0: Token::with_symbol(1, Address::from([1; 20]), 18, "A"),
+        token1: Token::with_symbol(1, Address::from([2; 20]), 6, "B"),
+        state: LiveState::V3 {
+            sqrt_price_x96: U256::from(sqrt),
+            tick,
+            liquidity: U256::from(liq),
+        },
+        blockstamp: Blockstamp {
+            chain_id: 1,
+            number,
+            block_hash: B256::from([number as u8; 32]),
+            timestamp: number,
+        },
+        verified: true,
+    }
+}
+
+#[tokio::test]
+async fn reconcile_batch_flags_only_drift_in_one_multicall_per_block() {
+    // Three V2 pools and a V3 pool, all stamped at the same block: reconciling them
+    // must (a) cost exactly one multicall, (b) flip only the drifted pool, and (c)
+    // count matches/mismatches exactly as the per-pool path would.
+    let mirror = Mirror::new();
+    mirror.insert(pool_state(0xA, 100, 200, 500, true)); // matches chain
+    mirror.insert(pool_state(0xB, 100, 200, 500, true)); // will DRIFT
+    mirror.insert(pool_state(0xC, 300, 400, 500, true)); // matches chain
+    mirror.insert(pool_state_v3(0xD, 111, 7, 222, 500)); // matches chain
+
+    let gr = alloy_primitives::Bytes::from_static(&[0x09, 0x02, 0xf1, 0xac]);
+    let s0 = alloy_primitives::Bytes::from_static(&[0x38, 0x50, 0xc7, 0xbd]);
+    let lq = alloy_primitives::Bytes::from_static(&[0x1a, 0x68, 0x65, 0x02]);
+    let mock = MockProvider::new(1)
+        .with_call(
+            Address::from([0xA; 20]),
+            gr.clone(),
+            get_reserves_response(100, 200),
+        )
+        .with_call(
+            Address::from([0xB; 20]),
+            gr.clone(),
+            get_reserves_response(150, 250),
+        ) // drift
+        .with_call(
+            Address::from([0xC; 20]),
+            gr,
+            get_reserves_response(300, 400),
+        )
+        .with_call(Address::from([0xD; 20]), s0, slot0_response(111, 7))
+        .with_call(Address::from([0xD; 20]), lq, liquidity_response(222));
+
+    let pools = mirror.snapshot_verified();
+    let before = mock.round_trips();
+    let tally = reconcile_batch(&mock, &mirror, &pools).await;
+    let used = mock.round_trips() - before;
+
+    assert_eq!(tally.mismatched, 1, "only B drifted");
+    assert_eq!(tally.matched, 3, "A, C, D match");
+    assert_eq!(tally.failed, 0);
+    assert_eq!(
+        used, 1,
+        "all four pools share block 500 → one multicall, not four-plus reads"
+    );
+
+    let v = |a: u8| {
+        mirror
+            .get(&PoolAddress::Contract(Address::from([a; 20])))
+            .unwrap()
+            .verified
+    };
+    assert!(!v(0xB), "drifted pool flipped verified:false");
+    assert!(v(0xA) && v(0xC) && v(0xD), "matching pools stay verified");
+}
+
+#[tokio::test]
+async fn reconcile_batch_uses_one_multicall_per_distinct_block() {
+    // Pools stamped at different blocks can't share a multicall (each is read at its
+    // own block), so the batch issues one request per distinct block — still far
+    // fewer than one per pool.
+    let mirror = Mirror::new();
+    mirror.insert(pool_state(0xA, 100, 200, 500, true));
+    mirror.insert(pool_state(0xB, 300, 400, 501, true));
+
+    let gr = alloy_primitives::Bytes::from_static(&[0x09, 0x02, 0xf1, 0xac]);
+    let mock = MockProvider::new(1)
+        .with_call(
+            Address::from([0xA; 20]),
+            gr.clone(),
+            get_reserves_response(100, 200),
+        )
+        .with_call(
+            Address::from([0xB; 20]),
+            gr,
+            get_reserves_response(300, 400),
+        );
+
+    let pools = mirror.snapshot_verified();
+    let before = mock.round_trips();
+    let tally = reconcile_batch(&mock, &mirror, &pools).await;
+    let used = mock.round_trips() - before;
+
+    assert_eq!(tally.matched, 2);
+    assert_eq!(tally.mismatched, 0);
+    assert_eq!(used, 2, "two distinct blocks → two multicalls");
 }

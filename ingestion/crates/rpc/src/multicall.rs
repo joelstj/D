@@ -63,6 +63,23 @@ pub fn decode_aggregate3(return_data: &[u8]) -> Result<Vec<Result3>> {
         .map_err(|e| RpcError::Decode(format!("aggregate3 return: {e}")))
 }
 
+/// Decode an `aggregate3(calls)` **request** (calldata, selector included) back into
+/// its sub-calls. The inverse of [`encode_aggregate3`]; used by the test
+/// `MockProvider` to answer a batch from its per-sub-call recordings, exactly as a
+/// real node + Multicall3 would.
+pub fn decode_aggregate3_calls(calldata: &[u8]) -> Result<Vec<Call3>> {
+    aggregate3Call::abi_decode(calldata)
+        .map(|c| c.calls)
+        .map_err(|e| RpcError::Decode(format!("aggregate3 calldata: {e}")))
+}
+
+/// ABI-encode a `Result3[]` as an `aggregate3` **return** blob — the inverse of
+/// [`decode_aggregate3`]. Used by the test `MockProvider` to synthesize a batch
+/// response.
+pub fn encode_aggregate3_returns(results: Vec<Result3>) -> Bytes {
+    aggregate3Call::abi_encode_returns(&results).into()
+}
+
 /// Decode `aggregate3` results and require every sub-call to have succeeded,
 /// returning just the return-data blobs in order.
 pub fn require_all(results: Vec<Result3>) -> Result<Vec<Bytes>> {
@@ -127,5 +144,38 @@ mod tests {
     #[test]
     fn decode_rejects_garbage() {
         assert!(decode_aggregate3(&hex!("deadbeef")).is_err());
+    }
+
+    #[test]
+    fn request_calls_roundtrip_through_calldata() {
+        // encode_aggregate3 → decode_aggregate3_calls reproduces the sub-calls,
+        // so a mock can answer a batch from its per-sub-call recordings.
+        let a = l2i_chains::MULTICALL3;
+        let calls = vec![
+            Call3::required(a, Bytes::from_static(&[0x11, 0x22, 0x33, 0x44])),
+            Call3::allow_failure(a, Bytes::from_static(&[0xaa, 0xbb])),
+        ];
+        let data = encode_aggregate3(calls.clone());
+        let decoded = decode_aggregate3_calls(&data).unwrap();
+        assert_eq!(decoded, calls);
+    }
+
+    #[test]
+    fn results_roundtrip_through_return_blob() {
+        // encode_aggregate3_returns → decode_aggregate3 reproduces the results,
+        // so a synthesized batch response decodes exactly like a node's.
+        let results = vec![
+            Result3 {
+                success: true,
+                returnData: Bytes::from_static(&[0xde, 0xad]),
+            },
+            Result3 {
+                success: false,
+                returnData: Bytes::new(),
+            },
+        ];
+        let blob = encode_aggregate3_returns(results.clone());
+        let decoded = decode_aggregate3(&blob).unwrap();
+        assert_eq!(decoded, results);
     }
 }

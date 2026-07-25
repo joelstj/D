@@ -111,6 +111,24 @@ zero-GC-pause, ship-ready*:
 has **no extra RPC round-trip**. RPC `eth_call`/multicall is used only for
 startup seeding and background reconciliation, off the hot path.
 
+**RPC batching (rate-limit hygiene).** Every off-loop read path is batched so a
+node's rate limit is never the bottleneck:
+- **Seeding** — one Multicall3 `aggregate3` per pool-kind per chain (`getReserves`
+  / `slot0`+`liquidity`).
+- **Validation gate** — all of a registry's reads (`token0`/`token1`/`fee`/
+  `factory`/`decimals`/`symbol`, deduped across pools that share a token) are
+  pre-fetched in a handful of batched round-trips — one `eth_getCode` JSON-RPC
+  batch plus chunked `aggregate3` — via `rpc::PrefetchProvider`, then the per-pool
+  gate runs offline against them. Boot cost drops from O(pools) requests to O(1).
+- **Reconcile** — a round's pools are grouped by their stamped block and each
+  group's reads go out as a single `aggregate3` (one request per distinct block).
+
+**Endpoint failover.** `http_url`/`ws_url` accept a comma-separated primary +
+backup list. HTTP reads run through `rpc::failover`: on a rate-limit (429 /
+JSON-RPC `-32005`) or transport error they hand off to the next endpoint and stick
+to whichever answers — never failing over on a genuine revert (every endpoint
+would return it identically).
+
 ---
 
 ## 4. Module / crate layout (Rust workspace)
@@ -170,9 +188,11 @@ Lifecycle of one ingestor actor:
    set, confirm the head's parent matches our last hash (reorg check, §6), and
    push the verified delta to the aggregator.
 4. **Reconcile** (background, off hot path) — every `reconcile_interval_ms`, take
-   a random/oldest subset of pools and independently `eth_call` their state at a
-   pinned block; assert equality with the mirror. Mismatch → mark `verified:false`,
-   re-seed, alarm. This is the continuous proof that our data is *real*.
+   a rotating subset of pools and independently read their state at each pool's
+   pinned block; assert equality with the mirror. The subset's reads are grouped by
+   block and batched into one `aggregate3` per block (not one `eth_call` per pool).
+   Mismatch → mark `verified:false`, re-seed, alarm. This is the continuous proof
+   that our data is *real*.
 5. **Supervise** — any panic/disconnect → the supervisor restarts the actor with
    exponential backoff; during re-seed the chain's pools emit `verified:false`.
 

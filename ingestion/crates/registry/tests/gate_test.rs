@@ -10,8 +10,8 @@
 
 use alloy_primitives::{hex, Address, Bytes, B256};
 use l2i_registry::abi::compute_pool_id;
-use l2i_registry::gate::{validate_pool, GatePolicy};
-use l2i_registry::schema::{PoolEntry, V2V3Entry, V4Entry};
+use l2i_registry::gate::{validate_pool, validate_registry, GatePolicy};
+use l2i_registry::schema::{PoolEntry, PoolRegistry, V2V3Entry, V4Entry};
 use l2i_registry::RejectReason;
 use l2i_rpc::mock::MockProvider;
 use l2i_rpc::BlockId;
@@ -305,4 +305,120 @@ async fn rejects_v4_poolid_mismatch() {
 
 fn at_v4(fx: &Value) -> BlockId {
     BlockId::from(fx["read_block"].as_u64().unwrap())
+}
+
+// ─────────────────────── batched registry validation ────────────────────────
+
+#[tokio::test]
+async fn batched_registry_matches_per_pool_gate_and_collapses_round_trips() {
+    let fx = load("arbitrum_gate.json");
+    let mock = mock_from(&fx, 42161);
+    let policy = GatePolicy {
+        check_factory: true,
+        ..Default::default()
+    };
+
+    // A diverse registry exercising accept + every rejection kind, all against the
+    // same recorded real reads (each rejection is tampered *declared* data, so the
+    // on-chain reads still resolve — no synthetic reads anywhere).
+    let p2 = &fx["pools"]["v2"];
+    let good_v2 = PoolEntry::V2(V2V3Entry {
+        dex: "camelot_v2".into(),
+        address: addr(p2["address"].as_str().unwrap()),
+        fee_pips: 3000,
+        token0: addr(p2["token0"].as_str().unwrap()),
+        token1: addr(p2["token1"].as_str().unwrap()),
+        factory: Some(addr(p2["factory"].as_str().unwrap())),
+    });
+    let mut wrong_t0 = v3_entry(&fx);
+    wrong_t0.token0 = addr("0x000000000000000000000000000000000000dEaD");
+    let mut non_contract = v3_entry(&fx);
+    non_contract.address = addr("0x00000000000000000000000000000000C0FFEE00");
+    let mut wrong_factory = v3_entry(&fx);
+    wrong_factory.factory = Some(addr("0x000000000000000000000000000000000000BEEF"));
+
+    let registry = PoolRegistry {
+        pools: vec![
+            PoolEntry::V3(v3_entry(&fx)), // accepts
+            good_v2,                      // accepts
+            PoolEntry::V3(wrong_t0),      // Token0Mismatch
+            PoolEntry::V3(non_contract),  // NotAContract
+            PoolEntry::V3(wrong_factory), // FactoryMismatch
+        ],
+    };
+
+    // Reference: the per-pool gate, looped, straight against the live mock.
+    let mut ref_accepted = Vec::new();
+    let mut ref_rejected = Vec::new();
+    for e in &registry.pools {
+        match validate_pool(&mock, e.clone(), at(&fx), &policy).await {
+            Ok(v) => ref_accepted.push(v),
+            Err(r) => ref_rejected.push(r),
+        }
+    }
+    let per_call_round_trips = mock.round_trips();
+
+    // Batched: measure only the requests the batched gate itself issues.
+    let before = mock.round_trips();
+    let outcome = validate_registry(&mock, &registry, at(&fx), &policy).await;
+    let batched_round_trips = mock.round_trips() - before;
+
+    // Identical decisions and reasons — Phase 2 is literally the same code path.
+    assert_eq!(
+        outcome.accepted, ref_accepted,
+        "accepted set must match the per-pool gate exactly"
+    );
+    assert_eq!(
+        outcome.rejected, ref_rejected,
+        "rejections and their reasons must match the per-pool gate exactly"
+    );
+    assert_eq!(outcome.accepted.len(), 2, "two pools should validate");
+    assert_eq!(outcome.rejected.len(), 3, "three pools should be rejected");
+
+    // O(1) requests: one eth_getCode batch + one multicall chunk, no matter how many
+    // pools — and a large reduction versus the per-call path.
+    assert!(
+        batched_round_trips <= 2,
+        "batched gate issued {batched_round_trips} round-trips; expected <= 2"
+    );
+    assert!(
+        per_call_round_trips > batched_round_trips * 5,
+        "batching should cut requests many-fold (per-call {per_call_round_trips} vs batched {batched_round_trips})"
+    );
+}
+
+#[tokio::test]
+async fn batched_registry_validates_v4_pools() {
+    // V4 pools have no contract address (identity is the poolId), so batching is
+    // purely their currency `decimals`/`symbol` reads through one multicall.
+    let fx = load("unichain_v4_initialize.json");
+    let mock = mock_from(&fx, 130);
+    let e = v4_entry(&fx);
+    let mut safe = HashSet::new();
+    safe.insert(e.hooks);
+    let policy = GatePolicy {
+        safe_hooks: safe,
+        ..Default::default()
+    };
+    let registry = PoolRegistry {
+        pools: vec![PoolEntry::V4(e)],
+    };
+
+    let before = mock.round_trips();
+    let outcome = validate_registry(&mock, &registry, at_v4(&fx), &policy).await;
+    let used = mock.round_trips() - before;
+
+    assert_eq!(
+        outcome.accepted.len(),
+        1,
+        "safe-hook V4 pool should validate"
+    );
+    assert_eq!(
+        outcome.accepted[0].token0.decimals,
+        fx["currency0_decimals"].as_u64().unwrap() as u8
+    );
+    assert!(
+        used <= 1,
+        "V4-only batch needs at most one multicall (no getCode); used {used}"
+    );
 }

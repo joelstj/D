@@ -21,5 +21,7 @@ pub mod v3;
 pub use error::{IngestError, Result};
 pub use mirror::{LiveState, Mirror, PoolState};
 pub use persist::{load_snapshot, write_mirror, write_snapshot, MirrorSnapshot};
-pub use reconcile::{reconcile_pool, reconcile_v2, reconcile_v3, ReconcileResult};
+pub use reconcile::{
+    reconcile_batch, reconcile_pool, reconcile_v2, reconcile_v3, ReconcileResult, ReconcileTally,
+};
 pub use reorg::{BlockRef, ReorgOutcome, ReorgTracker};
