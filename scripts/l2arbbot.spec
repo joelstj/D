@@ -34,6 +34,8 @@ a = Analysis(
         "l2arb.cli",
         "l2arb.installer",
         "l2arb.run",
+        "l2arb.setup",
+        "l2arb.health",
         "l2arb.proc",
         "l2arb.config",
         "l2arb.prereqs",
