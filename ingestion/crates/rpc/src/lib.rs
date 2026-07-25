@@ -13,6 +13,8 @@
 //! - [`frame`] — WebSocket subscription frame decoding (`newHeads` / `logs`).
 //! - [`backoff`] — exponential backoff with full jitter.
 //! - [`reconnect`] — supervised reconnect loop over a mockable transport + clock.
+//! - [`failover`] — secondary-endpoint failover: hand HTTP reads off to a backup
+//!   endpoint on rate-limit/transport errors, sticking to whichever answers.
 //! - [`coalesce`] — request coalescing (single-flight) to dedupe concurrent reads.
 //!
 //! The deterministic pieces (backoff, multicall codec, frame decode, reconnect
@@ -22,6 +24,7 @@
 pub mod backoff;
 pub mod coalesce;
 pub mod error;
+pub mod failover;
 pub mod frame;
 #[cfg(feature = "testing")]
 pub mod mock;
@@ -31,6 +34,7 @@ pub mod provider;
 pub mod reconnect;
 
 pub use error::{Result, RpcError};
+pub use failover::{is_failover_error, run_with_failover, split_endpoints};
 pub use frame::{HeadSummary, SubscriptionNotification};
 pub use prefetch::PrefetchProvider;
 pub use provider::{AlloyProvider, ChainProvider};

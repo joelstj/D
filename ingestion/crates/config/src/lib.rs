@@ -179,9 +179,13 @@ pub struct ChainConfig {
     /// Whether to run this chain.
     #[serde(default = "default_true")]
     pub enabled: bool,
-    /// WebSocket endpoint (hot path).
+    /// WebSocket endpoint(s) for the hot path. May be a **comma-separated** list —
+    /// a primary followed by failover backups; the first that connects is used.
     pub ws_url: String,
-    /// HTTP archive endpoint (seed/reconcile).
+    /// HTTP archive endpoint(s) for seed/reconcile/gate reads. May be a
+    /// **comma-separated** list — a primary followed by failover backups; reads hand
+    /// off to the next endpoint on a rate-limit/transport error (see
+    /// `l2i_rpc::failover`).
     pub http_url: String,
     /// Nominal block time hint (ms).
     pub block_time_ms: u64,
@@ -306,6 +310,13 @@ fn is_absolute_http_url(s: &str) -> bool {
     let s = s.trim();
     (s.starts_with("http://") && s.len() > "http://".len())
         || (s.starts_with("https://") && s.len() > "https://".len())
+}
+
+/// Count the comma-separated, non-empty endpoints in a URL field. `ws_url`/`http_url`
+/// may list a primary plus failover backups; this is how many real endpoints remain
+/// after trimming — `0` means the field is effectively empty.
+fn endpoint_count(s: &str) -> usize {
+    s.split(',').filter(|p| !p.trim().is_empty()).count()
 }
 
 /// A config error.
@@ -479,11 +490,11 @@ impl Config {
                     c.name, c.chain_id, c.gas_model, spec.gas_model
                 ));
             }
-            if c.http_url.trim().is_empty() {
-                return invalid(format!("chain '{}' has an empty http_url", c.name));
+            if endpoint_count(&c.http_url) == 0 {
+                return invalid(format!("chain '{}' has no http_url endpoint", c.name));
             }
-            if c.ws_url.trim().is_empty() {
-                return invalid(format!("chain '{}' has an empty ws_url", c.name));
+            if endpoint_count(&c.ws_url) == 0 {
+                return invalid(format!("chain '{}' has no ws_url endpoint", c.name));
             }
             if c.reconcile_interval_ms == 0 {
                 return invalid(format!(
@@ -571,6 +582,22 @@ mod tests {
     fn rejects_empty_endpoint() {
         let mut cfg = example();
         cfg.chains[0].http_url = "  ".into();
+        assert!(cfg.validate().is_err());
+    }
+
+    #[test]
+    fn accepts_comma_separated_failover_endpoints() {
+        let mut cfg = example();
+        cfg.chains[0].http_url = "https://primary.example , https://backup.example".into();
+        cfg.chains[0].ws_url = "wss://primary.example,wss://backup.example".into();
+        assert!(
+            cfg.validate().is_ok(),
+            "primary + backup endpoints are valid"
+        );
+        assert_eq!(super::endpoint_count(&cfg.chains[0].http_url), 2);
+
+        // A field that is only separators/whitespace has no real endpoint → rejected.
+        cfg.chains[0].http_url = " , ".into();
         assert!(cfg.validate().is_err());
     }
 

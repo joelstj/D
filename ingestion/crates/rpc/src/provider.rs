@@ -7,6 +7,7 @@
 //! reconciliation) — exactly the split `docs/ARCHITECTURE.md §5` prescribes.
 
 use crate::error::{Result, RpcError};
+use crate::failover::{run_with_failover, split_endpoints};
 use crate::frame::HeadSummary;
 use crate::multicall::{decode_aggregate3, encode_aggregate3, Call3, Result3};
 use alloy::providers::{Provider, ProviderBuilder, RootProvider};
@@ -16,7 +17,10 @@ use alloy::rpc::types::{Filter, Log};
 use alloy_primitives::{Address, Bytes};
 use async_trait::async_trait;
 use futures::{Stream, StreamExt};
+use std::future::Future;
 use std::pin::Pin;
+use std::sync::atomic::AtomicUsize;
+use std::sync::Arc;
 
 /// A stream of confirmed heads from a `newHeads` subscription.
 pub type HeadStream = Pin<Box<dyn Stream<Item = HeadSummary> + Send>>;
@@ -81,25 +85,73 @@ pub trait ChainProvider: Send + Sync {
 #[derive(Clone)]
 pub struct AlloyProvider {
     chain_id: u64,
-    /// Archive/reconcile path (always present).
-    http: RootProvider,
+    /// Archive/reconcile HTTP endpoints: `[0]` is the primary, the rest are backups
+    /// failed over to on rate-limit/transport errors. Always at least one.
+    http: Vec<RootProvider>,
+    /// Index of the currently-active HTTP endpoint (shared across clones), advanced
+    /// by [`run_with_failover`] and sticky to whichever endpoint answers.
+    http_active: Arc<AtomicUsize>,
     /// Subscription path (present when a WS endpoint is configured).
     ws: Option<RootProvider>,
 }
 
 impl AlloyProvider {
-    /// Connect to a chain's HTTP endpoint, and optionally its WS endpoint.
+    /// Connect to a chain's HTTP endpoint(s), and optionally its WS endpoint(s).
     ///
-    /// The HTTP endpoint seeds and reconciles; the WS endpoint (if given) carries
-    /// the live `newHeads`/`logs` hot path. Without WS, subscriptions error and the
-    /// ingestor falls back to HTTP polling (a logged, degraded mode).
+    /// Both `http_url` and `ws_url` may be **comma-separated** lists — a primary
+    /// followed by backups. The HTTP list seeds and reconciles: reads run against the
+    /// active endpoint and transparently fail over to the next on a rate-limit or
+    /// transport error (see [`crate::failover`]), so a provider hitting its rate limit
+    /// hands off to the backup with no lost reads. The WS list carries the live
+    /// `newHeads`/`logs` hot path; the first endpoint that connects is used (the
+    /// supervisor re-runs `connect` on a drop, re-trying the list). Without WS,
+    /// subscriptions error and the ingestor falls back to HTTP polling (a logged,
+    /// degraded mode).
     pub async fn connect(chain_id: u64, http_url: &str, ws_url: Option<&str>) -> Result<Self> {
-        let http = Self::build(http_url).await?;
+        let http_urls = split_endpoints(http_url);
+        if http_urls.is_empty() {
+            return Err(RpcError::Transport(
+                "no HTTP endpoint configured (http_url is empty)".into(),
+            ));
+        }
+        let mut http = Vec::with_capacity(http_urls.len());
+        for u in &http_urls {
+            http.push(Self::build(u).await?);
+        }
+        if http.len() > 1 {
+            tracing::info!(
+                chain_id,
+                http_endpoints = http.len(),
+                "HTTP endpoint failover enabled (1 primary + backups)"
+            );
+        }
+
+        // WS: try each configured endpoint in order; use the first that connects.
         let ws = match ws_url {
-            Some(u) => Some(Self::build(u).await?),
+            Some(list) => {
+                let mut chosen = None;
+                for u in split_endpoints(list) {
+                    match Self::build(&u).await {
+                        Ok(p) => {
+                            chosen = Some(p);
+                            break;
+                        }
+                        Err(e) => {
+                            tracing::warn!(chain_id, endpoint = %u, error = %e, "WS endpoint unavailable; trying next")
+                        }
+                    }
+                }
+                chosen
+            }
             None => None,
         };
-        Ok(Self { chain_id, http, ws })
+
+        Ok(Self {
+            chain_id,
+            http,
+            http_active: Arc::new(AtomicUsize::new(0)),
+            ws,
+        })
     }
 
     /// Build a read-only [`RootProvider`], picking the transport by URL scheme
@@ -121,6 +173,21 @@ impl AlloyProvider {
                 .map_err(|e| RpcError::Transport(format!("connect {url}: {e}")))?;
             Ok(provider.root().clone())
         }
+    }
+
+    /// Run one HTTP read through the failover state machine: `op` is invoked with the
+    /// active endpoint's provider and re-invoked against the next endpoint on a
+    /// rate-limit/transport error, sticking to whichever answers. A genuine call error
+    /// (e.g. a revert) propagates without a hand-off.
+    async fn with_http_failover<T, F, Fut>(&self, op: F) -> Result<T>
+    where
+        F: Fn(RootProvider) -> Fut,
+        Fut: Future<Output = Result<T>>,
+    {
+        run_with_failover(self.http.len(), &self.http_active, |i| {
+            op(self.http[i].clone())
+        })
+        .await
     }
 
     fn subscriber(&self) -> Result<&RootProvider> {
@@ -146,82 +213,107 @@ impl ChainProvider for AlloyProvider {
     }
 
     async fn block_number(&self) -> Result<u64> {
-        self.http
-            .get_block_number()
-            .await
-            .map_err(|e| RpcError::Call(format!("block_number: {e}")))
+        self.with_http_failover(|http| async move {
+            http.get_block_number()
+                .await
+                .map_err(|e| RpcError::Call(format!("block_number: {e}")))
+        })
+        .await
     }
 
     async fn gas_price(&self) -> Result<u64> {
-        let wei = self
-            .http
-            .get_gas_price()
-            .await
-            .map_err(|e| RpcError::Call(format!("gas_price: {e}")))?;
-        Ok(u64::try_from(wei).unwrap_or(u64::MAX))
+        self.with_http_failover(|http| async move {
+            let wei = http
+                .get_gas_price()
+                .await
+                .map_err(|e| RpcError::Call(format!("gas_price: {e}")))?;
+            Ok(u64::try_from(wei).unwrap_or(u64::MAX))
+        })
+        .await
     }
 
     async fn head(&self, at: BlockId) -> Result<HeadSummary> {
-        let block = self
-            .http
-            .get_block(at)
-            .await
-            .map_err(|e| RpcError::Call(format!("get_block: {e}")))?
-            .ok_or_else(|| RpcError::Call(format!("block {at:?} not found")))?;
-        Ok(head_from_block(&block))
+        self.with_http_failover(|http| async move {
+            let block = http
+                .get_block(at)
+                .await
+                .map_err(|e| RpcError::Call(format!("get_block: {e}")))?
+                .ok_or_else(|| RpcError::Call(format!("block {at:?} not found")))?;
+            Ok(head_from_block(&block))
+        })
+        .await
     }
 
     async fn call(&self, to: Address, data: Bytes, at: BlockId) -> Result<Bytes> {
-        let tx = TransactionRequest::default().to(to).input(data.into());
-        self.http
-            .call(tx)
-            .block(at)
-            .await
-            .map_err(|e| RpcError::Call(format!("eth_call {to}: {e}")))
+        self.with_http_failover(|http| {
+            let data = data.clone();
+            async move {
+                let tx = TransactionRequest::default().to(to).input(data.into());
+                http.call(tx)
+                    .block(at)
+                    .await
+                    .map_err(|e| RpcError::Call(format!("eth_call {to}: {e}")))
+            }
+        })
+        .await
     }
 
     async fn code_at(&self, addr: Address, at: BlockId) -> Result<Bytes> {
-        self.http
-            .get_code_at(addr)
-            .block_id(at)
-            .await
-            .map_err(|e| RpcError::Call(format!("get_code {addr}: {e}")))
+        self.with_http_failover(|http| async move {
+            http.get_code_at(addr)
+                .block_id(at)
+                .await
+                .map_err(|e| RpcError::Call(format!("get_code {addr}: {e}")))
+        })
+        .await
     }
 
     /// One JSON-RPC batch carrying every `eth_getCode` — a single HTTP round-trip
     /// regardless of pool count, so booting a chain with N pools costs one request
-    /// here instead of N.
+    /// here instead of N. Fails over to a backup endpoint as a unit.
     async fn code_at_batch(&self, addrs: &[Address], at: BlockId) -> Result<Vec<Bytes>> {
         if addrs.is_empty() {
             return Ok(vec![]);
         }
-        let mut batch = BatchRequest::new(self.http.client());
-        let mut waiters = Vec::with_capacity(addrs.len());
-        for a in addrs {
-            let w = batch
-                .add_call::<(Address, BlockId), Bytes>("eth_getCode", &(*a, at))
-                .map_err(|e| RpcError::Call(format!("batch add get_code {a}: {e}")))?;
-            waiters.push(w);
-        }
-        batch
-            .send()
-            .await
-            .map_err(|e| RpcError::Call(format!("get_code batch send: {e}")))?;
-        let mut out = Vec::with_capacity(addrs.len());
-        for (a, w) in addrs.iter().zip(waiters) {
-            out.push(
-                w.await
-                    .map_err(|e| RpcError::Call(format!("get_code {a}: {e}")))?,
-            );
-        }
-        Ok(out)
+        let addrs = addrs.to_vec();
+        self.with_http_failover(|http| {
+            let addrs = addrs.clone();
+            async move {
+                let mut batch = BatchRequest::new(http.client());
+                let mut waiters = Vec::with_capacity(addrs.len());
+                for a in &addrs {
+                    let w = batch
+                        .add_call::<(Address, BlockId), Bytes>("eth_getCode", &(*a, at))
+                        .map_err(|e| RpcError::Call(format!("batch add get_code {a}: {e}")))?;
+                    waiters.push(w);
+                }
+                batch
+                    .send()
+                    .await
+                    .map_err(|e| RpcError::Call(format!("get_code batch send: {e}")))?;
+                let mut out = Vec::with_capacity(addrs.len());
+                for (a, w) in addrs.iter().zip(waiters) {
+                    out.push(
+                        w.await
+                            .map_err(|e| RpcError::Call(format!("get_code {a}: {e}")))?,
+                    );
+                }
+                Ok(out)
+            }
+        })
+        .await
     }
 
     async fn logs(&self, filter: &Filter) -> Result<Vec<Log>> {
-        self.http
-            .get_logs(filter)
-            .await
-            .map_err(|e| RpcError::Call(format!("get_logs: {e}")))
+        self.with_http_failover(|http| {
+            let filter = filter.clone();
+            async move {
+                http.get_logs(&filter)
+                    .await
+                    .map_err(|e| RpcError::Call(format!("get_logs: {e}")))
+            }
+        })
+        .await
     }
 
     async fn subscribe_heads(&self) -> Result<HeadStream> {
