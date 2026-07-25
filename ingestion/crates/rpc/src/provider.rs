@@ -10,6 +10,7 @@ use crate::error::{Result, RpcError};
 use crate::frame::HeadSummary;
 use crate::multicall::{decode_aggregate3, encode_aggregate3, Call3, Result3};
 use alloy::providers::{Provider, ProviderBuilder, RootProvider};
+use alloy::rpc::client::BatchRequest;
 use alloy::rpc::types::eth::{BlockId, TransactionRequest};
 use alloy::rpc::types::{Filter, Log};
 use alloy_primitives::{Address, Bytes};
@@ -43,6 +44,20 @@ pub trait ChainProvider: Send + Sync {
 
     /// `eth_getCode(addr)` at block `at`.
     async fn code_at(&self, addr: Address, at: BlockId) -> Result<Bytes>;
+
+    /// `eth_getCode` for many addresses at block `at`, results in call order.
+    ///
+    /// The default runs them sequentially (one round-trip each); a transport that
+    /// supports JSON-RPC request batching overrides this to a **single** round-trip
+    /// (see [`AlloyProvider::code_at_batch`]). The validation gate uses it to prove
+    /// code-existence for every configured pool without one request per pool.
+    async fn code_at_batch(&self, addrs: &[Address], at: BlockId) -> Result<Vec<Bytes>> {
+        let mut out = Vec::with_capacity(addrs.len());
+        for a in addrs {
+            out.push(self.code_at(*a, at).await?);
+        }
+        Ok(out)
+    }
 
     /// `eth_getLogs(filter)`.
     async fn logs(&self, filter: &Filter) -> Result<Vec<Log>>;
@@ -171,6 +186,35 @@ impl ChainProvider for AlloyProvider {
             .block_id(at)
             .await
             .map_err(|e| RpcError::Call(format!("get_code {addr}: {e}")))
+    }
+
+    /// One JSON-RPC batch carrying every `eth_getCode` — a single HTTP round-trip
+    /// regardless of pool count, so booting a chain with N pools costs one request
+    /// here instead of N.
+    async fn code_at_batch(&self, addrs: &[Address], at: BlockId) -> Result<Vec<Bytes>> {
+        if addrs.is_empty() {
+            return Ok(vec![]);
+        }
+        let mut batch = BatchRequest::new(self.http.client());
+        let mut waiters = Vec::with_capacity(addrs.len());
+        for a in addrs {
+            let w = batch
+                .add_call::<(Address, BlockId), Bytes>("eth_getCode", &(*a, at))
+                .map_err(|e| RpcError::Call(format!("batch add get_code {a}: {e}")))?;
+            waiters.push(w);
+        }
+        batch
+            .send()
+            .await
+            .map_err(|e| RpcError::Call(format!("get_code batch send: {e}")))?;
+        let mut out = Vec::with_capacity(addrs.len());
+        for (a, w) in addrs.iter().zip(waiters) {
+            out.push(
+                w.await
+                    .map_err(|e| RpcError::Call(format!("get_code {a}: {e}")))?,
+            );
+        }
+        Ok(out)
     }
 
     async fn logs(&self, filter: &Filter) -> Result<Vec<Log>> {
