@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
-import { liveReducer, initialLiveState, MAX_OPPS } from "./liveReducer";
-import type { ArbitrageOpportunity, EngineStats, Snapshot } from "../lib/types";
+import { liveReducer, initialLiveState, MAX_OPPS, MAX_CLIENT_LATENCY } from "./liveReducer";
+import type { ArbitrageOpportunity, EngineStats, LatencySnapshot, Snapshot } from "../lib/types";
 
 function opp(id: string, netProfitUsd = 100): ArbitrageOpportunity {
   return {
@@ -90,5 +90,40 @@ describe("liveReducer", () => {
     });
     s = liveReducer(s, { type: "alert", alert: { level: "error", message: "second", ts: 2 } });
     expect(s.alerts[0]!.message).toBe("second");
+  });
+
+  it("stores the latency snapshot from a `latency` message and from the snapshot", () => {
+    const snapshot: LatencySnapshot = {
+      components: [{ component: "engine", stages: [] }],
+      endToEnd: { stage: "end_to_end", last: 40, avg: 42, p50: 41, p95: 55, p99: 60, count: 9 },
+      samples: 9,
+      anchored: true,
+      updatedAt: 123,
+    };
+    const viaMsg = liveReducer(initialLiveState, { type: "latency", snapshot });
+    expect(viaMsg.latency?.endToEnd?.p50).toBe(41);
+
+    const viaSnap = liveReducer(initialLiveState, {
+      type: "snapshot",
+      snapshot: { settings: null as never, networks: [], opportunities: [], stats, latency: snapshot },
+    });
+    expect(viaSnap.latency?.samples).toBe(9);
+  });
+
+  it("accumulates client-side end-to-end samples and ignores bad values", () => {
+    let s = liveReducer(initialLiveState, { type: "client-latency", ms: 12 });
+    s = liveReducer(s, { type: "client-latency", ms: 18 });
+    s = liveReducer(s, { type: "client-latency", ms: -1 }); // ignored
+    s = liveReducer(s, { type: "client-latency", ms: NaN }); // ignored
+    expect(s.clientLatencyMs).toEqual([12, 18]);
+  });
+
+  it("bounds the client latency window to MAX_CLIENT_LATENCY", () => {
+    let s = initialLiveState;
+    for (let i = 0; i < MAX_CLIENT_LATENCY + 10; i++) {
+      s = liveReducer(s, { type: "client-latency", ms: i });
+    }
+    expect(s.clientLatencyMs).toHaveLength(MAX_CLIENT_LATENCY);
+    expect(s.clientLatencyMs[s.clientLatencyMs.length - 1]).toBe(MAX_CLIENT_LATENCY + 9);
   });
 });

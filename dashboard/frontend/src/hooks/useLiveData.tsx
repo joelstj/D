@@ -13,6 +13,7 @@ import type {
   ArbitrageOpportunity,
   EngineStats,
   ExecutionResult,
+  LatencySnapshot,
   Settings,
   Snapshot,
   WsEnvelope,
@@ -60,9 +61,16 @@ export function LiveProvider({ children }: { children: ReactNode }) {
           case "snapshot":
             dispatch({ type: "snapshot", snapshot: msg.payload as Snapshot });
             break;
-          case "opportunity":
-            dispatch({ type: "opportunity", opp: msg.payload as ArbitrageOpportunity });
+          case "opportunity": {
+            const opp = msg.payload as ArbitrageOpportunity;
+            dispatch({ type: "opportunity", opp });
+            // Close the trace on the client: origin → rendered here. Single-host wall
+            // clock, so this is the true "ingest → displayed" latency the user sees.
+            if (typeof opp.originWallMs === "number" && opp.originWallMs > 0) {
+              dispatch({ type: "client-latency", ms: Date.now() - opp.originWallMs });
+            }
             break;
+          }
           case "opportunity:remove":
             dispatch({ type: "opportunity:remove", id: (msg.payload as { id: string }).id });
             break;
@@ -80,6 +88,9 @@ export function LiveProvider({ children }: { children: ReactNode }) {
             dispatch({ type: "alert", alert: { ...a, ts: msg.ts } });
             break;
           }
+          case "latency":
+            dispatch({ type: "latency", snapshot: msg.payload as LatencySnapshot });
+            break;
         }
       };
       ws.onclose = () => {

@@ -1,7 +1,9 @@
 import type {
   ArbitrageOpportunity,
   EngineStats,
+  ExecutionLatencySample,
   ExecutionResult,
+  LatencySnapshot,
   NetworkInfo,
   Settings,
 } from "./types";
@@ -53,6 +55,8 @@ export const api = {
       `/api/opportunities?limit=${limit}`,
     ),
   stats: () => request<EngineStats>("/api/stats"),
+  latency: () => request<LatencySnapshot>("/api/latency"),
+  executionLatency: () => request<ExecutionLatencySample>("/api/health/execution"),
   execute: (id: string) =>
     request<ExecutionResult>(`/api/execute/${id}`, { method: "POST" }),
   toggleEngine: (enabled: boolean) =>

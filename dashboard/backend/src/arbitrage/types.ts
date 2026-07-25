@@ -40,6 +40,13 @@ export interface ArbitrageOpportunity {
   confidence: number;
   status: OpportunityStatus;
   expiresAt: number;
+  /**
+   * Ingestion tick-start wall-clock (ms) this opportunity's batch was anchored at,
+   * for end-to-end latency measurement (root `CLAUDE.md` latency-health pipeline).
+   * Present only on real (external) detections; single-host wall clock, so the UI
+   * measures `Date.now() - originWallMs` for the ingest → displayed latency.
+   */
+  originWallMs?: number;
 }
 
 export interface ExecutionResult {

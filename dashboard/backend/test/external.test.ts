@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import { ExternalProvider, type WebSocketLike } from "../src/arbitrage/providers/external";
+import { LatencyMonitor } from "../src/arbitrage/latency";
 import { DEFAULT_SETTINGS } from "../src/settings/schema";
 import type { EngineOpportunity } from "../src/arbitrage/providers/engineMap";
 
@@ -53,6 +54,36 @@ function opp(): EngineOpportunity {
 
 function envelope(opps: unknown[], kind = "opportunities") {
   return JSON.stringify({ schema_version: 1, kind, chain_blocks: { "8453": 1 }, payload: { count: opps.length, opportunities: opps } });
+}
+
+/** An envelope carrying the latency trace (ingestion latency + engine timing). */
+function tracedEnvelope(opps: unknown[], originWallMs: number) {
+  return JSON.stringify({
+    schema_version: 1,
+    kind: "opportunities",
+    chain_blocks: { "8453": 1 },
+    latency: {
+      origin_wall_ms: originWallMs,
+      component: "ingestion",
+      stages: [
+        { stage: "build", ms: 0.9 },
+        { stage: "engine_roundtrip", ms: 8.5 },
+      ],
+      total_ms: 9.4,
+    },
+    payload: {
+      count: opps.length,
+      opportunities: opps,
+      timing: {
+        component: "engine",
+        stages: [
+          { stage: "detect", ms: 3.1 },
+          { stage: "rank", ms: 0.2 },
+        ],
+        total_ms: 3.3,
+      },
+    },
+  });
 }
 
 function newProvider(opts = {}) {
@@ -142,6 +173,47 @@ describe("ExternalProvider", () => {
     await new Promise((r) => setTimeout(r, 2));
     expect(await p.scan(DEFAULT_SETTINGS)).toHaveLength(0);
     expect(p.getState().buffered).toBe(0);
+    p.stop();
+  });
+
+  it("feeds the latency monitor the ingestion + engine traces and stamps the anchor", async () => {
+    const monitor = new LatencyMonitor();
+    const p = newProvider({ latency: monitor });
+    p.start();
+    const ws = FakeWs.instances[0]!;
+    const origin = Date.now() - 5; // 5ms ago, so ingest_to_dashboard is small & positive
+    ws.emit("message", tracedEnvelope([opp()], origin));
+
+    const snap = monitor.snapshot();
+    // Ingestion + engine stages were relayed into the aggregator...
+    const ingestion = snap.components.find((c) => c.component === "ingestion")!;
+    expect(ingestion.stages.map((s) => s.stage)).toEqual(["build", "engine_roundtrip"]);
+    const engine = snap.components.find((c) => c.component === "engine")!;
+    expect(engine.stages.map((s) => s.stage)).toEqual(["detect", "rank"]);
+    // ...the dashboard measured its own parse + map...
+    const dash = snap.components.find((c) => c.component === "dashboard")!;
+    expect(dash.stages.map((s) => s.stage)).toEqual(["parse", "map"]);
+    // ...and the cross-process ingest→receipt gap was recorded under "pipeline".
+    const pipeline = snap.components.find((c) => c.component === "pipeline")!;
+    expect(pipeline.stages.map((s) => s.stage)).toContain("ingest_to_dashboard");
+
+    // The anchor rides on the mapped opportunity for the client-side end-to-end.
+    const batch = await p.scan(DEFAULT_SETTINGS);
+    expect(batch[0]!.originWallMs).toBe(origin);
+    p.stop();
+  });
+
+  it("omits the anchor when a frame carries no latency trace", async () => {
+    const monitor = new LatencyMonitor();
+    const p = newProvider({ latency: monitor });
+    p.start();
+    const ws = FakeWs.instances[0]!;
+    ws.emit("message", envelope([opp()])); // no `latency` field
+    const batch = await p.scan(DEFAULT_SETTINGS);
+    expect(batch[0]!.originWallMs).toBeUndefined();
+    // No ingestion/engine/pipeline components — only the dashboard's own parse/map.
+    expect(monitor.snapshot().components.map((c) => c.component)).toEqual(["dashboard"]);
+    expect(monitor.snapshot().anchored).toBe(false);
     p.stop();
   });
 

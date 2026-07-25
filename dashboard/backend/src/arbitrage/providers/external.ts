@@ -1,13 +1,27 @@
+import { performance } from "node:perf_hooks";
 import { WebSocket } from "ws";
 import type { Settings } from "../../settings/schema";
 import type { ArbitrageOpportunity } from "../types";
 import { createLogger } from "../../util/logger";
+import type { LatencyMonitor, ComponentTiming } from "../latency";
+import { PIPELINE_COMPONENT } from "../latency";
 import type { OpportunityProvider } from "./provider";
 import {
   mapEngineOpportunity,
   DEFAULT_TTL_MS,
   type EngineOpportunity,
 } from "./engineMap";
+
+/** The ingestion latency trace carried on an opportunities envelope. */
+interface IngestionLatency extends ComponentTiming {
+  origin_wall_ms?: number;
+}
+/** The parsed opportunities frame (only the fields we read). */
+interface OpportunitiesFrame {
+  kind?: string;
+  latency?: IngestionLatency;
+  payload?: { opportunities?: EngineOpportunity[]; timing?: ComponentTiming };
+}
 
 const log = createLogger("provider:external");
 
@@ -25,6 +39,8 @@ export interface ExternalProviderOptions {
   reconnectMs?: number;
   /** injectable WebSocket implementation (default the `ws` client). */
   WebSocketCtor?: WebSocketCtor;
+  /** latency aggregator fed the ingestion/engine trace + this stage's parse/map. */
+  latency?: LatencyMonitor;
 }
 
 /**
@@ -58,6 +74,7 @@ export class ExternalProvider implements OpportunityProvider {
   private readonly ttlMs: number;
   private readonly reconnectMs: number;
   private readonly WebSocketCtor: WebSocketCtor;
+  private readonly latency: LatencyMonitor | null;
 
   // Lightweight observability (surfaced in logs / testable).
   private framesReceived = 0;
@@ -72,6 +89,7 @@ export class ExternalProvider implements OpportunityProvider {
     this.ttlMs = opts.ttlMs ?? DEFAULT_TTL_MS;
     this.reconnectMs = opts.reconnectMs ?? 1500;
     this.WebSocketCtor = opts.WebSocketCtor ?? (WebSocket as unknown as WebSocketCtor);
+    this.latency = opts.latency ?? null;
   }
 
   start(): void {
@@ -137,7 +155,8 @@ export class ExternalProvider implements OpportunityProvider {
   /** Parse one envelope frame and buffer any opportunities it carries. Never throws. */
   private handleFrame(data: unknown): void {
     this.framesReceived += 1;
-    let env: { kind?: string; payload?: { opportunities?: EngineOpportunity[] } };
+    const parseStart = performance.now();
+    let env: OpportunitiesFrame;
     try {
       const text =
         typeof data === "string"
@@ -150,14 +169,27 @@ export class ExternalProvider implements OpportunityProvider {
       log.warn(`dropping unparseable frame: ${String(err)}`);
       return;
     }
+    this.latency?.record("dashboard", "parse", performance.now() - parseStart);
     if (env.kind !== "opportunities") return; // ignore snapshot / other kinds
     const opps = env.payload?.opportunities;
     if (!Array.isArray(opps)) return;
 
     const now = Date.now();
+    // Fold the relayed upstream traces (ingestion + engine) into the aggregator and
+    // measure the cross-process gap from ingest origin to this receipt.
+    const originWallMs = toFinite(env.latency?.origin_wall_ms);
+    if (this.latency) {
+      this.latency.recordComponent(env.latency);
+      this.latency.recordComponent(env.payload?.timing);
+      if (originWallMs > 0) {
+        this.latency.record(PIPELINE_COMPONENT, "ingest_to_dashboard", now - originWallMs);
+      }
+    }
+
+    const mapStart = performance.now();
     for (const raw of opps) {
       try {
-        const opp = mapEngineOpportunity(raw, now, this.ttlMs);
+        const opp = mapEngineOpportunity(raw, now, this.ttlMs, originWallMs || undefined);
         this.buffer.set(opp.id, opp);
         this.dirty.add(opp.id);
         this.oppsMapped += 1;
@@ -166,6 +198,7 @@ export class ExternalProvider implements OpportunityProvider {
         log.warn(`dropping malformed opportunity: ${String(err)}`);
       }
     }
+    this.latency?.record("dashboard", "map", performance.now() - mapStart);
   }
 
   /**
@@ -207,4 +240,10 @@ export class ExternalProvider implements OpportunityProvider {
       buffered: this.buffer.size,
     };
   }
+}
+
+/** Coerce an optional numeric field to a finite number (0 when absent/invalid). */
+function toFinite(x: unknown): number {
+  const n = typeof x === "number" ? x : Number(x);
+  return Number.isFinite(n) ? n : 0;
 }

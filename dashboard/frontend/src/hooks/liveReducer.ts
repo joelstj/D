@@ -2,6 +2,7 @@ import type {
   ArbitrageOpportunity,
   EngineStats,
   ExecutionResult,
+  LatencySnapshot,
   NetworkInfo,
   Settings,
   Snapshot,
@@ -11,6 +12,8 @@ export const MAX_OPPS = 60;
 export const MAX_EXECS = 40;
 export const MAX_ALERTS = 20;
 export const MAX_HISTORY = 90;
+/** Rolling window of client-measured end-to-end samples (ingest → rendered). */
+export const MAX_CLIENT_LATENCY = 60;
 
 export type ConnectionStatus = "connecting" | "open" | "closed";
 
@@ -35,6 +38,10 @@ export interface LiveState {
   stats: EngineStats | null;
   alerts: Alert[];
   history: HistoryPoint[];
+  /** Backend-aggregated pipeline latency (ingestion → engine → dashboard). */
+  latency: LatencySnapshot | null;
+  /** Client-measured end-to-end samples: ingest origin → rendered here (ms). */
+  clientLatencyMs: number[];
 }
 
 export const initialLiveState: LiveState = {
@@ -46,6 +53,8 @@ export const initialLiveState: LiveState = {
   stats: null,
   alerts: [],
   history: [],
+  latency: null,
+  clientLatencyMs: [],
 };
 
 export type LiveAction =
@@ -56,7 +65,9 @@ export type LiveAction =
   | { type: "execution"; result: ExecutionResult }
   | { type: "stats"; stats: EngineStats }
   | { type: "settings"; settings: Settings }
-  | { type: "alert"; alert: Alert };
+  | { type: "alert"; alert: Alert }
+  | { type: "latency"; snapshot: LatencySnapshot }
+  | { type: "client-latency"; ms: number };
 
 export function liveReducer(state: LiveState, action: LiveAction): LiveState {
   switch (action.type) {
@@ -69,6 +80,7 @@ export function liveReducer(state: LiveState, action: LiveAction): LiveState {
         networks: action.snapshot.networks,
         opportunities: action.snapshot.opportunities.slice(0, MAX_OPPS),
         stats: action.snapshot.stats,
+        latency: action.snapshot.latency ?? state.latency,
       };
     case "opportunity": {
       const deduped = state.opportunities.filter((o) => o.id !== action.opp.id);
@@ -100,6 +112,15 @@ export function liveReducer(state: LiveState, action: LiveAction): LiveState {
       return { ...state, settings: action.settings };
     case "alert":
       return { ...state, alerts: [action.alert, ...state.alerts].slice(0, MAX_ALERTS) };
+    case "latency":
+      return { ...state, latency: action.snapshot };
+    case "client-latency": {
+      if (!Number.isFinite(action.ms) || action.ms < 0) return state;
+      return {
+        ...state,
+        clientLatencyMs: [...state.clientLatencyMs, action.ms].slice(-MAX_CLIENT_LATENCY),
+      };
+    }
     default:
       return state;
   }

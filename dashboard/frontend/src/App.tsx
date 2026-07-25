@@ -2,6 +2,7 @@ import { Header } from "./components/Header";
 import { StatCards } from "./components/StatCards";
 import { OpportunitiesTable } from "./components/OpportunitiesTable";
 import { SettingsPanel } from "./components/SettingsPanel";
+import { LatencyPanel } from "./components/LatencyPanel";
 import { ExecutionsLog } from "./components/ExecutionsLog";
 import { AlertsBar } from "./components/AlertsBar";
 
@@ -17,9 +18,10 @@ export default function App() {
             <OpportunitiesTable />
             <ExecutionsLog />
           </div>
-          <div className="xl:col-span-1">
-            <div className="xl:sticky xl:top-20">
+          <div className="space-y-4 xl:col-span-1">
+            <div className="xl:sticky xl:top-20 space-y-4">
               <SettingsPanel />
+              <LatencyPanel />
             </div>
           </div>
         </div>

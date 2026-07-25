@@ -1,9 +1,11 @@
 import { EventEmitter } from "node:events";
+import { performance } from "node:perf_hooks";
 import type { SettingsStore } from "../settings/store";
 import type { Settings } from "../settings/schema";
 import { createLogger } from "../util/logger";
 import type { OpportunityProvider } from "./providers/provider";
 import type { Executor } from "./executor";
+import type { LatencyMonitor } from "./latency";
 import type { ArbitrageOpportunity, EngineStats, ExecutionResult } from "./types";
 
 const log = createLogger("engine");
@@ -50,6 +52,7 @@ export class ArbitrageEngine extends EventEmitter {
     private readonly store: SettingsStore,
     private readonly provider: OpportunityProvider,
     private readonly executors: { paper: Executor; live: Executor },
+    private readonly latency?: LatencyMonitor,
   ) {
     super();
   }
@@ -92,16 +95,20 @@ export class ArbitrageEngine extends EventEmitter {
 
       if (!settings.engineEnabled) return;
 
+      // Time the dashboard scan stage: drain the provider's freshest batch and
+      // apply the live profit/position filters. The per-opportunity fan-out to
+      // clients (emit → hub) is measured separately, so this stage excludes it.
+      const scanStart = performance.now();
       const candidates = await this.provider.scan(settings);
       this.stats.scans += 1;
       const scanTs = Date.now();
       this.stats.lastScanTs = scanTs;
+      const qualifying = candidates.filter(
+        (opp) => opp.expiresAt > scanTs && this.qualifies(opp, settings),
+      );
+      this.latency?.record("dashboard", "scan", performance.now() - scanStart);
 
-      for (const opp of candidates) {
-        if (opp.expiresAt <= scanTs) continue; // never surface a dead opportunity
-        if (!this.qualifies(opp, settings)) continue;
-        this.addOpportunity(opp);
-      }
+      for (const opp of qualifying) this.addOpportunity(opp);
 
       if (settings.autoExecute) await this.autoExecute(settings);
       this.emitStats();

@@ -117,3 +117,15 @@ describe("isUsdStable", () => {
     expect(isUsdStable("ARB")).toBe(false);
   });
 });
+
+describe("mapEngineOpportunity latency anchor", () => {
+  const now = 1_700_000_000_000;
+  it("stamps originWallMs when a positive anchor is supplied", () => {
+    const o = mapEngineOpportunity(sampleOpp(), now, 5000, 1_699_999_999_000);
+    expect(o.originWallMs).toBe(1_699_999_999_000);
+  });
+  it("omits originWallMs when absent or zero (paper/simulated frames)", () => {
+    expect(mapEngineOpportunity(sampleOpp(), now, 5000).originWallMs).toBeUndefined();
+    expect(mapEngineOpportunity(sampleOpp(), now, 5000, 0).originWallMs).toBeUndefined();
+  });
+});
