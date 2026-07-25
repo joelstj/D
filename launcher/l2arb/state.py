@@ -43,6 +43,22 @@ def probe(lo: Layout) -> ComponentReadiness:
     return ComponentReadiness(engine=engine, dashboard=dashboard, ingestion=ingestion)
 
 
+def next_step(ready: ComponentReadiness, live_ready: bool) -> str:
+    """The single most useful next action for the user, given what's on disk and
+    whether the config is live-ready. Pure, so it's unit-tested and the wording is
+    the same wherever it's shown (``doctor`` today, the wizard/HUD later)."""
+    if not ready.dashboard:
+        return "Run `l2arb` (or `l2arb install`) to build the app and open the dashboard."
+    if not ready.full:
+        return (
+            "Paper mode is ready — run `l2arb run`. "
+            "For real on-chain data, run `l2arb install` (builds the engine + Rust feed), then `l2arb setup`."
+        )
+    if not live_ready:
+        return "Everything is built. Run `l2arb setup` to add your RPC endpoint, then `l2arb run --live`."
+    return "You're live-ready — run `l2arb run --live`."
+
+
 def read(lo: Layout) -> dict:
     try:
         return json.loads(lo.state_file.read_text())

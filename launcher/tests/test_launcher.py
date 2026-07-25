@@ -44,6 +44,15 @@ class StateTest(unittest.TestCase):
             self.assertFalse(r.ingestion)
             self.assertFalse(r.full)
 
+    def test_next_step_guides_from_nothing_to_live(self):
+        none = state.ComponentReadiness(engine=False, dashboard=False, ingestion=False)
+        paper = state.ComponentReadiness(engine=False, dashboard=True, ingestion=False)
+        full = state.ComponentReadiness(engine=True, dashboard=True, ingestion=True)
+        self.assertIn("install", state.next_step(none, False).lower())
+        self.assertIn("paper mode is ready", state.next_step(paper, False).lower())
+        self.assertIn("setup", state.next_step(full, False).lower())  # built, not configured
+        self.assertIn("--live", state.next_step(full, True))  # built + configured
+
 
 class ConfigTest(unittest.TestCase):
     def _layout_with_config(self, text: str) -> Layout:

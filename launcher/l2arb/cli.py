@@ -67,7 +67,9 @@ def cmd_doctor(lo) -> int:
     console.info(f"engine     : {'ready' if ready.engine else 'not built'}")
     console.info(f"ingestion  : {'ready' if ready.ingestion else 'not built'}")
     console.info(f"config.toml: {lo.config_toml if lo.config_toml.exists() else 'not generated'}")
-    console.info(f"live-ready : {config.config_is_live_ready(lo)}")
+    live_ready = config.config_is_live_ready(lo)
+    console.info(f"live-ready : {live_ready}")
+    console.step("Next: " + state.next_step(ready, live_ready))
     return 0
 
 
@@ -100,14 +102,25 @@ def cmd_run(lo, args) -> int:
     return run.run(lo, live=_effective_live(lo, args), port=args.port, open_browser=not args.no_browser)
 
 
+def _welcome() -> None:
+    console.banner("Welcome to the L2 Arbitrage Bot")
+    console.info("This first run installs everything it needs and opens the dashboard.")
+    console.info("It starts in SAFE paper/simulation mode — it never sends a real")
+    console.info("transaction or touches your funds. To watch real on-chain data later,")
+    console.info("run `l2arb setup` (one RPC URL) and then `l2arb run --live`.")
+    console.info("First install needs internet and a few minutes; later runs are instant.")
+
+
 def cmd_auto(lo, args) -> int:
     ready = state.probe(lo)
     if not ready.dashboard:
-        console.banner("First run — installing the L2 Arbitrage Bot")
+        _welcome()
+        console.banner("Installing (one-time)…")
         opts = installer.InstallOptions(paper_only=getattr(args, "paper_only", False))
         config.ensure_config_toml(lo)
         if not installer.install(lo, opts):
             console.err("installation failed; see output above")
+            console.info("Tip: run `l2arb doctor` to see which toolchain is missing.")
             return 1
     else:
         console.ok("already installed — launching")
