@@ -92,7 +92,7 @@ core → amm → rpc/chains → registry → ingest/v4 → gas → aggregator
 |-------|---------|----------------|
 | `crates/core` | `l2i-core` | Domain types + the engine JSON contract (`DetectRequest`/`Response`, `Pool`, `Token`, `Blockstamp`); `DecU256`/`DecI256` decimal-string serde; golden tests. |
 | `crates/amm` | `l2i-amm` | Pure math (no I/O): V2 constant-product, V3/V4 TickMath (faithful `v3-core` port), `sqrtPriceX96→price`, `native_price_in`. |
-| `crates/rpc` | `l2i-rpc` | `alloy` providers (WS subscribe / HTTP archive), Multicall3 `aggregate3`, reconnect+backoff, single-flight coalesce, `ChainProvider` trait, `MockProvider` (feature `testing`). |
+| `crates/rpc` | `l2i-rpc` | `alloy` providers (WS subscribe / HTTP archive), Multicall3 `aggregate3`, batched `code_at_batch`, `PrefetchProvider` (batch-once-then-replay), rate-limit **failover** across comma-separated endpoints, reconnect+backoff, single-flight coalesce, `ChainProvider` trait, `MockProvider` (feature `testing`, Multicall3-aware + round-trip counter). |
 | `crates/chains` | `l2i-chains` | Per-chain `ChainSpec`, gas model, canonical predeploy addresses (Multicall3, OP `GasPriceOracle`/`L1Block`, Arb `ArbGasInfo`). |
 | `crates/registry` | `l2i-registry` | The **on-chain validation gate** (§7 of ARCHITECTURE) + pool-registry TOML loader + `sol!` ABI bindings + V4 `compute_pool_id`. |
 | `crates/ingest` | `l2i-ingest` | Per-chain event decode (`Sync`/`Swap`/`Mint`/`Burn`), in-memory `Mirror` (DashMap), reorg tracker, reconcile, warm-start persist. |
@@ -267,4 +267,13 @@ the `RALPH-COMPLETE` line with an evidence summary.
   mandatory, not stylistic.
 - **redis/grpc sinks are config surface, not built** — they return a loud
   `Unavailable`. ws + stdout are the shipped sinks.
+- **Off-loop reads are batched, not per-item.** Seeding, the validation gate
+  (via `rpc::PrefetchProvider` — batch every read once, then replay the existing
+  per-pool `validate_pool` offline), and reconcile (grouped by block) all go
+  through Multicall3 `aggregate3` + a batched `eth_getCode`. When adding a new
+  off-loop read path, batch it too — don't reintroduce one request per pool.
+- **Endpoint failover ≠ retry-everything.** `rpc::failover` hands off to the next
+  comma-separated endpoint only on rate-limit/transport errors; a revert/decode
+  error must **propagate** (every endpoint returns it identically). Don't widen
+  `is_failover_error` to swallow real results.
 - **Do not edit `docs/reference/INTEGRATION.md`.**

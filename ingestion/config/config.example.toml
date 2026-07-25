@@ -58,14 +58,24 @@ arb_gas_info          = "0x000000000000000000000000000000000000006C"  # Arbitrum
 # =============================================================================
 # One [[chains]] block per chain. block_time_ms is a hint; real timing is driven
 # by newHeads. gas_model selects the L1-data-fee adapter.
+#
+# RATE-LIMIT FAILOVER: ws_url and http_url each accept a COMMA-SEPARATED list —
+# a primary followed by one or more backups, e.g.
+#   http_url = "https://primary-rpc, https://backup-rpc"
+# Seed/reconcile/gate reads run against the active HTTP endpoint and transparently
+# fail over to the next on a rate-limit (HTTP 429 / JSON-RPC -32005) or transport
+# error, sticking to whichever answers — so a provider hitting its rate limit hands
+# off to the backup with no lost reads. (These reads are also Multicall3-batched, so
+# far fewer requests are made in the first place.) A single URL still works fine.
 # =============================================================================
 
 [[chains]]
 name          = "arbitrum"
 chain_id      = 42161
 enabled       = true
+# Comma-separate a primary + backup(s) for automatic failover (see note above).
 ws_url        = "wss://YOUR_ARBITRUM_WS"      # low-latency / co-located endpoint (hot path)
-http_url      = "https://YOUR_ARBITRUM_ARCHIVE" # archive, for seeding + reconciliation
+http_url      = "https://YOUR_ARBITRUM_ARCHIVE, https://YOUR_ARBITRUM_ARCHIVE_BACKUP" # archive, for seeding + reconciliation (primary, backup)
 block_time_ms = 250
 gas_model     = "arbitrum"                     # uses ArbGasInfo; l1_data_fee_wei defaults to 0
 min_profit_bps        = 5.0
