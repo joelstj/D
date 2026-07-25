@@ -15,9 +15,8 @@ use l2i_config::ChainConfig;
 use l2i_core::{Blockstamp, ChainContext, PoolKind};
 use l2i_ingest::event::{decode_sync_reserves, sync_topic};
 use l2i_ingest::mirror::Mirror;
-use l2i_ingest::reconcile::reconcile_pool;
+use l2i_ingest::reconcile::reconcile_batch;
 use l2i_ingest::reorg::{BlockRef, ReorgOutcome, ReorgTracker};
-use l2i_ingest::ReconcileResult;
 use l2i_rpc::{BlockId, ChainProvider, Filter, RpcError};
 use l2i_v4::event::{decode_v4_swap, v4_swap_topic};
 use std::sync::Arc;
@@ -229,7 +228,7 @@ async fn reconcile_loop<P: ChainProvider + ?Sized>(
         tokio::select! {
             _ = shutdown.changed() => { if *shutdown.borrow() { return; } }
             _ = interval.tick() => {
-                reconcile_round(chain_id, &*provider, &mirror, &mut cursor).await;
+                reconcile_round(&*provider, &mirror, &mut cursor).await;
                 metrics::gauge!(
                     l2i_observability::names::VERIFIED_POOLS,
                     "chain_id" => chain_id.to_string()
@@ -244,7 +243,6 @@ async fn reconcile_loop<P: ChainProvider + ?Sized>(
 /// proof — the M4/M5 equality (event-derived == `eth_call` at the pool's block) run
 /// live; a mismatch means decode drift / a silent historical rewrite → `verified:false`.
 async fn reconcile_round<P: ChainProvider + ?Sized>(
-    chain_id: u64,
     provider: &P,
     mirror: &Mirror,
     cursor: &mut usize,
@@ -255,24 +253,15 @@ async fn reconcile_round<P: ChainProvider + ?Sized>(
     }
     let start = *cursor % verified.len();
     let batch = verified.len().min(RECONCILE_BATCH);
-    let mut mismatches = 0u64;
-    for i in 0..batch {
-        let pool = &verified[(start + i) % verified.len()];
-        match reconcile_pool(provider, mirror, pool).await {
-            Ok(ReconcileResult::Match) => {}
-            Ok(ReconcileResult::Mismatch) => {
-                mismatches += 1;
-                tracing::warn!(
-                    chain_id,
-                    pool = %pool.address,
-                    "reconcile mismatch — pool marked verified:false"
-                );
-            }
-            Err(e) => tracing::debug!(chain_id, error = %e, "reconcile read failed"),
-        }
-    }
-    if mismatches > 0 {
-        metrics::counter!(l2i_observability::names::RECONCILE_MISMATCHES).increment(mismatches);
+    // The rotating window of pools to reconcile this round, batched into one
+    // Multicall3 per distinct block (mismatches are flipped verified:false inside).
+    let window: Vec<_> = (0..batch)
+        .map(|i| verified[(start + i) % verified.len()].clone())
+        .collect();
+    let tally = reconcile_batch(provider, mirror, &window).await;
+    if tally.mismatched > 0 {
+        metrics::counter!(l2i_observability::names::RECONCILE_MISMATCHES)
+            .increment(tally.mismatched);
     }
     *cursor = start + batch;
 }
