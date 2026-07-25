@@ -215,6 +215,7 @@ fn example_response() -> DetectResponse {
     DetectResponse {
         count: 1,
         opportunities: vec![opp],
+        timing: None,
     }
 }
 
@@ -261,6 +262,26 @@ fn response_roundtrips_through_json() {
     let json = serde_json::to_string(&resp).unwrap();
     let back = DetectResponse::from_engine_json(&json).unwrap();
     assert_eq!(resp, back);
+}
+
+#[test]
+fn response_timing_is_optional_and_relayed() {
+    // Absent by default and omitted from the wire — byte-compatible with an engine
+    // that predates the latency-health field.
+    let bare = example_response();
+    assert!(bare.timing.is_none());
+    assert!(!serde_json::to_string(&bare).unwrap().contains("timing"));
+
+    // Present → preserved verbatim through a round-trip. We relay the engine's
+    // opaque timing block into the output envelope untouched.
+    let mut timed = example_response();
+    timed.timing = Some(serde_json::json!({"component": "engine", "total_ms": 3.9}));
+    let json = serde_json::to_string(&timed).unwrap();
+    assert!(json.contains("\"timing\""));
+    assert_eq!(
+        DetectResponse::from_engine_json(&json).unwrap().timing,
+        timed.timing
+    );
 }
 
 #[test]

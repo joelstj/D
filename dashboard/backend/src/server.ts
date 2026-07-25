@@ -1,4 +1,5 @@
 import { createServer, type Server as HttpServer } from "node:http";
+import { performance } from "node:perf_hooks";
 import path from "node:path";
 import express, { type Express } from "express";
 import cors from "cors";
@@ -11,10 +12,15 @@ import { ExternalProvider } from "./arbitrage/providers/external";
 import type { OpportunityProvider } from "./arbitrage/providers/provider";
 import { PaperExecutor, LiveExecutor, type Executor } from "./arbitrage/executor";
 import { ArbitrageEngine } from "./arbitrage/engine";
+import { LatencyMonitor } from "./arbitrage/latency";
+import { ExecutionLatencyProbe } from "./arbitrage/executionLatency";
 import { WsHub } from "./ws/hub";
 import { createApiRouter } from "./routes/api";
 import { NETWORKS } from "./arbitrage/networks";
 import { createLogger } from "./util/logger";
+
+/** Min interval between `latency` snapshot broadcasts (throttle the fan-out). */
+const LATENCY_BROADCAST_MS = 500;
 
 const log = createLogger("server");
 
@@ -45,10 +51,10 @@ export interface BuildOptions {
  *  - `live`      → direct on-chain quoting via RPC (currently returns none);
  *  - `simulated` → zero-config paper stream (default).
  */
-function selectProvider(env: Env): OpportunityProvider {
+function selectProvider(env: Env, latency: LatencyMonitor): OpportunityProvider {
   switch (env.dataSource) {
     case "external":
-      return new ExternalProvider(env.ingestFeedUrl);
+      return new ExternalProvider(env.ingestFeedUrl, { latency });
     case "live":
       return new LiveProvider(env.rpcUrls);
     default:
@@ -69,13 +75,22 @@ export function buildServer(opts: BuildOptions = {}): AppHandles {
     ...opts.initialSettings,
   });
 
-  const provider = opts.provider ?? selectProvider(env);
+  // End-to-end latency aggregator (ingestion → engine → dashboard) and the
+  // separate, read-only on-chain execution-readiness probe.
+  const latency = new LatencyMonitor();
+  const executionProbe = new ExecutionLatencyProbe({
+    rpcUrls: env.rpcUrls,
+    executorAddress: env.executorAddress,
+    chain: env.executionProbeChain,
+  });
+
+  const provider = opts.provider ?? selectProvider(env, latency);
 
   // Both executors always exist; the engine selects one per execution based on
   // the live `executionMode` setting. Live execution is gated inside LiveExecutor.
   const executors = opts.executors ?? { paper: new PaperExecutor(), live: new LiveExecutor() };
 
-  const engine = new ArbitrageEngine(store, provider, executors);
+  const engine = new ArbitrageEngine(store, provider, executors, latency);
 
   const app = express();
   app.use(cors({ origin: env.corsOrigins.length ? env.corsOrigins : true }));
@@ -88,11 +103,20 @@ export function buildServer(opts: BuildOptions = {}): AppHandles {
     networks: NETWORKS,
     opportunities: engine.getOpportunities().slice(0, 100),
     stats: engine.getStats(),
+    latency: latency.snapshot(),
   }));
 
   app.use(
     "/api",
-    createApiRouter({ store, engine, env, startedAt, clientCount: () => hub.clientCount() }),
+    createApiRouter({
+      store,
+      engine,
+      env,
+      startedAt,
+      clientCount: () => hub.clientCount(),
+      latency,
+      executionProbe,
+    }),
   );
 
   // Optional single-origin mode: serve the built frontend (frontend/dist) on the
@@ -109,8 +133,29 @@ export function buildServer(opts: BuildOptions = {}): AppHandles {
     log.info(`serving frontend from ${staticDir}`);
   }
 
-  // Bridge engine + settings events onto the websocket fan-out.
-  engine.on("opportunity", (opp) => hub.broadcast("opportunity", opp));
+  // Throttled push of the latency snapshot so the UI HUD updates live without a
+  // frame per opportunity.
+  let lastLatencyPush = 0;
+  const maybeBroadcastLatency = () => {
+    const t = Date.now();
+    if (t - lastLatencyPush >= LATENCY_BROADCAST_MS) {
+      lastLatencyPush = t;
+      hub.broadcast("latency", latency.snapshot());
+    }
+  };
+
+  // Bridge engine + settings events onto the websocket fan-out. The opportunity
+  // bridge also closes the latency trace: time the fan-out and, when the batch
+  // carried an ingestion origin anchor, record the single-host end-to-end.
+  engine.on("opportunity", (opp) => {
+    const fanoutStart = performance.now();
+    hub.broadcast("opportunity", opp);
+    latency.record("dashboard", "fanout", performance.now() - fanoutStart);
+    if (typeof opp.originWallMs === "number" && opp.originWallMs > 0) {
+      latency.recordEndToEnd(Date.now() - opp.originWallMs);
+    }
+    maybeBroadcastLatency();
+  });
   engine.on("opportunity:remove", (id) => hub.broadcast("opportunity:remove", { id }));
   engine.on("execution", (result) => hub.broadcast("execution", result));
   engine.on("stats", (stats) => hub.broadcast("stats", stats));

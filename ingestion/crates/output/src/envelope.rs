@@ -18,6 +18,57 @@ pub enum EnvelopeKind {
     Opportunities,
 }
 
+/// One measured processing stage (milliseconds), part of a [`Latency`] block.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Stage {
+    /// Stage name (e.g. `"build"`, `"engine_roundtrip"`).
+    pub stage: String,
+    /// Elapsed time in milliseconds.
+    pub ms: f64,
+}
+
+impl Stage {
+    /// Build a stage from a name and a duration in milliseconds.
+    pub fn new(stage: impl Into<String>, ms: f64) -> Self {
+        Self {
+            stage: stage.into(),
+            ms,
+        }
+    }
+}
+
+/// The ingestion component's latency contribution + the single-host end-to-end
+/// anchor, carried in the envelope for the latency-health pipeline (root
+/// `CLAUDE.md`). Purely additive observability — a consumer that ignores it sees
+/// exactly the previous envelope.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Latency {
+    /// Wall-clock (`SystemTime`) milliseconds at aggregator tick start. Because the
+    /// whole stack runs on one host, the dashboard measures end-to-end latency as
+    /// `now_ms - origin_wall_ms`; it is **not** a monotonic duration and is only
+    /// meaningful within a single host's clock.
+    pub origin_wall_ms: u64,
+    /// The component these stages belong to (always `"ingestion"` here).
+    pub component: String,
+    /// Per-stage durations known at publish time (`build`, `engine_roundtrip`).
+    pub stages: Vec<Stage>,
+    /// Sum of `stages` (milliseconds).
+    pub total_ms: f64,
+}
+
+impl Latency {
+    /// Assemble the ingestion latency block, computing `total_ms` from `stages`.
+    pub fn ingestion(origin_wall_ms: u64, stages: Vec<Stage>) -> Self {
+        let total_ms = stages.iter().map(|s| s.ms).sum();
+        Self {
+            origin_wall_ms,
+            component: "ingestion".to_string(),
+            stages,
+            total_ms,
+        }
+    }
+}
+
 /// The versioned wire envelope.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Envelope {
@@ -29,6 +80,11 @@ pub struct Envelope {
     pub chain_blocks: BTreeMap<u64, u64>,
     /// The typed payload (a pool array, or a `DetectResponse`).
     pub payload: serde_json::Value,
+    /// Optional latency trace (ingestion stages + end-to-end anchor). Additive and
+    /// backward-compatible: omitted from the wire when absent, so pre-existing
+    /// consumers are unaffected (`schema_version` is unchanged).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub latency: Option<Latency>,
 }
 
 impl Envelope {
@@ -40,6 +96,7 @@ impl Envelope {
             kind: EnvelopeKind::Snapshot,
             chain_blocks,
             payload: serde_json::to_value(pools)?,
+            latency: None,
         })
     }
 
@@ -53,7 +110,15 @@ impl Envelope {
             kind: EnvelopeKind::Opportunities,
             chain_blocks,
             payload: serde_json::to_value(resp)?,
+            latency: None,
         })
+    }
+
+    /// Attach a latency trace, consuming and returning the envelope (builder style).
+    #[must_use]
+    pub fn with_latency(mut self, latency: Latency) -> Self {
+        self.latency = Some(latency);
+        self
     }
 
     /// Serialize to a single NDJSON line (no embedded newlines).

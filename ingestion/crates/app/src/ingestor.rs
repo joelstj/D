@@ -162,6 +162,10 @@ impl<P: ChainProvider + 'static> ChainIngestor<P> {
         let Some(topic0) = log.topics().first().copied() else {
             return;
         };
+        // First hot-path stage: time the typed decode → mirror update. Records into
+        // the DECODE_SECONDS histogram on drop (stack-only guard, no allocation).
+        let _decode =
+            l2i_observability::LatencyTimer::start(l2i_observability::names::DECODE_SECONDS);
 
         if topic0 == sync_topic() {
             if let Ok((r0, r1)) = decode_sync_reserves(&log.inner.data.data) {

@@ -2,6 +2,8 @@ import { Router, type Response } from "express";
 import { ZodError } from "zod";
 import type { SettingsStore } from "../settings/store";
 import type { ArbitrageEngine } from "../arbitrage/engine";
+import type { LatencyMonitor } from "../arbitrage/latency";
+import type { ExecutionLatencyProbe } from "../arbitrage/executionLatency";
 import { NETWORKS, FLASH_LOAN_PROVIDERS } from "../arbitrage/networks";
 import type { Env } from "../config/env";
 
@@ -11,6 +13,10 @@ export interface ApiDeps {
   env: Env;
   startedAt: number;
   clientCount: () => number;
+  /** End-to-end pipeline latency aggregator (ingestion → engine → dashboard). */
+  latency: LatencyMonitor;
+  /** Separate read-only on-chain execution-readiness latency probe. */
+  executionProbe: ExecutionLatencyProbe;
 }
 
 /**
@@ -62,6 +68,16 @@ export function createApiRouter(deps: ApiDeps): Router {
   });
 
   router.get("/stats", (_req, res) => res.json(engine.getStats()));
+
+  // End-to-end pipeline latency: per-component stage breakdown + the single-host
+  // ingest → displayed measurement. Read-only observability.
+  router.get("/latency", (_req, res) => res.json(deps.latency.snapshot()));
+
+  // Separate on-chain execution-readiness latency (RPC + optional staticCall).
+  // Strictly read-only — never broadcasts, never touches the live executor.
+  router.get("/health/execution", (_req, res) =>
+    guard(res, async () => res.json(await deps.executionProbe.get())),
+  );
 
   router.post("/execute/:id", (req, res) =>
     guard(res, async () => {

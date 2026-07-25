@@ -49,10 +49,10 @@ flowchart TD
 
 | Service | Bind | Purpose |
 |---------|------|---------|
-| engine | `127.0.0.1:8080` | `POST /detect`, `GET /health` (read-only) |
-| ingestion | `:9001` | WebSocket opportunity feed (Envelope frames) |
-| ingestion | `:9090` / `:9100` | health / Prometheus metrics |
-| dashboard | `127.0.0.1:8787` | REST `/api/*`, WebSocket `/ws`, served UI |
+| engine | `127.0.0.1:8080` | `POST /detect` (response carries an optional `timing` block), `GET /health` (read-only) |
+| ingestion | `:9001` | WebSocket opportunity feed (Envelope frames; optional `latency` trace) |
+| ingestion | `:9090` / `:9100` | health / Prometheus metrics (incl. the 5 `l2i_*_seconds` latency histograms) |
+| dashboard | `127.0.0.1:8787` | REST `/api/*` (incl. `/api/latency`, `/api/health/execution`), WebSocket `/ws`, served UI |
 
 ## The three integration seams
 
@@ -119,6 +119,19 @@ Two equivalent ways to run the wired stack:
 - **`docker-compose.yml`** (container alternative): four services on one network
   (`engine`, `ingestion`, `backend`, `frontend`), pre-wired with
   `DATA_SOURCE=external` and `INGEST_FEED_URL=ws://ingestion:9001`.
+
+## Latency health monitoring
+
+Running orthogonally to the data flow, a **latency-health** system times the trip
+from ingestion read to on-screen opportunity and attributes it to each component's
+internal stages (2–5 per component), so a bottleneck is visible instead of hidden
+in one number. The ingestion layer stamps a single-host wall-clock `origin_wall_ms`
+into each envelope; the engine relays a per-stage `timing` block; the dashboard
+aggregates rolling p50/p95/p99 per stage and the end-to-end, exposes them at
+`GET /api/latency` (+ `/ws`), and renders the *Pipeline Latency* HUD. A **separate,
+read-only** execution-readiness probe (`GET /api/health/execution`) times RPC and
+optional `staticCall` access without ever broadcasting (invariant 3). Full design:
+[`docs/LATENCY.md`](LATENCY.md).
 
 ## Why merged this way
 

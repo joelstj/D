@@ -136,14 +136,17 @@ function legPrice(leg: EngineLeg): number {
  * invalid input (missing numeraire / empty legs) so the caller can drop the bad
  * item and log it rather than surface a malformed row.
  *
- * @param o        the engine opportunity JSON
- * @param now      receipt time in epoch ms (defaults to Date.now())
- * @param ttlMs    how long the row stays live before pruning
+ * @param o             the engine opportunity JSON
+ * @param now           receipt time in epoch ms (defaults to Date.now())
+ * @param ttlMs         how long the row stays live before pruning
+ * @param originWallMs  ingestion tick-start wall clock (ms) for end-to-end latency;
+ *                      omitted/0 when the frame carried no latency trace
  */
 export function mapEngineOpportunity(
   o: EngineOpportunity,
   now: number = Date.now(),
   ttlMs: number = DEFAULT_TTL_MS,
+  originWallMs?: number,
 ): ArbitrageOpportunity {
   if (!o || !o.numeraire || !Array.isArray(o.legs) || o.legs.length === 0) {
     throw new Error("invalid engine opportunity: missing numeraire or legs");
@@ -190,6 +193,7 @@ export function mapEngineOpportunity(
     confidence: Math.max(0, Math.min(1, num(o.risk?.success_probability))),
     status: "new",
     expiresAt: now + ttlMs,
+    ...(originWallMs && originWallMs > 0 ? { originWallMs } : {}),
   };
 }
 

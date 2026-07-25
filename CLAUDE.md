@@ -98,6 +98,16 @@ they read as USD only when the numeraire is a stablecoin — no ETH price is
 fabricated (`engineMap.ts` docstring). `profitBps`/`confidence`/route are always
 exact.
 
+- **Latency health (cross-cutting):** a per-batch latency trace rides the pipeline
+  — the engine returns a `timing` block on `/detect`, the ingestion envelope adds a
+  `latency` field with a single-host wall-clock `origin_wall_ms` anchor, and the
+  dashboard aggregates rolling per-stage stats (2–5 per component) + the end-to-end
+  at `GET /api/latency`/`/ws` and renders the *Pipeline Latency* HUD. A **separate**
+  read-only probe times on-chain execution readiness at `GET /api/health/execution`
+  — RPC + optional `staticCall`, **never** a signer/broadcast (invariant 3). Latency
+  is measured elapsed time, never fabricated; end-to-end is labelled single-host
+  wall clock. Design: `docs/LATENCY.md`.
+
 ---
 
 ## 4. Git & branch discipline

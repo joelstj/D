@@ -135,12 +135,17 @@ class ArbitrageEngine:
         return sum(1 for row in rows if self.ingest(pool_from_dict(row)))
 
     # ------------------------------- compute ------------------------------ #
-    def compute(self, top_n: int = 10, incremental: bool = False) -> list[Opportunity]:
-        """Detect, net-price, de-duplicate, and rank the top ``top_n`` opportunities.
+    def detect_all(self, incremental: bool = False) -> list[Opportunity]:
+        """Run every detector across all configured chains; return the *unranked* finds.
+
+        This is the detection half of :meth:`compute` — identical work, minus the
+        final ranking — exposed so a caller can time detection and ranking as
+        separate stages (the latency-health pipeline) without re-implementing the
+        per-chain sweep. :meth:`compute` delegates to it, so behaviour cannot drift.
 
         ``incremental=True`` restricts each chain's search to pools changed since
-        the previous call (consuming the dirty set); the default full sweep
-        returns all standing opportunities.
+        the previous call (consuming the dirty set); the default full sweep scans
+        all standing opportunities.
         """
         found: list[Opportunity] = []
         for chain_id, graph in self._graphs.items():
@@ -153,7 +158,16 @@ class ArbitrageEngine:
                 detect_on_graph(graph, hubs=hubs, max_hops=self._max_hops, ctx=ctx, sources=sources)
             )
         found.extend(self._detect_cross_chain())
-        return rank_opportunities(found, top_n)
+        return found
+
+    def compute(self, top_n: int = 10, incremental: bool = False) -> list[Opportunity]:
+        """Detect, net-price, de-duplicate, and rank the top ``top_n`` opportunities.
+
+        ``incremental=True`` restricts each chain's search to pools changed since
+        the previous call (consuming the dirty set); the default full sweep
+        returns all standing opportunities.
+        """
+        return rank_opportunities(self.detect_all(incremental=incremental), top_n)
 
     def _detect_cross_chain(self) -> list[Opportunity]:
         """Scan every configured (asset, numeraire) pair across ordered chain pairs."""

@@ -39,6 +39,13 @@ flash-loan contracts that **revert unless profit ≥ your minimum**.
 See **[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)** for the full data flow and
 the three integration seams.
 
+An end-to-end **latency-health** system times the trip from ingestion read to
+on-screen opportunity and breaks it down per component (2–5 stages each), so
+bottlenecks are visible in the dashboard's *Pipeline Latency* HUD
+(`GET /api/latency`). A separate, strictly read-only probe reports on-chain
+execution readiness (`GET /api/health/execution`) without ever broadcasting. See
+**[`docs/LATENCY.md`](docs/LATENCY.md)**.
+
 ## Quick start
 
 ### Option A — the launcher (recommended, cross-platform)

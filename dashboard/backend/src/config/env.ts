@@ -12,6 +12,11 @@ export interface Env {
   rpcUrls: Record<string, string | undefined>;
   /** WebSocket URL of the Rust ingestion layer's output sink (real detections). */
   ingestFeedUrl: string;
+  /** Optional deployed FlashLoanArbitrage address for the read-only execution
+   *  latency probe's `staticCall`. Unset → the probe times RPC reads only. */
+  executorAddress?: string;
+  /** Optional chain key to pin the execution latency probe to (else first RPC). */
+  executionProbeChain?: string;
   /** When set, the built frontend at this dir is served on the same origin as
    *  the API (single-port desktop / .exe mode). Undefined → API only. */
   staticDir?: string;
@@ -48,6 +53,8 @@ export function loadEnv(): Env {
     },
     // The Rust ingestion layer's ws output sink. Used when DATA_SOURCE=external.
     ingestFeedUrl: process.env.INGEST_FEED_URL || "ws://127.0.0.1:9001",
+    executorAddress: process.env.FLASH_LOAN_EXECUTOR_ADDRESS || undefined,
+    executionProbeChain: process.env.EXECUTION_PROBE_CHAIN || undefined,
     staticDir: process.env.SERVE_STATIC_DIR || undefined,
     version: process.env.npm_package_version || "0.1.0",
   };

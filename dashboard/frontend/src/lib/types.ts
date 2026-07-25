@@ -57,6 +57,47 @@ export interface ArbitrageOpportunity {
   confidence: number;
   status: OpportunityStatus;
   expiresAt: number;
+  /** Ingestion tick-start wall clock (ms) for end-to-end latency; real feed only. */
+  originWallMs?: number;
+}
+
+/** Rolling statistics for one measured latency stage. */
+export interface StageStat {
+  stage: string;
+  last: number;
+  avg: number;
+  p50: number;
+  p95: number;
+  p99: number;
+  count: number;
+}
+
+/** A component (ingestion / engine / dashboard) rolled up to its stages. */
+export interface ComponentLatency {
+  component: string;
+  stages: StageStat[];
+}
+
+/** The end-to-end pipeline latency snapshot from `GET /api/latency` / `/ws`. */
+export interface LatencySnapshot {
+  components: ComponentLatency[];
+  endToEnd: StageStat | null;
+  samples: number;
+  anchored: boolean;
+  updatedAt: number;
+}
+
+/** One read-only on-chain execution-readiness measurement. */
+export interface ExecutionLatencySample {
+  configured: boolean;
+  healthy: boolean;
+  chain: string | null;
+  blockNumber: number | null;
+  gasPriceGwei: number | null;
+  stages: { stage: string; ms: number }[];
+  contractProbed: boolean;
+  error: string | null;
+  checkedAt: number;
 }
 
 export interface ExecutionResult {
@@ -112,6 +153,7 @@ export interface Snapshot {
   networks: NetworkInfo[];
   opportunities: ArbitrageOpportunity[];
   stats: EngineStats;
+  latency?: LatencySnapshot;
 }
 
 /** Envelope for every WebSocket message. */
@@ -124,6 +166,7 @@ export interface WsEnvelope<T = unknown> {
     | "stats"
     | "settings"
     | "alert"
+    | "latency"
     | "pong";
   payload: T;
   ts: number;

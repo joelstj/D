@@ -123,6 +123,7 @@ fn example_response() -> DetectResponse {
     DetectResponse {
         count: 1,
         opportunities: vec![opp],
+        timing: None,
     }
 }
 

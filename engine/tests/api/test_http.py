@@ -57,3 +57,12 @@ def test_detect_rejects_malformed_request(client: TestClient) -> None:
     # max_hops out of the validated range -> 422 from FastAPI/pydantic.
     resp = client.post("/detect", json={"max_hops": 99})
     assert resp.status_code == 422
+
+
+def test_detect_response_includes_engine_timing(client: TestClient, gk: type[GraphKit]) -> None:
+    # The latency-health pipeline needs the engine's per-stage timing to survive the
+    # HTTP boundary so the ingestion layer can relay it downstream.
+    body = client.post("/detect", json=_request(gk)).json()
+    timing = body["timing"]
+    assert timing["component"] == "engine"
+    assert [s["stage"] for s in timing["stages"]] == ["build", "detect", "rank", "serialize"]

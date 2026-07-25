@@ -62,7 +62,26 @@ def test_top_n_is_respected(gk: type[GraphKit]) -> None:
 
 
 def test_empty_request_returns_no_opportunities() -> None:
-    assert run_detection({"chains": [], "pools": []}) == {"count": 0, "opportunities": []}
+    resp = run_detection({"chains": [], "pools": []})
+    assert resp["count"] == 0
+    assert resp["opportunities"] == []
+    # A timing block always rides along (observability); it never changes results.
+    assert resp["timing"]["component"] == "engine"
+
+
+def test_response_carries_engine_stage_timing(gk: type[GraphKit]) -> None:
+    resp = run_detection(_single_chain_request(gk))
+    timing = resp["timing"]
+    assert timing["component"] == "engine"
+    # The four engine stages are reported, in order, so a dashboard can attribute a
+    # slow request to build / detect / rank / serialize rather than one opaque total.
+    assert [s["stage"] for s in timing["stages"]] == ["build", "detect", "rank", "serialize"]
+    for stage in timing["stages"]:
+        assert isinstance(stage["ms"], float)
+        assert stage["ms"] >= 0.0
+    assert timing["total_ms"] >= 0.0
+    # Timing is instrumentation only: dropping it leaves the exact same result set.
+    assert resp["count"] >= 1
 
 
 def test_cross_chain_via_service(gk: type[GraphKit]) -> None:
