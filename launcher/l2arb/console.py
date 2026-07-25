@@ -9,7 +9,34 @@ from __future__ import annotations
 import os
 import sys
 
-_USE_COLOR = sys.stdout.isatty() and os.environ.get("NO_COLOR") is None and os.name != "nt"
+
+def _enable_windows_vt() -> bool:
+    """Turn on ANSI/VT processing for the Windows console so colour works there too
+    (modern Windows 10+ terminals support it once the mode bit is set). Returns True
+    on success; harmless no-op elsewhere."""
+    if os.name != "nt":
+        return False
+    try:
+        import ctypes
+
+        kernel32 = ctypes.windll.kernel32  # type: ignore[attr-defined]
+        # STD_OUTPUT_HANDLE = -11; ENABLE_VIRTUAL_TERMINAL_PROCESSING = 0x0004.
+        handle = kernel32.GetStdHandle(-11)
+        mode = ctypes.c_uint32()
+        if not kernel32.GetConsoleMode(handle, ctypes.byref(mode)):
+            return False
+        return bool(kernel32.SetConsoleMode(handle, mode.value | 0x0004))
+    except Exception:  # pragma: no cover - defensive; any failure just means no colour
+        return False
+
+
+# Colour when attached to a TTY, not disabled via NO_COLOR, and the terminal can
+# render ANSI — including modern Windows consoles once VT processing is enabled.
+_USE_COLOR = (
+    sys.stdout.isatty()
+    and os.environ.get("NO_COLOR") is None
+    and (os.name != "nt" or _enable_windows_vt())
+)
 
 
 def _c(code: str, text: str) -> str:

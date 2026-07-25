@@ -9,9 +9,13 @@ bundles cleanly into the Windows `.exe`.
 | Command | Behaviour |
 |---------|-----------|
 | `l2arb` (no args) | **auto**: install if needed, then run + open the dashboard |
-| `l2arb doctor` | report toolchains, install state, config readiness |
+| `l2arb doctor` | report toolchains, install state, config readiness, + next step |
 | `l2arb install` | build all components (`--paper-only` for the dashboard alone) |
+| `l2arb setup` | guided live setup — paste **one** Arbitrum RPC URL, done |
 | `l2arb run` | start the stack (`--live` for the full on-chain path, else paper) |
+
+`l2arb run` self-heals: if the app isn't built yet it builds it first, so every
+command "just works" whatever order you run them in.
 
 It orchestrates three runnable services and serves the UI on one origin:
 
@@ -33,11 +37,16 @@ dashboard  127.0.0.1:8787   node backend/dist/index.js     (REST + /ws + served 
 
 ```bash
 cd launcher
-python3 -m l2arb doctor        # check toolchains
+python3 -m l2arb doctor        # check toolchains + see your next step
 python3 -m l2arb install       # build engine venv + dashboard + ingestion
 python3 -m l2arb run           # paper mode, opens the dashboard
-python3 -m l2arb run --live    # full stack (needs .l2arb/config.toml filled)
+python3 -m l2arb setup         # live setup: paste one Arbitrum RPC URL
+python3 -m l2arb run --live    # full stack on real data
 ```
+
+`setup` is non-interactive too: `l2arb setup --http <url>` (or
+`--provider alchemy --key <key>`), with an optional `--backup <url>` for the
+rate-limit failover.
 
 State (venv, generated `config.toml`, logs, install marker) lives under
 `<workspace>/.l2arb/`. In a frozen `.exe` the workspace is a per-user install

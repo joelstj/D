@@ -51,13 +51,20 @@ python3 -m l2arb run         # paper mode: builds the dashboard if needed, opens
 
 `python3 -m l2arb run` with no config launches the **paper dashboard** at
 <http://localhost:8787> — real detection wiring, simulated fills, zero setup. For
-the full live stack:
+the full live stack, `setup` handles the config for you — paste **one** Arbitrum
+RPC URL (get a free one from alchemy.com / infura.io) and it writes a complete,
+validated, live-ready config from real on-chain-verified addresses:
 
 ```bash
 python3 -m l2arb install     # build engine venv + dashboard + ingestion binary
-# edit .l2arb/config.toml — real RPC endpoints + pool registries per chain
+python3 -m l2arb setup        # paste one RPC URL (or: --http <url> / --provider alchemy --key <k>)
 python3 -m l2arb run --live  # engine + ingestion + dashboard on real data
 ```
+
+(Prefer to hand-edit? `.l2arb/config.toml` is the full surface — real RPC
+endpoints + pool registries per chain, using `ingestion/config/config.example.toml`
+as the reference. Endpoints accept a comma-separated `primary, backup` for
+automatic rate-limit failover.)
 
 Once running, `l2arb run` shows a live **health HUD** and continuously
 self-heals: it probes each service's process + `/health`, diagnoses faults, and
@@ -66,9 +73,10 @@ human-gated execution path. Ctrl-C stops the stack cleanly.
 
 ### Option B — the Windows `.exe`
 
-A single **`L2ArbBot.exe`** that installs everything on first run, then just
-launches and opens the dashboard on subsequent runs. Build it with the
-`build-windows-exe` GitHub Actions workflow (or `scripts/build_windows_exe.ps1`
+A single **`L2ArbBot.exe`** — **double-click it** and it installs everything on
+first run, then just launches and opens the dashboard (safe paper mode) on later
+runs. To go live, `L2ArbBot.exe setup` and paste one RPC URL. Build the exe with
+the `build-windows-exe` GitHub Actions workflow (or `scripts/build_windows_exe.ps1`
 on Windows). See **[`docs/INSTALL.md`](docs/INSTALL.md)**.
 
 ### Option C — Docker

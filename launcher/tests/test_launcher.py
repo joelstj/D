@@ -16,7 +16,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from l2arb import config, state  # noqa: E402
 from l2arb.paths import Layout, workspace_root  # noqa: E402
-from l2arb.prereqs import _VERSION_RE, _ge  # noqa: E402
+from l2arb.prereqs import _VERSION_RE, _ge, merge_path  # noqa: E402
 
 
 class PathsTest(unittest.TestCase):
@@ -43,6 +43,15 @@ class StateTest(unittest.TestCase):
             self.assertFalse(r.engine)
             self.assertFalse(r.ingestion)
             self.assertFalse(r.full)
+
+    def test_next_step_guides_from_nothing_to_live(self):
+        none = state.ComponentReadiness(engine=False, dashboard=False, ingestion=False)
+        paper = state.ComponentReadiness(engine=False, dashboard=True, ingestion=False)
+        full = state.ComponentReadiness(engine=True, dashboard=True, ingestion=True)
+        self.assertIn("install", state.next_step(none, False).lower())
+        self.assertIn("paper mode is ready", state.next_step(paper, False).lower())
+        self.assertIn("setup", state.next_step(full, False).lower())  # built, not configured
+        self.assertIn("--live", state.next_step(full, True))  # built + configured
 
 
 class ConfigTest(unittest.TestCase):
@@ -95,6 +104,26 @@ class PrereqParsingTest(unittest.TestCase):
         self.assertTrue(_ge((20, 1), (20,)))
         self.assertFalse(_ge((18, 0), (20,)))
         self.assertFalse(_ge(None, (1,)))
+
+
+class MergePathTest(unittest.TestCase):
+    def test_appends_new_dirs_preserving_order(self):
+        got = merge_path("/a:/b", ["/c", "/d"], windows=False, sep=":")
+        self.assertEqual(got, "/a:/b:/c:/d")
+
+    def test_drops_duplicates_and_empties(self):
+        got = merge_path("/a::/b", ["/b", "/c", "  "], windows=False, sep=":")
+        self.assertEqual(got, "/a:/b:/c")
+
+    def test_windows_dedup_is_case_and_trailing_slash_insensitive(self):
+        got = merge_path(
+            "C:\\Python312;C:\\Node",
+            ["c:\\python312\\", "C:\\Cargo\\bin"],
+            windows=True,
+            sep=";",
+        )
+        # The already-present Python dir (different case/slash) is not re-added.
+        self.assertEqual(got, "C:\\Python312;C:\\Node;C:\\Cargo\\bin")
 
 
 if __name__ == "__main__":
