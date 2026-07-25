@@ -16,6 +16,15 @@ async fn health_and_metrics_endpoints() {
         let _t = LatencyTimer::start(names::HOTPATH_SECONDS);
         // (work) — records on drop.
     }
+    // The latency-health histograms — one sample each so they render in /metrics.
+    for name in [
+        names::DECODE_SECONDS,
+        names::ENGINE_DETECT_SECONDS,
+        names::PUBLISH_SECONDS,
+        names::TICK_E2E_SECONDS,
+    ] {
+        let _t = LatencyTimer::start(name);
+    }
 
     let app = router(handle);
 
@@ -59,4 +68,15 @@ async fn health_and_metrics_endpoints() {
         text.contains(names::HOTPATH_SECONDS),
         "missing histogram:\n{text}"
     );
+    for name in [
+        names::DECODE_SECONDS,
+        names::ENGINE_DETECT_SECONDS,
+        names::PUBLISH_SECONDS,
+        names::TICK_E2E_SECONDS,
+    ] {
+        assert!(
+            text.contains(name),
+            "missing latency histogram {name}:\n{text}"
+        );
+    }
 }

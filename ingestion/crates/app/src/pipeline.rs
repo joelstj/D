@@ -20,7 +20,7 @@ use l2i_engine_client::{
 };
 use l2i_ingest::mirror::Mirror;
 use l2i_observability::{names, LatencyTimer};
-use l2i_output::{Envelope, OutputSink};
+use l2i_output::{Envelope, Latency, OutputSink, Stage};
 use l2i_registry::{gate::GatePolicy, load_registry_file, validate_registry};
 use l2i_rpc::backoff::{Backoff, BackoffPolicy};
 use l2i_rpc::{AlloyProvider, BlockId, ChainProvider};
@@ -344,6 +344,17 @@ fn now_unix() -> u64 {
         .unwrap_or(0)
 }
 
+/// Wall-clock milliseconds since the Unix epoch — the single-host end-to-end
+/// latency anchor stamped into each opportunities envelope. Unlike [`Instant`] this
+/// is a *wall* clock (comparable across processes on one host), not a monotonic
+/// duration; the dashboard measures `now_ms - origin_wall_ms` against it.
+fn now_wall_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
 #[allow(clippy::too_many_lines)]
 async fn aggregator_loop(
     config: Config,
@@ -414,6 +425,12 @@ async fn aggregator_loop(
                     continue;
                 }
 
+                // Anchor the end-to-end latency trace at tick start: a wall clock
+                // (single-host, comparable to the dashboard) plus a monotonic Instant
+                // for the ingestion-side tick_e2e measurement.
+                let origin_wall_ms = now_wall_ms();
+                let tick_start = Instant::now();
+
                 // HOTPATH_SECONDS measures the intra-process build (snapshot →
                 // request), NOT the engine round-trip (that is ENGINE_DETECT_SECONDS).
                 let hot_timer = LatencyTimer::start(names::HOTPATH_SECONDS);
@@ -452,21 +469,39 @@ async fn aggregator_loop(
                 }
                 let req = build_detect_request(snaps, incremental, cross_chain.clone(), req_cfg);
                 last_sent_ms = Some(now);
+                let build_ms = hot_timer.elapsed_secs() * 1000.0;
                 drop(hot_timer); // stop the hot-path timer before the engine round-trip
 
-                let resp = {
-                    let _detect = LatencyTimer::start(names::ENGINE_DETECT_SECONDS);
-                    engine.detect(&req).await
+                let (resp, roundtrip_ms) = {
+                    let detect = LatencyTimer::start(names::ENGINE_DETECT_SECONDS);
+                    let resp = engine.detect(&req).await;
+                    (resp, detect.elapsed_secs() * 1000.0)
                 };
                 match resp {
                     Ok(resp) => {
+                        // PUBLISH_SECONDS covers response validation → envelope
+                        // serialize → sink publish (the last ingestion stage).
+                        let publish = LatencyTimer::start(names::PUBLISH_SECONDS);
                         let issues = validate_response(&req, &resp);
                         if !issues.is_empty() {
                             tracing::warn!(?issues, "engine response had issues");
                         }
+                        // The stages known at publish time (build + engine round-trip)
+                        // ride in the envelope; publish itself is captured only in
+                        // Prometheus (it cannot include its own duration in its frame).
+                        let latency = Latency::ingestion(
+                            origin_wall_ms,
+                            vec![
+                                Stage::new("build", build_ms),
+                                Stage::new("engine_roundtrip", roundtrip_ms),
+                            ],
+                        );
                         if let Ok(env) = Envelope::opportunities(&resp, chain_blocks.clone()) {
-                            let _ = sink.publish(&env).await;
+                            let _ = sink.publish(&env.with_latency(latency)).await;
                         }
+                        drop(publish); // record PUBLISH_SECONDS before the tick_e2e sample
+                        metrics::histogram!(names::TICK_E2E_SECONDS)
+                            .record(tick_start.elapsed().as_secs_f64());
                     }
                     Err(e) => tracing::warn!(error = %e, "detect failed — keeping last good snapshot"),
                 }

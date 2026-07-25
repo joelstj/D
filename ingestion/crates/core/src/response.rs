@@ -104,6 +104,14 @@ pub struct DetectResponse {
     pub count: u32,
     /// Ranked opportunities (ordered by `score`, do not re-sort).
     pub opportunities: Vec<Opportunity>,
+    /// Optional engine-internal stage timing for the latency-health pipeline
+    /// (`{component, stages:[{stage, ms}], total_ms}`). The engine owns this
+    /// vocabulary, so — like `strategy` and `risk.notes` — we model it leniently as
+    /// an opaque value and **relay it verbatim** into the output envelope's payload
+    /// so the dashboard can attribute latency to the engine's internal stages. Absent
+    /// on responses from an engine that predates the field.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timing: Option<serde_json::Value>,
 }
 
 impl DetectResponse {

@@ -15,7 +15,7 @@ pub mod envelope;
 pub mod sink;
 pub mod ws;
 
-pub use envelope::{Envelope, EnvelopeKind};
+pub use envelope::{Envelope, EnvelopeKind, Latency, Stage};
 pub use sink::{OutputError, OutputSink, Result, StdoutSink};
 pub use ws::WsServerSink;
 

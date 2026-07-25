@@ -15,6 +15,15 @@ pub mod names {
     pub const HOTPATH_SECONDS: &str = "l2i_hotpath_seconds";
     /// Histogram: engine `/detect` round-trip latency (seconds).
     pub const ENGINE_DETECT_SECONDS: &str = "l2i_engine_detect_seconds";
+    /// Histogram: single-log decode → mirror-update latency (seconds). The first
+    /// stage of the hot path — a bottleneck here means event decoding, not detection.
+    pub const DECODE_SECONDS: &str = "l2i_decode_seconds";
+    /// Histogram: response validate → envelope serialize → sink publish (seconds).
+    /// The last ingestion stage before the frame leaves for the dashboard.
+    pub const PUBLISH_SECONDS: &str = "l2i_publish_seconds";
+    /// Histogram: whole aggregator tick, tick-start → published (seconds). The
+    /// ingestion-side end-to-end (build + engine round-trip + publish).
+    pub const TICK_E2E_SECONDS: &str = "l2i_tick_e2e_seconds";
     /// Counter: reconciliation mismatches detected.
     pub const RECONCILE_MISMATCHES: &str = "l2i_reconcile_mismatches_total";
     /// Counter: reorgs handled.

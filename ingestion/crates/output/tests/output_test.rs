@@ -7,7 +7,7 @@ use l2i_core::{
     response::Block, Blockstamp, DecU256, DetectResponse, Pool, PoolAddress, PoolKind, Token,
     V2State,
 };
-use l2i_output::{Envelope, EnvelopeKind, OutputSink, WsServerSink};
+use l2i_output::{Envelope, EnvelopeKind, Latency, OutputSink, Stage, WsServerSink};
 use serde_json::Value;
 use std::collections::BTreeMap;
 use std::time::Duration;
@@ -85,6 +85,7 @@ async fn ws_subscriber_receives_snapshot_and_opportunities() {
     let resp = DetectResponse {
         count: 1,
         opportunities: vec![opp()],
+        timing: None,
     };
     sink.publish(&Envelope::opportunities(&resp, chain_blocks).unwrap())
         .await
@@ -160,4 +161,70 @@ fn opp() -> l2i_core::Opportunity {
         },
         legs: vec![],
     }
+}
+
+fn opp_response() -> DetectResponse {
+    DetectResponse {
+        count: 1,
+        opportunities: vec![opp()],
+        timing: None,
+    }
+}
+
+#[test]
+fn opportunities_envelope_omits_latency_by_default() {
+    // Backward compatibility: without a trace attached, the wire is byte-identical
+    // to before this feature — no `latency` key, schema_version unchanged.
+    let env = Envelope::opportunities(&opp_response(), BTreeMap::new()).unwrap();
+    let v: Value = serde_json::from_str(&env.to_ndjson().unwrap()).unwrap();
+    assert_eq!(v["schema_version"], l2i_core::SCHEMA_VERSION);
+    assert!(
+        v.get("latency").is_none(),
+        "latency must be omitted when absent"
+    );
+}
+
+#[test]
+fn with_latency_serializes_and_round_trips() {
+    let latency = Latency::ingestion(
+        1_712_862_552_000,
+        vec![
+            Stage::new("build", 0.9),
+            Stage::new("engine_roundtrip", 8.5),
+        ],
+    );
+    // total_ms is derived from the stages.
+    assert!((latency.total_ms - 9.4).abs() < 1e-9);
+
+    let env = Envelope::opportunities(&opp_response(), BTreeMap::new())
+        .unwrap()
+        .with_latency(latency);
+    let v: Value = serde_json::from_str(&env.to_ndjson().unwrap()).unwrap();
+    assert_eq!(v["latency"]["origin_wall_ms"], 1_712_862_552_000u64);
+    assert_eq!(v["latency"]["component"], "ingestion");
+    assert_eq!(v["latency"]["stages"][0]["stage"], "build");
+    assert_eq!(v["latency"]["stages"][1]["stage"], "engine_roundtrip");
+    assert_eq!(v["latency"]["stages"][1]["ms"], 8.5);
+
+    // Round-trips back into a typed Envelope with the trace intact.
+    let back: Envelope = serde_json::from_value(v).unwrap();
+    let got = back.latency.expect("latency present");
+    assert_eq!(got.origin_wall_ms, 1_712_862_552_000);
+    assert_eq!(got.stages.len(), 2);
+}
+
+#[test]
+fn engine_timing_is_relayed_verbatim_in_payload() {
+    // The engine's internal stage timing rides through the ingestion layer untouched
+    // so the dashboard can attribute latency to build/detect/rank/serialize.
+    let mut resp = opp_response();
+    resp.timing = Some(serde_json::json!({
+        "component": "engine",
+        "stages": [{"stage": "detect", "ms": 3.1}],
+        "total_ms": 3.1,
+    }));
+    let env = Envelope::opportunities(&resp, BTreeMap::new()).unwrap();
+    let v: Value = serde_json::from_str(&env.to_ndjson().unwrap()).unwrap();
+    assert_eq!(v["payload"]["timing"]["component"], "engine");
+    assert_eq!(v["payload"]["timing"]["stages"][0]["stage"], "detect");
 }
