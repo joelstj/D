@@ -16,7 +16,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from l2arb import config, state  # noqa: E402
 from l2arb.paths import Layout, workspace_root  # noqa: E402
-from l2arb.prereqs import _VERSION_RE, _ge  # noqa: E402
+from l2arb.prereqs import _VERSION_RE, _ge, merge_path  # noqa: E402
 
 
 class PathsTest(unittest.TestCase):
@@ -95,6 +95,26 @@ class PrereqParsingTest(unittest.TestCase):
         self.assertTrue(_ge((20, 1), (20,)))
         self.assertFalse(_ge((18, 0), (20,)))
         self.assertFalse(_ge(None, (1,)))
+
+
+class MergePathTest(unittest.TestCase):
+    def test_appends_new_dirs_preserving_order(self):
+        got = merge_path("/a:/b", ["/c", "/d"], windows=False, sep=":")
+        self.assertEqual(got, "/a:/b:/c:/d")
+
+    def test_drops_duplicates_and_empties(self):
+        got = merge_path("/a::/b", ["/b", "/c", "  "], windows=False, sep=":")
+        self.assertEqual(got, "/a:/b:/c")
+
+    def test_windows_dedup_is_case_and_trailing_slash_insensitive(self):
+        got = merge_path(
+            "C:\\Python312;C:\\Node",
+            ["c:\\python312\\", "C:\\Cargo\\bin"],
+            windows=True,
+            sep=";",
+        )
+        # The already-present Python dir (different case/slash) is not re-added.
+        self.assertEqual(got, "C:\\Python312;C:\\Node;C:\\Cargo\\bin")
 
 
 if __name__ == "__main__":

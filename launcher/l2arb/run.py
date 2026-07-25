@@ -52,8 +52,17 @@ def _service(lo: Layout, name: str, cmd, cwd, env, *, port: int) -> Service:
 def run(lo: Layout, *, live: bool, port: int, open_browser: bool = True) -> int:
     ready = state.probe(lo)
     if not ready.dashboard:
-        console.err("dashboard is not built yet — run `l2arb install` first")
-        return 1
+        # Self-heal instead of erroring: a user who typed `run` before `install`
+        # (or whose build was interrupted) just gets it built now — full when they
+        # asked for live, dashboard-only otherwise.
+        from . import installer
+
+        console.warn("not built yet — installing now (one-time; this can take a few minutes)")
+        installer.install(lo, installer.InstallOptions(paper_only=not live))
+        ready = state.probe(lo)
+        if not ready.dashboard:
+            console.err("dashboard build failed — see the output above")
+            return 1
 
     # Decide the effective mode.
     if live:

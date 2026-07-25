@@ -14,6 +14,7 @@ system — installing a system compiler behind the user's back is not our call.
 
 from __future__ import annotations
 
+import os
 import re
 import shutil
 import subprocess
@@ -175,13 +176,96 @@ def _winget_install(pkg_id: str) -> bool:
     return False
 
 
+def merge_path(existing: str, extra, *, windows: bool = IS_WINDOWS, sep: str = os.pathsep) -> str:
+    """Append `extra` directories to a PATH string, dropping duplicates and empties
+    (case-insensitively on Windows) while preserving first-seen order. The pure core
+    of [`refresh_process_path`]."""
+    seen: set[str] = set()
+    out: list[str] = []
+    for part in list(existing.split(sep)) + list(extra):
+        part = part.strip()
+        if not part:
+            continue
+        key = part.rstrip("\\/")
+        key = key.lower() if windows else key
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(part)
+    return sep.join(out)
+
+
+def _windows_registry_path() -> list[str]:
+    """PATH entries from the Windows registry (user + machine) — where winget writes
+    a freshly-installed tool's directory. Empty on non-Windows or on any error."""
+    if not IS_WINDOWS:
+        return []
+    try:
+        import winreg  # type: ignore
+    except ImportError:
+        return []
+    dirs: list[str] = []
+    keys = (
+        (winreg.HKEY_CURRENT_USER, "Environment"),
+        (
+            winreg.HKEY_LOCAL_MACHINE,
+            r"SYSTEM\CurrentControlSet\Control\Session Manager\Environment",
+        ),
+    )
+    for root, sub in keys:
+        try:
+            with winreg.OpenKey(root, sub) as k:
+                val, _ = winreg.QueryValueEx(k, "Path")
+        except OSError:
+            continue
+        dirs.extend(os.path.expandvars(p) for p in val.split(os.pathsep) if p)
+    return dirs
+
+
+def refresh_process_path() -> bool:
+    """Pull newly-installed tool directories from the registry into this process's
+    ``PATH`` so a tool winget *just* installed is found without reopening the shell —
+    the usual reason a first-run build fails right after a successful install.
+    Returns True if ``PATH`` changed."""
+    extra = _windows_registry_path()
+    if not extra:
+        return False
+    before = os.environ.get("PATH", "")
+    after = merge_path(before, extra)
+    if after == before:
+        return False
+    os.environ["PATH"] = after
+    return True
+
+
 def ensure_windows_prereqs(need_rust: bool = True, need_engine: bool = True) -> None:
-    """Best-effort install of missing toolchains on Windows via winget."""
+    """Best-effort install of missing toolchains on Windows via winget, then refresh
+    the process ``PATH`` so this same run can use them."""
     if not IS_WINDOWS:
         return
+    installed = False
     if need_engine and not find_engine_python():
-        _winget_install(_WINGET_IDS["python"])
+        installed |= _winget_install(_WINGET_IDS["python"])
     if not detect_node().ok:
-        _winget_install(_WINGET_IDS["node"])
+        installed |= _winget_install(_WINGET_IDS["node"])
     if need_rust and not detect_cargo().ok:
-        _winget_install(_WINGET_IDS["rust"])
+        installed |= _winget_install(_WINGET_IDS["rust"])
+
+    if installed and refresh_process_path():
+        console.info("refreshed PATH with newly-installed tools (no restart needed)")
+
+    # If a required tool is still not visible, winget's PATH update needs a fresh
+    # session — tell the user plainly instead of failing the build cryptically.
+    missing = []
+    if need_engine and not find_engine_python():
+        missing.append("Python 3.11/3.12")
+    if not detect_node().ok:
+        missing.append("Node ≥ 20")
+    if need_rust and not detect_cargo().ok:
+        missing.append("Rust (cargo)")
+    if installed and missing:
+        console.warn(
+            "installed toolchain(s), but "
+            + ", ".join(missing)
+            + " aren't on PATH yet. Close this window and run L2ArbBot again."
+        )
