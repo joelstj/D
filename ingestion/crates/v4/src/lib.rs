@@ -19,4 +19,4 @@ pub use event::{
     decode_v4_modify_liquidity, decode_v4_swap, decode_v4_swap_parts, V4LiquidityChange,
     V4SwapState,
 };
-pub use stateview::{effective_fee, seed_v4_pools};
+pub use stateview::{effective_fee, reconcile_v4_batch, seed_v4_pools};

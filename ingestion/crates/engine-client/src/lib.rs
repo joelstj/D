@@ -18,7 +18,7 @@ mod validate;
 
 pub use http::{HttpConfig, HttpEngineClient};
 pub use subprocess::SubprocessEngineClient;
-pub use validate::{validate_response, ResponseIssue};
+pub use validate::{retain_valid, validate_response, ResponseIssue};
 
 use async_trait::async_trait;
 use l2i_core::{DetectRequest, DetectResponse};

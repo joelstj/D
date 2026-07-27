@@ -91,4 +91,95 @@ mod tests {
         assert_eq!(effective_fee(500, 9999), 500); // static ignores live
         assert_eq!(effective_fee(DYNAMIC_FEE_FLAG, 2500), 2500); // dynamic uses live
     }
+
+    use crate::event::V4SwapState;
+    use alloy_primitives::B256;
+    use l2i_core::{Blockstamp, PoolKind, Token};
+    use l2i_ingest::mirror::{LiveState, PoolState};
+
+    fn v4_pool(id: B256, fee_pips: u32) -> PoolState {
+        PoolState {
+            identity: PoolAddress::PoolId(id),
+            kind: PoolKind::V3, // V4 maps onto the v3 shape
+            fee_pips,
+            token0: Token::with_symbol(130, Address::from([1; 20]), 18, "WETH"),
+            token1: Token::with_symbol(130, Address::from([2; 20]), 6, "USDC"),
+            state: LiveState::V3 {
+                sqrt_price_x96: U256::from(123_456u64),
+                tick: 0,
+                liquidity: U256::from(1_000_000u64),
+            },
+            blockstamp: Blockstamp {
+                chain_id: 130,
+                number: 100,
+                block_hash: B256::from([100; 32]),
+                timestamp: 100,
+            },
+            verified: true,
+        }
+    }
+
+    fn v4_swap(id: B256, fee: u32) -> V4SwapState {
+        V4SwapState {
+            pool_id: id,
+            sqrt_price_x96: U256::from(654_321u64),
+            liquidity: U256::from(2_000_000u64),
+            tick: 5,
+            fee,
+        }
+    }
+
+    #[test]
+    fn dynamic_fee_pool_adopts_swap_fee_on_live_path() {
+        // The live ingestor now routes V4 swaps through apply_v4_swap. For a dynamic-fee
+        // pool (declared_fee == 0x800000), the effective fee carried in the Swap event
+        // must land in the mirror — the exact update the old apply_v3_swap path dropped.
+        let mirror = Mirror::new();
+        let id = B256::from([7; 32]);
+        mirror.insert(v4_pool(id, 1_000)); // seeded resolved fee (0.10%)
+        let stamp = Blockstamp {
+            chain_id: 130,
+            number: 101,
+            block_hash: B256::from([101; 32]),
+            timestamp: 101,
+        };
+        assert!(apply_v4_swap(
+            &mirror,
+            &v4_swap(id, 2_500),
+            DYNAMIC_FEE_FLAG,
+            stamp
+        ));
+
+        let got = mirror.get(&PoolAddress::PoolId(id)).unwrap();
+        assert_eq!(
+            got.fee_pips, 2_500,
+            "dynamic-fee pool must adopt the swap's effective fee"
+        );
+        assert!(
+            matches!(got.state, LiveState::V3 { tick: 5, .. }),
+            "priced state is updated too"
+        );
+    }
+
+    #[test]
+    fn static_fee_pool_keeps_declared_fee_on_live_path() {
+        // A static-fee pool (declared_fee != sentinel) must keep its declared fee even
+        // though the Swap event carries a fee field.
+        let mirror = Mirror::new();
+        let id = B256::from([8; 32]);
+        mirror.insert(v4_pool(id, 500)); // static 0.05%
+        let stamp = Blockstamp {
+            chain_id: 130,
+            number: 101,
+            block_hash: B256::from([101; 32]),
+            timestamp: 101,
+        };
+        assert!(apply_v4_swap(&mirror, &v4_swap(id, 9_999), 500, stamp));
+
+        let got = mirror.get(&PoolAddress::PoolId(id)).unwrap();
+        assert_eq!(
+            got.fee_pips, 500,
+            "static-fee pool must not adopt the event fee"
+        );
+    }
 }
