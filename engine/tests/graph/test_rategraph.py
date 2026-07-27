@@ -93,6 +93,27 @@ def test_untradable_pool_is_treated_as_removal() -> None:
     assert g.out_edges(A.key) == []
 
 
+def test_quarantined_token_excludes_pool_from_graph() -> None:
+    g = RateGraph(CHAIN)
+    q = Token(chain_id=CHAIN, address="0x" + "22" * 20, decimals=6, symbol="B", quarantined=True)
+    # A tradable pool whose token1 is quarantined contributes no rate edge, so no
+    # cycle can route through the (unpriceable) token ...
+    touched = g.upsert_pool(v2_pool("0x" + "aa" * 20, A, q, 10**18, 3000 * 10**6))
+    assert touched == {A.key, q.key}  # both endpoints still flagged dirty
+    assert g.num_edges == 0
+    assert g.out_edges(A.key) == []
+    assert g.tokens() == set()
+    # ... yet the pool is retained in the pool map for provenance.
+    assert g.pool("0x" + "aa" * 20).address == "0x" + "aa" * 20
+
+
+def test_quarantined_token0_also_excludes_pool() -> None:
+    g = RateGraph(CHAIN)
+    q = Token(chain_id=CHAIN, address="0x" + "11" * 20, decimals=18, symbol="A", quarantined=True)
+    g.upsert_pool(v2_pool("0x" + "aa" * 20, q, B, 10**18, 3000 * 10**6))
+    assert g.num_edges == 0  # a quarantined token0 excludes the pool too
+
+
 def test_remove_pool() -> None:
     g = RateGraph(CHAIN)
     addr = "0x" + "aa" * 20

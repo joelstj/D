@@ -56,7 +56,16 @@ class GraphKit:
 
     @staticmethod
     def v3(
-        n: int, t0: Token, t1: Token, sqrt_price_x96: int, liquidity: int, fee: int = 500
+        n: int,
+        t0: Token,
+        t1: Token,
+        sqrt_price_x96: int,
+        liquidity: int,
+        fee: int = 500,
+        *,
+        tick: int = 0,
+        sqrt_ratio_lower_x96: int | None = None,
+        sqrt_ratio_upper_x96: int | None = None,
     ) -> PoolState:
         return PoolState(
             address=f"0x{n:040x}",
@@ -65,7 +74,13 @@ class GraphKit:
             token1=t1,
             fee_pips=fee,
             blockstamp=GraphKit.blockstamp(t0.chain_id),
-            v3=V3Slot0(sqrt_price_x96=sqrt_price_x96, tick=0, liquidity=liquidity),
+            v3=V3Slot0(
+                sqrt_price_x96=sqrt_price_x96,
+                tick=tick,
+                liquidity=liquidity,
+                sqrt_ratio_lower_x96=sqrt_ratio_lower_x96,
+                sqrt_ratio_upper_x96=sqrt_ratio_upper_x96,
+            ),
         )
 
     @staticmethod

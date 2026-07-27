@@ -68,21 +68,38 @@ class RateGraph:
     def upsert_pool(self, pool: PoolState) -> set[TokenKey]:
         """Insert or update ``pool``'s two edges in place; return its two tokens.
 
-        An untradable pool (zero liquidity on a side) is treated as a removal so
-        the graph never carries an unpriceable edge. Both endpoint tokens are
-        marked dirty for the next incremental search.
+        An untradable pool (zero liquidity on a side) **or a pool touching a
+        quarantined token** is treated as a removal so the graph never carries an
+        unpriceable — or mispriced — edge (see :meth:`_priceable`). The pool is
+        still stored in the pool map for provenance; it simply contributes no rate
+        edge, so no cycle can route through it. Both endpoint tokens are marked
+        dirty for the next incremental search.
         """
         if pool.chain_id != self.chain_id:
             raise ValueError(f"pool chain {pool.chain_id} != graph chain {self.chain_id}")
         self._remove_pool_edges(pool.address)
         self._pools[pool.address] = pool
-        if pool.tradable:
+        if self._priceable(pool):
             t0, t1 = pool.token0.key, pool.token1.key
             self._add_edge(self._make_edge(pool, t0, t1))
             self._add_edge(self._make_edge(pool, t1, t0))
         touched = {pool.token0.key, pool.token1.key}
         self._dirty |= touched
         return touched
+
+    @staticmethod
+    def _priceable(pool: PoolState) -> bool:
+        """Whether ``pool`` may contribute rate edges to the search graph.
+
+        A pool is priceable only when it is tradable (liquidity on both sides)
+        **and** neither token is quarantined. Quarantined tokens
+        (fee-on-transfer / rebasing) break the constant-product/AMM reserve
+        invariant, so pricing them with this math would misstate — and can
+        *overstate* — output; they are admitted to the pool map for provenance but
+        never given an edge, so no detected cycle can route through them
+        (``model/token.py``; CLAUDE.md §3, SECURITY §3).
+        """
+        return pool.tradable and not (pool.token0.quarantined or pool.token1.quarantined)
 
     def remove_pool(self, address: str) -> set[TokenKey]:
         """Remove a pool entirely (e.g. it went untradable or was invalidated)."""

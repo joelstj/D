@@ -98,11 +98,18 @@ def pool_to_dict(pool: PoolState) -> dict[str, Any]:
     if pool.v2 is not None:
         data["v2"] = {"reserve0": str(pool.v2.reserve0), "reserve1": str(pool.v2.reserve1)}
     if pool.v3 is not None:
-        data["v3"] = {
+        v3d: dict[str, Any] = {
             "sqrt_price_x96": str(pool.v3.sqrt_price_x96),
             "tick": pool.v3.tick,
             "liquidity": str(pool.v3.liquidity),
         }
+        # Optional active-range boundaries — omitted when absent so the round-trip
+        # stays identity for pools the caller has not enriched with tick bounds.
+        if pool.v3.sqrt_ratio_lower_x96 is not None:
+            v3d["sqrt_ratio_lower_x96"] = str(pool.v3.sqrt_ratio_lower_x96)
+        if pool.v3.sqrt_ratio_upper_x96 is not None:
+            v3d["sqrt_ratio_upper_x96"] = str(pool.v3.sqrt_ratio_upper_x96)
+        data["v3"] = v3d
     if pool.stable is not None:
         data["stable"] = {
             "balance0": str(pool.stable.balance0),
@@ -129,10 +136,14 @@ def pool_from_dict(data: dict[str, Any]) -> PoolState:
             v2 = V2Reserves(reserve0=int(raw["reserve0"]), reserve1=int(raw["reserve1"]))
         elif kind is PoolKind.CONCENTRATED_LIQUIDITY:
             raw = data["v3"]
+            lower = raw.get("sqrt_ratio_lower_x96")
+            upper = raw.get("sqrt_ratio_upper_x96")
             v3 = V3Slot0(
                 sqrt_price_x96=int(raw["sqrt_price_x96"]),
                 tick=int(raw["tick"]),
                 liquidity=int(raw["liquidity"]),
+                sqrt_ratio_lower_x96=None if lower is None else int(lower),
+                sqrt_ratio_upper_x96=None if upper is None else int(upper),
             )
         elif kind is PoolKind.STABLESWAP:
             raw = data["stable"]

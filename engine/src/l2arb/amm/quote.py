@@ -54,9 +54,12 @@ def marginal_rate(pool: PoolState, token_in_key: TokenKey) -> float:
 def amount_out(pool: PoolState, token_in_key: TokenKey, amount_in: int) -> int:
     """Exact integer output for swapping ``amount_in`` of ``token_in`` through ``pool``.
 
-    For V3 this is the single-tick result (conservatively capped at the active
-    tick when no boundary is supplied). Weighted output is floored. Neither is ever
-    overstated — this is the number the net-profit gate stands behind.
+    For V3 this is the single-tick result. When the pool carries its active-range
+    boundaries (:attr:`V3Slot0.sqrt_ratio_lower_x96` / ``…_upper_x96``) the fill is
+    capped at the boundary, making the output a safe **lower bound** across ticks;
+    without them it assumes constant liquidity within the tick and can overstate a
+    tick-crossing fill (supply the boundaries for exact sizing). Weighted output is
+    floored. This is the number the net-profit gate stands behind.
     """
     if not pool.contains(token_in_key):
         raise PoolStateError(f"token {token_in_key} not in pool {pool.address}")
@@ -71,5 +74,9 @@ def amount_out(pool: PoolState, token_in_key: TokenKey, amount_in: int) -> int:
         return wp.amount_out(bal_in, bal_out, w_in, w_out, amount_in, pool.fee_pips)
     v3 = cast(V3Slot0, pool.v3)  # non-None for CONCENTRATED_LIQUIDITY (PoolState invariant)
     if pool.is_token0_input(token_in_key):
-        return cl.amount_out_0_for_1(v3.sqrt_price_x96, v3.liquidity, amount_in, pool.fee_pips)
-    return cl.amount_out_1_for_0(v3.sqrt_price_x96, v3.liquidity, amount_in, pool.fee_pips)
+        return cl.amount_out_0_for_1(
+            v3.sqrt_price_x96, v3.liquidity, amount_in, pool.fee_pips, v3.sqrt_ratio_lower_x96
+        )
+    return cl.amount_out_1_for_0(
+        v3.sqrt_price_x96, v3.liquidity, amount_in, pool.fee_pips, v3.sqrt_ratio_upper_x96
+    )

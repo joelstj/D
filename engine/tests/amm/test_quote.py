@@ -6,6 +6,8 @@ the underlying exact AMM math for both families and both directions.
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 import pytest
 
 from l2arb.amm import concentrated_liquidity as cl
@@ -64,6 +66,24 @@ def test_v3_marginal_and_amount_out_both_directions() -> None:
     # token1 (USDC) in -> 1-for-0
     assert quote.marginal_rate(V3, USDC.key) == cl.marginal_rate_1_for_0(sp, 500)
     assert quote.amount_out(V3, USDC.key, 10**6) == cl.amount_out_1_for_0(sp, liq, 10**6, 500)
+
+
+def test_v3_active_range_boundary_is_a_safe_lower_bound() -> None:
+    # The same V3 pool (price 4, sqrt=2*Q96), with a 0->1 active-range lower
+    # boundary at 1.9*Q96 vs. without any boundary.
+    lower = 19 * Q96 // 10
+    bounded = replace(
+        V3,
+        v3=V3Slot0(sqrt_price_x96=2 * Q96, tick=0, liquidity=10**18, sqrt_ratio_lower_x96=lower),
+    )
+    # A fill small enough to stay within the current tick is bit-for-bit identical.
+    small = 10**15
+    assert quote.amount_out(bounded, WETH.key, small) == quote.amount_out(V3, WETH.key, small)
+    assert quote.amount_out(bounded, WETH.key, small) > 0
+    # A fill large enough to cross the boundary is a safe LOWER bound — the capped
+    # quote never exceeds the (overstating) unbounded single-tick quote.
+    big = 10**18
+    assert 0 < quote.amount_out(bounded, WETH.key, big) <= quote.amount_out(V3, WETH.key, big)
 
 
 def test_stableswap_dispatch() -> None:

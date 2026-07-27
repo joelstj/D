@@ -106,9 +106,10 @@ class ArbitrageEngine:
     def ingest(self, pool: PoolState) -> bool:
         """Insert or update one pool's state; returns ``False`` on a stale no-op.
 
-        Routed through the cache first: a stale update (older/equal block for a
+        Routed through the cache first: an update from an **older** block (for a
         pool already seen) is dropped and never touches the graph, so late logs
-        cannot corrupt fresher reserves.
+        cannot corrupt fresher reserves. A same-or-newer block applies (last write
+        wins at equal height), so a same-height reorg replacement supersedes.
         """
         if not self._cache.put(pool):
             return False

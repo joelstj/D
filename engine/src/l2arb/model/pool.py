@@ -88,11 +88,24 @@ class V3Slot0:
     token0 in token1 (``price = (sqrtPriceX96 / 2**96) ** 2``). ``liquidity`` is
     the currently-active in-range liquidity ``L`` (an integer). ``tick`` is the
     current tick.
+
+    ``sqrt_ratio_lower_x96`` / ``sqrt_ratio_upper_x96`` are the **optional**
+    active-liquidity range boundaries: the sqrt prices (Q64.96) of the nearest
+    initialized ticks below and above the current price, i.e. the price interval
+    over which ``liquidity`` is constant. They are real on-chain data (read from
+    the tick bitmap) and are ``None`` until the caller supplies them. When
+    present, the swap math caps a fill at the boundary so a tick-crossing quote is
+    a safe **lower bound** on the true output (it never overstates — CLAUDE.md §3).
+    When ``None``, the single-tick quote assumes ``L`` holds to the protocol price
+    bound, which can **overstate** output for a fill large enough to cross a tick;
+    supplying the boundaries removes that (see :mod:`l2arb.amm.concentrated_liquidity`).
     """
 
     sqrt_price_x96: int
     tick: int
     liquidity: int
+    sqrt_ratio_lower_x96: int | None = None
+    sqrt_ratio_upper_x96: int | None = None
 
     def __post_init__(self) -> None:
         if not MIN_SQRT_RATIO <= self.sqrt_price_x96 <= MAX_SQRT_RATIO:

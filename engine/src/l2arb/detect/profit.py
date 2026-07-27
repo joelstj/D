@@ -22,7 +22,7 @@ sin here, pinned by property tests (T-0409).
 from __future__ import annotations
 
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from functools import partial
 from typing import cast
 
@@ -163,8 +163,24 @@ def _compile_route(cycle: Cycle, graph: RateGraph) -> Callable[[int], int]:
             )
         else:
             v3 = cast(V3Slot0, pool.v3)
-            fn = cl.amount_out_0_for_1 if pool.is_token0_input(edge.src) else cl.amount_out_1_for_0
-            steps.append(partial(fn, v3.sqrt_price_x96, v3.liquidity, fee_pips=pool.fee_pips))
+            # Cap the fill at the supplied active-range boundary in the swap
+            # direction (``None`` = unbounded single-tick math). A boundary makes
+            # a tick-crossing quote a safe lower bound; it never overstates.
+            if pool.is_token0_input(edge.src):
+                fn = cl.amount_out_0_for_1
+                limit = v3.sqrt_ratio_lower_x96
+            else:
+                fn = cl.amount_out_1_for_0
+                limit = v3.sqrt_ratio_upper_x96
+            steps.append(
+                partial(
+                    fn,
+                    v3.sqrt_price_x96,
+                    v3.liquidity,
+                    fee_pips=pool.fee_pips,
+                    sqrt_price_limit_x96=limit,
+                )
+            )
 
     def route(size: int) -> int:
         amount = size
@@ -197,6 +213,29 @@ def _binding_blockstamp(cycle: Cycle, graph: RateGraph) -> Blockstamp:
 def _numeraire_token(cycle: Cycle, graph: RateGraph) -> Token:
     first = graph.pool(cycle[0].pool)
     return first.token0 if cycle[0].src == first.token0.key else first.token1
+
+
+def _has_unbounded_v3_leg(cycle: Cycle, graph: RateGraph) -> bool:
+    """True if any leg prices a V3 pool without a boundary in its swap direction.
+
+    Such a leg uses single-tick math that assumes ``L`` holds to the protocol
+    price bound, so its output (and thus the opportunity's size/profit) can
+    *overstate* the on-chain reality for a tick-crossing fill. The gate flags —
+    it does not silently trust — these; supply the pool's active-range boundaries
+    (:attr:`V3Slot0.sqrt_ratio_lower_x96` / ``…_upper_x96``) to make the size exact.
+    """
+    for edge in cycle:
+        pool = graph.pool(edge.pool)
+        if pool.kind is not PoolKind.CONCENTRATED_LIQUIDITY:
+            continue
+        v3 = cast(V3Slot0, pool.v3)
+        if pool.is_token0_input(edge.src):
+            limit = v3.sqrt_ratio_lower_x96
+        else:
+            limit = v3.sqrt_ratio_upper_x96
+        if limit is None:
+            return True
+    return False
 
 
 def evaluate(
@@ -233,6 +272,10 @@ def evaluate(
     chain_ids = tuple(sorted({graph.pool(e.pool).chain_id for e in cycle}))
     is_cross_chain = len(chain_ids) > 1
     risk = ctx.mev.assess(hops, profit_bps, is_cross_chain)
+    if _has_unbounded_v3_leg(cycle, graph):
+        # Non-silent: the size rode an unbounded single-tick V3 estimate that may
+        # overstate across ticks. Never leave that unmarked (CLAUDE.md §3).
+        risk = replace(risk, notes=(*risk.notes, "v3_single_tick_estimate"))
     expected_net = int(net_profit * risk.capture_ratio * risk.success_probability)
     verified = all(graph.pool(e.pool).verified for e in cycle)
 

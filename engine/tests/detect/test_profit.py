@@ -153,6 +153,30 @@ def test_cross_dex_cycle_with_v3_first_hop(gk: type[GraphKit]) -> None:
     assert opp is not None
     assert opp.net_profit > 0
     assert opp.legs[0].pool_address == v3.address
+    # The V3 leg carries no active-range boundary, so its size rode an unbounded
+    # single-tick estimate: the opportunity is flagged, never silently trusted.
+    assert "v3_single_tick_estimate" in opp.risk.notes
+
+
+def test_bounded_v3_leg_is_not_flagged(gk: type[GraphKit]) -> None:
+    # The same cross-dex cycle, but the V3 pool carries its active-range lower
+    # boundary — the fill is a safe bound, so the estimate note is absent.
+    a, b = gk.token(1, decimals=18), gk.token(2, decimals=18)
+    v3 = gk.v3(
+        10,
+        a,
+        b,
+        int((1.1**0.5) * gk.UNITY_SQRT),
+        10**22,
+        sqrt_ratio_lower_x96=gk.UNITY_SQRT,  # 1.0*Q96, below the current ~1.05*Q96 price
+    )
+    v2 = gk.v2(11, a, b, 1000 * 10**18, 1000 * 10**18)
+    graph = gk.graph([v3, v2])
+    cycle = [_edge(graph, a.key, b.key, v3.address), _edge(graph, b.key, a.key, v2.address)]
+    opp = evaluate(cycle, graph, StrategyKind.TWO_HOP, _ctx())
+    assert opp is not None
+    assert opp.net_profit > 0
+    assert "v3_single_tick_estimate" not in opp.risk.notes
 
 
 # ------------------------------- risk model ------------------------------- #
