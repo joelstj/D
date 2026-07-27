@@ -79,10 +79,13 @@ export class SimulatedProvider implements OpportunityProvider {
     const token = pick(tradable);
 
     // Raw spread in bps: centered near zero (noise), with periodic positive
-    // spikes that represent genuine, fleeting cross-venue dislocations. Tuned so
-    // the stream feels alive (a real edge every few seconds) while most
-    // candidates remain unprofitable after fees — as in a real L2 market.
-    const spike = Math.random() < 0.25 ? Math.abs(gaussian()) * 30 : 0;
+    // spikes that represent genuine, fleeting cross-venue dislocations. The spike
+    // magnitude is calibrated against the real cost floor at the default settings
+    // — two DEX legs (up to ~0.60%) plus the flash-loan premium on a $50k loan,
+    // i.e. a ~65-75 bps break-even — so a genuine, fee-clearing edge surfaces
+    // every few seconds while most candidates still lose to fees, as in a real L2
+    // market. (Simulated data, clearly labelled; execution stays paper.)
+    const spike = Math.random() < 0.35 ? Math.abs(gaussian()) * 75 : 0;
     const spreadBps = gaussian() * 6 + spike;
     if (spreadBps <= 0) return null;
 
