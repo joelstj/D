@@ -51,9 +51,13 @@ make verify         # on-chain data-integrity checks
 make bench          # latency regression gates
 ```
 
-Configuration is via environment variables (prefix `L2ARB__`); copy
-`.env.example` to `.env` and fill in **read-only** RPC/WSS endpoints. There are no
-secret keys in this project by design.
+Configuration is via environment variables (prefix `L2ARB__`) read from the
+**single master `.env` at the repo root** — copy `../.env.example` to `../.env`
+and edit its *Engine* section (a local `engine/.env` still overrides it for
+standalone work). All endpoints are **read-only**; there are no secret keys in
+this project by design. The Blockscout verification oracle needs only
+`L2ARB__BLOCKSCOUT__API_KEY` — its per-chain endpoints are built into the engine,
+so the key is the only thing you supply (and it's optional).
 
 ## Integrate the engine (any language)
 

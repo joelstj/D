@@ -73,6 +73,15 @@ endpoints + pool registries per chain, using `ingestion/config/config.example.to
 as the reference. Endpoints accept a comma-separated `primary, backup` for
 automatic rate-limit failover.)
 
+**Configuration — one master `.env`.** Everything env-based lives in a **single
+`.env` at the repo root** (`cp .env.example .env`): dashboard ports/mode, the
+engine's optional tuning and its **Blockscout API key** (`L2ARB__BLOCKSCOUT__API_KEY`
+— endpoints are built in, so the key is all you supply), and the human-gated
+contracts deploy section. Every component reads it automatically; a component-local
+`.env` overrides it, and real environment variables override both. (The Rust
+ingestion layer is the one exception — it's configured by `config.toml` above, not
+env vars.)
+
 Once running, `l2arb run` shows a live **health HUD** and continuously
 self-heals: it probes each service's process + `/health`, diagnoses faults, and
 restarts a crashed or wedged one (with backoff) — infrastructure only, never the

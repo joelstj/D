@@ -108,6 +108,20 @@ exact.
   is measured elapsed time, never fabricated; end-to-end is labelled single-host
   wall clock. Design: `docs/LATENCY.md`.
 
+- **Configuration (cross-cutting):** all env-based config lives in **one master
+  `.env` at the repo root** (`.env.example` is the tracked template). The engine
+  (`L2ARB__` prefix, via `config._discover_env_files`), the dashboard backend +
+  Vite frontend (`dashboard/backend/src/config/env.ts`, `frontend/vite.config.ts`
+  `envDir`), and the contracts deploy tooling (`contracts/hardhat.config.js`) all
+  read it automatically. Precedence: real env vars → component-local `.env`
+  (optional override) → the master → built-in defaults. The Rust ingestion layer
+  is the exception — it is TOML-configured (`config.toml`), not env-driven. The
+  Blockscout verification oracle takes **only** an API key
+  (`L2ARB__BLOCKSCOUT__API_KEY`); its per-chain endpoints are built into the engine
+  (`config.BLOCKSCOUT_REST_BASES`). Deploy secrets (`contracts` `PRIVATE_KEY`) are
+  fenced in the master and read only by the human-gated deploy step, never the
+  running detection stack.
+
 ---
 
 ## 4. Git & branch discipline

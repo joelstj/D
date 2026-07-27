@@ -1,5 +1,14 @@
 require("@nomicfoundation/hardhat-toolbox");
-require("dotenv").config();
+
+// Consolidated config: the whole product is driven by ONE master `.env` at the
+// repo root. An optional local `contracts/.env` overrides it, so load the local
+// file first (dotenv won't clobber an already-set key) and let the master fill
+// the gaps; real environment variables override both. Keeping deploy secrets
+// (PRIVATE_KEY) in a local `contracts/.env` instead of the shared master is
+// supported this way.
+const path = require("path");
+require("dotenv").config({ path: path.resolve(__dirname, ".env") }); // contracts-local override (wins)
+require("dotenv").config({ path: path.resolve(__dirname, "..", ".env") }); // repo-root master (fills gaps)
 
 /**
  * Multi-chain Hardhat configuration for the L2 flash-loan arbitrage engine.

@@ -78,7 +78,11 @@ Engine → WebSocket fan-out → every connected client.**
 
 ## Configuration
 
-Copy `.env.example` to `.env`. Everything has safe defaults.
+Configuration comes from the **single master `.env` at the repo root** — copy
+`../.env.example` to `../.env` and edit its *Dashboard* section. The backend and
+the Vite frontend both read it automatically; a local `dashboard/.env` still
+overrides it, and real environment variables (including what the launcher
+injects) override both. Everything has safe defaults.
 
 | Variable | Default | Purpose |
 |----------|---------|---------|

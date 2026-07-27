@@ -1,9 +1,18 @@
 /// <reference types="vitest/config" />
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
 
+// Read VITE_* variables from the consolidated repo-root master `.env` (two levels
+// up from this frontend dir) instead of a frontend-local file, so the whole
+// product is configured from one place. Resolved from this config's own location
+// so it's independent of the working directory the build runs in.
+const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
+
 export default defineConfig({
+  envDir: repoRoot,
   plugins: [react(), tailwindcss()],
   server: {
     port: 5173,

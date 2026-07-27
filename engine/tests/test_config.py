@@ -5,7 +5,13 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 
-from l2arb.config import ChainEndpoints, Settings, get_settings
+from l2arb.config import (
+    BLOCKSCOUT_REST_BASES,
+    BlockscoutConfig,
+    ChainEndpoints,
+    Settings,
+    get_settings,
+)
 
 pytestmark = pytest.mark.unit
 
@@ -18,6 +24,9 @@ def test_defaults_are_sane() -> None:
     assert s.gas_safety_multiplier == pytest.approx(1.5)
     assert s.chains == {}
     assert s.enabled_chains == []
+    # Blockscout defaults: no key required, endpoints built in (never in env).
+    assert s.blockscout.api_key == ""
+    assert s.blockscout.supported_chains == ("arbitrum", "base", "optimism")
 
 
 def test_chain_endpoints_split_csv_string() -> None:
@@ -73,3 +82,54 @@ def test_get_settings_is_cached() -> None:
     first = get_settings()
     second = get_settings()
     assert first is second
+
+
+# ── Blockscout verification oracle (endpoints built in; only the key is env) ──
+
+
+def test_blockscout_rest_base_is_built_in_and_case_insensitive() -> None:
+    bs = BlockscoutConfig()
+    assert bs.rest_base("arbitrum") == "https://arbitrum.blockscout.com"
+    assert bs.rest_base("  Base ") == "https://base.blockscout.com"
+    assert bs.rest_base("OPTIMISM") == "https://optimism.blockscout.com"
+
+
+def test_blockscout_rest_base_unknown_chain_is_none() -> None:
+    assert BlockscoutConfig().rest_base("ethereum") is None
+
+
+def test_blockscout_verify_url_without_key_is_bare_base() -> None:
+    bs = BlockscoutConfig()
+    assert bs.verify_url("arbitrum") == "https://arbitrum.blockscout.com"
+    assert (
+        bs.verify_url("arbitrum", "api/v2/smart-contracts/0xabc")
+        == "https://arbitrum.blockscout.com/api/v2/smart-contracts/0xabc"
+    )
+
+
+def test_blockscout_verify_url_appends_api_key() -> None:
+    bs = BlockscoutConfig(api_key="SECRET")
+    assert bs.verify_url("base") == "https://base.blockscout.com?apikey=SECRET"
+    # A path that already carries a query string gets the key with '&'.
+    assert (
+        bs.verify_url("base", "api?module=account&action=balance")
+        == "https://base.blockscout.com/api?module=account&action=balance&apikey=SECRET"
+    )
+
+
+def test_blockscout_verify_url_unknown_chain_is_none() -> None:
+    assert BlockscoutConfig(api_key="SECRET").verify_url("ethereum") is None
+
+
+def test_blockscout_registry_matches_supported_chains() -> None:
+    # The public constant and the derived property agree — one source of truth.
+    assert set(BLOCKSCOUT_REST_BASES) == set(BlockscoutConfig().supported_chains)
+
+
+def test_blockscout_api_key_from_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("L2ARB__BLOCKSCOUT__API_KEY", "env-key-123")
+    s = Settings()
+    assert s.blockscout.api_key == "env-key-123"
+    assert (
+        s.blockscout.verify_url("optimism") == "https://optimism.blockscout.com?apikey=env-key-123"
+    )
