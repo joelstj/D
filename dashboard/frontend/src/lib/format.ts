@@ -14,6 +14,40 @@ export function formatUsd(n: number, opts: { sign?: boolean; compact?: boolean }
   return `${prefix}$${body}`;
 }
 
+/**
+ * Render a profit/amount magnitude honestly. When `isUsd` (the default) it is a
+ * true dollar figure and formats with a `$`. When `isUsd` is false the value is
+ * in numeraire base units — NOT dollars (no price is known to convert it) — so it
+ * renders as a plain number suffixed with the token `symbol` and never a `$`.
+ */
+export function formatAmount(
+  value: number,
+  opts: { isUsd?: boolean; symbol?: string; sign?: boolean; compact?: boolean } = {},
+): string {
+  const { isUsd = true, symbol, sign = false, compact = false } = opts;
+  if (isUsd) return formatUsd(value, { sign, compact });
+  const abs = Math.abs(value);
+  const decimals = abs === 0 ? 2 : abs >= 1000 ? 2 : abs >= 1 ? 4 : 6;
+  const body = compact
+    ? new Intl.NumberFormat("en-US", { notation: "compact", maximumFractionDigits: 2 }).format(abs)
+    : new Intl.NumberFormat("en-US", {
+        minimumFractionDigits: decimals,
+        maximumFractionDigits: decimals,
+      }).format(abs);
+  const prefix = value < 0 ? "-" : sign ? "+" : "";
+  return symbol ? `${prefix}${body} ${symbol}` : `${prefix}${body}`;
+}
+
+/**
+ * Honest data-source badge. Both real feeds — direct on-chain quoting (`live`)
+ * and the Rust ingestion feed (`external`) — read as real data; only the built-in
+ * `simulated` demo stream reads as SIM.
+ */
+export function dataSourceBadge(dataSource: string): { label: string; real: boolean } {
+  const real = dataSource === "live" || dataSource === "external";
+  return { label: real ? "LIVE DATA" : "SIM DATA", real };
+}
+
 export function formatNumber(n: number, decimals = 0): string {
   return new Intl.NumberFormat("en-US", {
     minimumFractionDigits: decimals,

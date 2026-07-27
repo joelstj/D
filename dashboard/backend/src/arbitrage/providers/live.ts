@@ -1,5 +1,5 @@
 import { createPublicClient, http, type PublicClient } from "viem";
-import { arbitrum, base, optimism, polygon } from "viem/chains";
+import { arbitrum, base, ink, optimism, polygon, unichain } from "viem/chains";
 import type { Settings } from "../../settings/schema";
 import type { ArbitrageOpportunity } from "../types";
 import { NETWORKS_BY_KEY } from "../networks";
@@ -8,7 +8,7 @@ import type { OpportunityProvider } from "./provider";
 
 const log = createLogger("provider:live");
 
-const VIEM_CHAINS = { base, arbitrum, optimism, polygon } as const;
+const VIEM_CHAINS = { base, arbitrum, optimism, polygon, unichain, ink } as const;
 
 /**
  * Live data source. Connects to real L2 RPCs and reads on-chain state

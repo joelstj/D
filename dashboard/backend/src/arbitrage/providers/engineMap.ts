@@ -186,6 +186,9 @@ export function mapEngineOpportunity(
     flashLoanFeeUsd: 0,
     gasCostUsd,
     netProfitUsd,
+    // Honest units: the `…Usd` figures above are real dollars only when the
+    // numeraire is a USD stablecoin; otherwise they are numeraire base units.
+    numeraireIsUsd: isUsdStable(o.numeraire.symbol),
     profitBps: num(o.profit_bps),
     // The engine does not expose a raw cross-venue spread; net profit in bps is
     // the closest honest proxy for the dashboard's spread column.

@@ -81,4 +81,65 @@ describe("ArbitrageEngine", () => {
     await engine.tick();
     expect(seen.length).toBeGreaterThan(0);
   });
+
+  it("does not broadcast, wedge, or swallow when the gated live executor refuses (manual)", async () => {
+    const store = new SettingsStore({ minProfitUsd: 0, minProfitBps: 0, executionMode: "live" });
+    const provider = new StubProvider([makeOpportunity({ netProfitUsd: 175 })]);
+    const engine = new ArbitrageEngine(store, provider, pairExecutors());
+    const alerts: string[] = [];
+    engine.on("alert", (a) => alerts.push(a.message));
+
+    await engine.tick();
+    const opp = engine.getOpportunities()[0]!;
+    expect(opp.status).toBe("new");
+
+    // The safety gate holds: LiveExecutor refuses to broadcast, so the call
+    // rejects — nothing is ever sent on-chain.
+    await expect(engine.executeOpportunity(opp.id)).rejects.toThrow(/not enabled/i);
+
+    // ...and the opportunity is NOT left wedged in "executing" (prune skips that
+    // status, so a wedged row would linger forever).
+    const after = engine.getOpportunities().find((o) => o.id === opp.id);
+    expect(after).toBeDefined();
+    expect(after!.status).toBe("new");
+    expect(engine.getStats().executed).toBe(0);
+    // The refusal reason is surfaced to the UI as an alert.
+    expect(alerts.some((m) => /refus/i.test(m))).toBe(true);
+
+    // Because the status was reset, it prunes normally once expired.
+    after!.expiresAt = Date.now() - 1;
+    provider.setBatch([]);
+    await engine.tick();
+    expect(engine.getOpportunities().find((o) => o.id === opp.id)).toBeUndefined();
+  });
+
+  it("auto-execute in gated live mode neither throws nor raises an unhandled rejection", async () => {
+    const store = new SettingsStore({
+      minProfitUsd: 0,
+      minProfitBps: 0,
+      executionMode: "live",
+      autoExecute: true,
+      cooldownMs: 0,
+    });
+    const provider = new StubProvider([makeOpportunity({ netProfitUsd: 175 })]);
+    const engine = new ArbitrageEngine(store, provider, pairExecutors());
+
+    const rejections: unknown[] = [];
+    const onRejection = (r: unknown) => rejections.push(r);
+    process.on("unhandledRejection", onRejection);
+    try {
+      // The scan tick resolves cleanly even though every auto-exec attempt hits
+      // the refusing LiveExecutor.
+      await expect(engine.tick()).resolves.toBeUndefined();
+      // Let the fire-and-forget execution promises settle.
+      await new Promise((r) => setTimeout(r, 10));
+    } finally {
+      process.off("unhandledRejection", onRejection);
+    }
+
+    expect(rejections).toHaveLength(0);
+    // Gate held: nothing executed/broadcast, and nothing left wedged.
+    expect(engine.getStats().executed).toBe(0);
+    expect(engine.getOpportunities().every((o) => o.status !== "executing")).toBe(true);
+  });
 });

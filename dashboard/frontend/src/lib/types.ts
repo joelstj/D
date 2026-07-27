@@ -52,6 +52,12 @@ export interface ArbitrageOpportunity {
   flashLoanFeeUsd: number;
   gasCostUsd: number;
   netProfitUsd: number;
+  /**
+   * Whether the `…Usd` fields are genuine dollars (numeraire is a USD stablecoin).
+   * When `false`, the magnitudes are in numeraire base units — render with the
+   * token symbol, never a `$`. Absent ⇒ treated as USD.
+   */
+  numeraireIsUsd?: boolean;
   profitBps: number;
   spreadBps: number;
   confidence: number;
@@ -110,6 +116,8 @@ export interface ExecutionResult {
   requestedProfitUsd: number;
   realizedProfitUsd: number;
   gasCostUsd: number;
+  /** Whether the `…Usd` figures are genuine dollars (numeraire is a USD stable). */
+  numeraireIsUsd?: boolean;
   txHash?: string;
   notes?: string;
 }

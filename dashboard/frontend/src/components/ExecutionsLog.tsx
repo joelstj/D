@@ -1,7 +1,7 @@
 import { CheckCircle2, Inbox, XCircle } from "lucide-react";
 import { useLive } from "../hooks/useLiveData";
 import { useNow } from "../hooks/useNow";
-import { formatUsd, timeAgo } from "../lib/format";
+import { formatAmount, timeAgo } from "../lib/format";
 import { networkColor } from "../lib/networkMeta";
 import { Card } from "./ui";
 
@@ -48,7 +48,10 @@ export function ExecutionsLog() {
                         e.realizedProfitUsd >= 0 ? "text-pos" : "text-neg"
                       }`}
                     >
-                      {formatUsd(e.realizedProfitUsd, { sign: true })}
+                      {formatAmount(e.realizedProfitUsd, {
+                        isUsd: e.numeraireIsUsd !== false,
+                        sign: true,
+                      })}
                     </span>
                   </div>
                   <div className="flex items-center justify-between gap-2">

@@ -50,6 +50,8 @@ export function loadEnv(): Env {
       arbitrum: process.env.RPC_URL_ARBITRUM,
       optimism: process.env.RPC_URL_OPTIMISM,
       polygon: process.env.RPC_URL_POLYGON,
+      unichain: process.env.RPC_URL_UNICHAIN,
+      ink: process.env.RPC_URL_INK,
     },
     // The Rust ingestion layer's ws output sink. Used when DATA_SOURCE=external.
     ingestFeedUrl: process.env.INGEST_FEED_URL || "ws://127.0.0.1:9001",

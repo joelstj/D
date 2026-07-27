@@ -36,6 +36,7 @@ export class PaperExecutor implements Executor {
       requestedProfitUsd: opp.netProfitUsd,
       realizedProfitUsd,
       gasCostUsd: opp.gasCostUsd,
+      numeraireIsUsd: opp.numeraireIsUsd,
       notes: filled ? "paper fill" : "paper revert (edge gone before inclusion)",
     };
   }

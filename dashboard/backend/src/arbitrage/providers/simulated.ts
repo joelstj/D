@@ -140,6 +140,8 @@ export class SimulatedProvider implements OpportunityProvider {
       flashLoanFeeUsd: flashLoanFeeUsd + swapFeeUsd,
       gasCostUsd,
       netProfitUsd,
+      // The simulated stream is denominated in USD (loanAmountUsd is dollars).
+      numeraireIsUsd: true,
       profitBps,
       spreadBps,
       confidence,

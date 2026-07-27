@@ -1,7 +1,7 @@
 import type { ReactNode } from "react";
 import { Activity, Crosshair, TrendingUp, Zap } from "lucide-react";
 import { useLive } from "../hooks/useLiveData";
-import { formatUsd, formatNumber, formatPct } from "../lib/format";
+import { formatAmount, formatNumber, formatPct } from "../lib/format";
 import { Sparkline } from "./Sparkline";
 
 function Tile({
@@ -37,7 +37,7 @@ function Tile({
 }
 
 export function StatCards() {
-  const { stats, history } = useLive();
+  const { stats, history, opportunities } = useLive();
 
   const pnl = stats?.realizedPnlUsd ?? 0;
   const daily = stats?.dailyPnlUsd ?? 0;
@@ -45,15 +45,20 @@ export function StatCards() {
   const filled = stats?.filled ?? 0;
   const winRate = executed > 0 ? filled / executed : 0;
   const activeSeries = history.map((h) => h.active);
+  // These aggregates sum per-opportunity `…Usd` magnitudes, so they are true USD
+  // only when every active opportunity is USD-stablecoin-denominated. If any is
+  // not, the totals are in numeraire units — don't fabricate a `$` on them.
+  const allUsd = opportunities.every((o) => o.numeraireIsUsd !== false);
+  const money = (v: number, sign = false) => formatAmount(v, { isUsd: allUsd, sign });
 
   return (
     <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
       <Tile
-        label="Net P&L · paper"
+        label={allUsd ? "Net P&L · paper" : "Net P&L · paper · numeraire units"}
         icon={<TrendingUp size={13} />}
-        value={stats ? formatUsd(pnl, { sign: true }) : "—"}
+        value={stats ? money(pnl, true) : "—"}
         valueClass={pnl > 0 ? "text-pos" : pnl < 0 ? "text-neg" : "text-ink"}
-        sub={stats ? `Today ${formatUsd(daily, { sign: true })}` : undefined}
+        sub={stats ? `Today ${money(daily, true)}` : undefined}
       />
       <Tile
         label="Active Opps"
@@ -75,7 +80,7 @@ export function StatCards() {
       <Tile
         label="Best Net / Trade"
         icon={<Activity size={13} />}
-        value={stats ? formatUsd(stats.bestNetProfitUsd) : "—"}
+        value={stats ? money(stats.bestNetProfitUsd) : "—"}
         valueClass="text-ink"
         sub={stats ? `${formatNumber(stats.scans)} scans` : undefined}
       />

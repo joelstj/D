@@ -170,7 +170,13 @@ export class ArbitrageEngine extends EventEmitter {
       if (this.inFlight >= settings.maxConcurrentTrades) break;
       const last = this.lastExecByNetwork.get(opp.network) ?? 0;
       if (Date.now() - last < settings.cooldownMs) continue;
-      void this.executeOpportunity(opp, settings);
+      // Fire-and-forget, but never leak an unhandled rejection: a throwing
+      // executor (the gated LiveExecutor always refuses) is fully handled inside
+      // executeOpportunity (status reset + alert); swallow here so live+auto mode
+      // stays stable and the safety gate simply produces warnings, not crashes.
+      void this.executeOpportunity(opp, settings).catch(() => {
+        /* already handled in executeOpportunity */
+      });
     }
   }
 
@@ -182,6 +188,7 @@ export class ArbitrageEngine extends EventEmitter {
     const opp = typeof oppOrId === "string" ? this.active.get(oppOrId) : oppOrId;
     if (!opp) throw new Error("opportunity not found or expired");
 
+    const priorStatus = opp.status;
     opp.status = "executing";
     this.inFlight += 1;
     this.lastExecByNetwork.set(opp.network, Date.now());
@@ -194,6 +201,19 @@ export class ArbitrageEngine extends EventEmitter {
       this.removeOpportunity(opp.id);
       this.emitStats();
       return result;
+    } catch (err) {
+      // A throwing executor (by design, the gated LiveExecutor refuses to
+      // broadcast) must not leave the opportunity wedged in "executing" —
+      // prune() intentionally skips that status, so it would linger forever.
+      // Restore the prior status so it can expire/prune normally, and surface
+      // the reason to operators as an alert (also what the manual
+      // POST /api/execute/:id path relies on to explain a refusal in the UI).
+      if (this.active.has(opp.id)) opp.status = priorStatus;
+      this.emit("alert", {
+        level: "warn",
+        message: `execution refused: ${(err as Error).message}`,
+      });
+      throw err;
     } finally {
       this.inFlight -= 1;
     }

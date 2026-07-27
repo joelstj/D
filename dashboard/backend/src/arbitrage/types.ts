@@ -32,6 +32,15 @@ export interface ArbitrageOpportunity {
   flashLoanFeeUsd: number;
   gasCostUsd: number;
   netProfitUsd: number;
+  /**
+   * Whether the `…Usd` fields above are genuine US dollars. They are dollars only
+   * when the numeraire (the borrowed/quote token, see {@link tokenIn}) is a USD
+   * stablecoin. When `false`, those magnitudes are in **numeraire base units**,
+   * not dollars — no price is fabricated to convert them — and the UI must render
+   * them with the token symbol, never a `$`. Absent ⇒ treated as USD (the
+   * simulated/live providers are USD-denominated by construction).
+   */
+  numeraireIsUsd?: boolean;
   /** Net profit relative to loan size, in basis points. */
   profitBps: number;
   /** Raw price spread between the cheap and expensive venue, in bps. */
@@ -59,6 +68,9 @@ export interface ExecutionResult {
   requestedProfitUsd: number;
   realizedProfitUsd: number;
   gasCostUsd: number;
+  /** Whether the `…Usd` figures are genuine dollars (numeraire is a USD stable).
+   *  Carried from the executed opportunity; absent ⇒ treated as USD. */
+  numeraireIsUsd?: boolean;
   txHash?: string;
   notes?: string;
 }

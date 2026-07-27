@@ -1,5 +1,5 @@
 import { http, createConfig } from "wagmi";
-import { arbitrum, base, optimism, polygon } from "wagmi/chains";
+import { arbitrum, base, ink, optimism, polygon, unichain } from "wagmi/chains";
 import { coinbaseWallet, injected } from "wagmi/connectors";
 
 /**
@@ -8,13 +8,15 @@ import { coinbaseWallet, injected } from "wagmi/connectors";
  * second option. Chains match the L2s the engine scans.
  */
 export const wagmiConfig = createConfig({
-  chains: [base, arbitrum, optimism, polygon],
+  chains: [base, arbitrum, optimism, polygon, unichain, ink],
   connectors: [injected(), coinbaseWallet({ appName: "L2 Arbitrage GUI" })],
   transports: {
     [base.id]: http(),
     [arbitrum.id]: http(),
     [optimism.id]: http(),
     [polygon.id]: http(),
+    [unichain.id]: http(),
+    [ink.id]: http(),
   },
   ssr: false,
 });
@@ -25,6 +27,8 @@ export const CHAIN_ID_TO_KEY: Record<number, string> = {
   [arbitrum.id]: "arbitrum",
   [optimism.id]: "optimism",
   [polygon.id]: "polygon",
+  [unichain.id]: "unichain",
+  [ink.id]: "ink",
 };
 
 export const KEY_TO_CHAIN_ID: Record<string, number> = {
@@ -32,6 +36,8 @@ export const KEY_TO_CHAIN_ID: Record<string, number> = {
   arbitrum: arbitrum.id,
   optimism: optimism.id,
   polygon: polygon.id,
+  unichain: unichain.id,
+  ink: ink.id,
 };
 
 declare module "wagmi" {
