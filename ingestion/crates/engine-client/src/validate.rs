@@ -6,7 +6,7 @@
 //! log/count and drop just the bad opportunities.
 
 use alloy_primitives::{B256, U256};
-use l2i_core::{DetectRequest, DetectResponse, PoolAddress};
+use l2i_core::{DetectRequest, DetectResponse, Opportunity, PoolAddress};
 use std::collections::HashSet;
 
 /// A problem found validating an engine response against the request we sent.
@@ -94,4 +94,219 @@ pub fn validate_response(req: &DetectRequest, resp: &DetectResponse) -> Vec<Resp
     }
 
     issues
+}
+
+impl ResponseIssue {
+    /// The index of the offending opportunity, or `None` for a whole-response issue
+    /// ([`CountMismatch`](ResponseIssue::CountMismatch)) not tied to one opportunity.
+    pub fn opportunity_index(&self) -> Option<usize> {
+        match self {
+            ResponseIssue::CountMismatch { .. } => None,
+            ResponseIssue::NonPositiveProfit { index }
+            | ResponseIssue::UnverifiedOpportunity { index }
+            | ResponseIssue::LegPoolNotVerified { index, .. }
+            | ResponseIssue::BlockstampNotInRequest { index } => Some(*index),
+        }
+    }
+}
+
+/// Filter an engine response down to only the opportunities that pass
+/// [`validate_response`] against `req`, returning the cleaned response plus the issues
+/// found (for logging/metrics). An invalid opportunity — an unverified leg,
+/// `net_profit == 0`, an unverified flag, or a blockstamp we never sent — is
+/// **dropped**, never forwarded, so the dashboard never receives a phantom the
+/// ingestion layer already knows is bad (`verified` honesty). The returned `count`
+/// equals the kept length; `timing` is relayed verbatim.
+pub fn retain_valid(
+    req: &DetectRequest,
+    resp: &DetectResponse,
+) -> (DetectResponse, Vec<ResponseIssue>) {
+    let issues = validate_response(req, resp);
+    let bad: HashSet<usize> = issues
+        .iter()
+        .filter_map(ResponseIssue::opportunity_index)
+        .collect();
+    let opportunities: Vec<Opportunity> = resp
+        .opportunities
+        .iter()
+        .enumerate()
+        .filter(|(i, _)| !bad.contains(i))
+        .map(|(_, o)| o.clone())
+        .collect();
+    let cleaned = DetectResponse {
+        count: opportunities.len() as u32,
+        opportunities,
+        timing: resp.timing.clone(),
+    };
+    (cleaned, issues)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alloy_primitives::{Address, B256};
+    use l2i_core::{
+        Block, Blockstamp, DecU256, Leg, Pool, PoolAddress, PoolKind, Risk, Token, V2State,
+    };
+
+    fn token(sym: &str, b: u8) -> Token {
+        Token::with_symbol(42161, Address::from([b; 20]), 18, sym)
+    }
+
+    /// A block-stamped verified V2 pool at `(number, hash)`.
+    fn pool(addr: u8, number: u64, hash: B256, verified: bool) -> Pool {
+        Pool {
+            address: PoolAddress::Contract(Address::from([addr; 20])),
+            kind: PoolKind::V2,
+            fee_pips: 3000,
+            verified,
+            token0: token("A", 1),
+            token1: token("B", 2),
+            blockstamp: Blockstamp {
+                chain_id: 42161,
+                number,
+                block_hash: hash,
+                timestamp: number,
+            },
+            v2: Some(V2State {
+                reserve0: DecU256(U256::from(1_000u64)),
+                reserve1: DecU256(U256::from(2_000u64)),
+            }),
+            v3: None,
+        }
+    }
+
+    /// An opportunity routing through `leg_pool`, with the given profit and block.
+    fn opp(
+        leg_pool: u8,
+        net_profit: u64,
+        verified: bool,
+        block_number: u64,
+        hash: B256,
+    ) -> Opportunity {
+        Opportunity {
+            strategy: "two_hop".into(),
+            numeraire: token("A", 1),
+            input_amount: DecU256(U256::from(100u64)),
+            output_amount: DecU256(U256::from(110u64)),
+            gross_profit: DecU256(U256::from(net_profit + 5)),
+            gas_cost: DecU256(U256::from(3u64)),
+            bridge_cost: DecU256(U256::ZERO),
+            net_profit: DecU256(U256::from(net_profit)),
+            profit_bps: 10.0,
+            expected_net: DecU256(U256::from(net_profit)),
+            score: 1.0,
+            hops: 2,
+            chain_ids: vec![42161],
+            is_cross_chain: false,
+            settle_seconds: 0,
+            verified,
+            block: Block {
+                chain_id: 42161,
+                number: block_number,
+                hash,
+                timestamp: block_number,
+            },
+            risk: Risk {
+                success_probability: 0.9,
+                capture_ratio: 0.8,
+                frontrun_risk: 0.1,
+                notes: vec![],
+            },
+            legs: vec![Leg {
+                pool: PoolAddress::Contract(Address::from([leg_pool; 20])),
+                token_in: token("A", 1),
+                token_out: token("B", 2),
+                amount_in: DecU256(U256::from(100u64)),
+                amount_out: DecU256(U256::from(110u64)),
+            }],
+        }
+    }
+
+    #[test]
+    fn retain_valid_drops_only_the_invalid_opportunity() {
+        let hash = B256::from([7; 32]);
+        // Request: one verified pool 0xAA at (block 500, hash).
+        let req = DetectRequest {
+            top_n: 10,
+            max_hops: 4,
+            incremental: false,
+            chains: vec![],
+            pools: vec![pool(0xAA, 500, hash, true)],
+            cross_chain: None,
+        };
+        // Two opportunities: a VALID one (verified, profit>0, leg pool verified & in
+        // request, blockstamp we sent) and an INVALID one (routes through pool 0xBB,
+        // which was never verified in the request → phantom).
+        let good = opp(0xAA, 42, true, 500, hash);
+        let bad = opp(0xBB, 42, true, 500, hash);
+        let resp = DetectResponse {
+            count: 2,
+            opportunities: vec![good.clone(), bad],
+            timing: None,
+        };
+
+        let (clean, issues) = retain_valid(&req, &resp);
+        assert!(
+            !issues.is_empty(),
+            "the phantom opportunity must be reported as an issue"
+        );
+        assert_eq!(clean.count, 1, "count reflects the kept opportunities");
+        assert_eq!(clean.opportunities.len(), 1);
+        assert_eq!(
+            clean.opportunities[0], good,
+            "only the valid opportunity survives; the phantom is dropped"
+        );
+    }
+
+    #[test]
+    fn retain_valid_drops_zero_profit_and_stale_blockstamp() {
+        let hash = B256::from([7; 32]);
+        let stale = B256::from([9; 32]);
+        let req = DetectRequest {
+            top_n: 10,
+            max_hops: 4,
+            incremental: false,
+            chains: vec![],
+            pools: vec![pool(0xAA, 500, hash, true)],
+            cross_chain: None,
+        };
+        let good = opp(0xAA, 42, true, 500, hash);
+        let zero_profit = opp(0xAA, 0, true, 500, hash); // net_profit == 0 → invalid
+        let stale_stamp = opp(0xAA, 42, true, 500, stale); // blockstamp we never sent
+        let resp = DetectResponse {
+            count: 3,
+            opportunities: vec![good.clone(), zero_profit, stale_stamp],
+            timing: None,
+        };
+
+        let (clean, _issues) = retain_valid(&req, &resp);
+        assert_eq!(
+            clean.opportunities,
+            vec![good],
+            "both invalid opportunities dropped"
+        );
+    }
+
+    #[test]
+    fn retain_valid_keeps_a_fully_valid_response_untouched() {
+        let hash = B256::from([7; 32]);
+        let req = DetectRequest {
+            top_n: 10,
+            max_hops: 4,
+            incremental: false,
+            chains: vec![],
+            pools: vec![pool(0xAA, 500, hash, true)],
+            cross_chain: None,
+        };
+        let good = opp(0xAA, 42, true, 500, hash);
+        let resp = DetectResponse {
+            count: 1,
+            opportunities: vec![good],
+            timing: None,
+        };
+        let (clean, issues) = retain_valid(&req, &resp);
+        assert!(issues.is_empty(), "a valid response has no issues");
+        assert_eq!(clean, resp, "a valid response is passed through unchanged");
+    }
 }

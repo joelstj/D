@@ -8,7 +8,7 @@
 use crate::context::{build_chain_context, initial_context};
 use crate::crosschain::build_cross_chain;
 use crate::ingestor::{seed_all, ChainIngestor};
-use alloy_primitives::Address;
+use alloy_primitives::{Address, B256};
 use l2i_aggregator::{
     build_detect_request, re_stamp, Cadence, ChainSnapshot, IncrementalPolicy, IncrementalTracker,
     RequestConfig,
@@ -16,7 +16,7 @@ use l2i_aggregator::{
 use l2i_config::{CacheConfig, ChainConfig, Config};
 use l2i_core::{Blockstamp, ChainContext};
 use l2i_engine_client::{
-    validate_response, EngineClient, HttpConfig, HttpEngineClient, SubprocessEngineClient,
+    retain_valid, EngineClient, HttpConfig, HttpEngineClient, SubprocessEngineClient,
 };
 use l2i_ingest::mirror::Mirror;
 use l2i_observability::{names, LatencyTimer};
@@ -24,7 +24,7 @@ use l2i_output::{Envelope, Latency, OutputSink, Stage};
 use l2i_registry::{gate::GatePolicy, load_registry_file, validate_registry};
 use l2i_rpc::backoff::{Backoff, BackoffPolicy};
 use l2i_rpc::{AlloyProvider, BlockId, ChainProvider};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -243,7 +243,8 @@ async fn connect_seed_run(
     // the `gas_price = 0` sentinel of `initial_context` (which would under-cost gas →
     // phantom profit). Native prices are empty here (no pools yet); they fill in on
     // the post-seed refresh below and the per-block context worker.
-    let ctx = build_chain_context(cfg, &*provider, mirror).await;
+    let prev = ctx_tx.borrow().clone();
+    let ctx = build_chain_context(cfg, &*provider, mirror, &prev).await;
     let _ = ctx_tx.send(ctx);
 
     let state_view = cfg
@@ -279,8 +280,17 @@ async fn connect_seed_run(
     }
 
     // Post-seed refresh: now the WETH/T pools exist, so native prices derive too.
-    let ctx = build_chain_context(cfg, &*provider, mirror).await;
+    let prev = ctx_tx.borrow().clone();
+    let ctx = build_chain_context(cfg, &*provider, mirror, &prev).await;
     let _ = ctx_tx.send(ctx);
+
+    // poolId → declared PoolKey.fee (0x800000 = dynamic), so the live path applies a
+    // dynamic pool's effective per-swap fee via apply_v4_swap instead of discarding it.
+    let v4_declared_fees: HashMap<B256, u32> = outcome
+        .accepted
+        .iter()
+        .filter_map(|p| p.entry.identity().pool_id().map(|id| (id, p.fee_pips)))
+        .collect();
 
     let ingestor = ChainIngestor {
         chain_id: cfg.chain_id,
@@ -288,6 +298,8 @@ async fn connect_seed_run(
         provider,
         mirror: mirror.clone(),
         log_addresses,
+        v4_declared_fees,
+        state_view,
         reconcile_interval: Duration::from_millis(cfg.reconcile_interval_ms.max(1)),
         ctx_tx: ctx_tx.clone(),
     };
@@ -444,6 +456,18 @@ async fn aggregator_loop(
                     metrics::gauge!(names::VERIFIED_POOLS, "chain_id" => h.cfg.chain_id.to_string())
                         .set(pools.len() as f64);
                     if pools.is_empty() { continue; }
+                    let ctx = h.ctx_rx.borrow().clone(); // cached — no RPC on the tick
+                    // A gas price of 0 is never a real L2 value — it is the pre-first-read
+                    // sentinel (or a failed read that retained it). Costing a verified pool
+                    // against it would under-cost gas into phantom profit, so hold the chain
+                    // back until a real gas reading lands (prime directive 1).
+                    if ctx.gas_price_wei == 0 {
+                        tracing::debug!(
+                            chain_id = h.cfg.chain_id,
+                            "holding chain: no real gas price yet (won't cost pools against a 0)"
+                        );
+                        continue;
+                    }
                     let head = pools
                         .iter()
                         .map(|p| &p.blockstamp)
@@ -452,7 +476,6 @@ async fn aggregator_loop(
                         .clone();
                     chain_blocks.insert(h.cfg.chain_id, head.number);
                     let stamped = re_stamp(&head, pools);
-                    let ctx = h.ctx_rx.borrow().clone(); // cached — no RPC on the tick
                     snaps.push(ChainSnapshot { context: ctx, pools: stamped });
                 }
                 if snaps.is_empty() { continue; }
@@ -482,9 +505,19 @@ async fn aggregator_loop(
                         // PUBLISH_SECONDS covers response validation → envelope
                         // serialize → sink publish (the last ingestion stage).
                         let publish = LatencyTimer::start(names::PUBLISH_SECONDS);
-                        let issues = validate_response(&req, &resp);
+                        // Drop any invalid opportunity (unverified leg, net_profit==0,
+                        // unverified flag, or a blockstamp we never sent) rather than
+                        // forwarding a phantom the ingestion layer already knows is bad
+                        // (verified honesty). Only the surviving, valid set is published.
+                        let before = resp.opportunities.len();
+                        let (resp, issues) = retain_valid(&req, &resp);
                         if !issues.is_empty() {
-                            tracing::warn!(?issues, "engine response had issues");
+                            let dropped = before - resp.opportunities.len();
+                            tracing::warn!(
+                                ?issues,
+                                dropped,
+                                "engine response had issues — dropped invalid opportunities"
+                            );
                         }
                         // The stages known at publish time (build + engine round-trip)
                         // ride in the envelope; publish itself is captured only in

@@ -16,6 +16,16 @@ to that price and is therefore a *lower bound* on the true output. Understating
 output can only *suppress* an opportunity, never fabricate one — the safe
 direction for a detector (docs/ARBITRAGE_THEORY §1.2).
 
+**Caution — the unbounded default overstates across ticks.** When
+``sqrt_price_limit_x96`` is ``None`` the step assumes the active ``liquidity``
+holds all the way to the protocol price bound. That is exact *within* the current
+tick but **overstates** output for a fill large enough to cross a tick into
+different (usually thinner) liquidity. Callers that price real pools must pass the
+active-range boundary so the quote stays a safe lower bound; the detection path
+threads :attr:`~l2arb.model.pool.V3Slot0.sqrt_ratio_lower_x96` /
+``sqrt_ratio_upper_x96`` for exactly this, and flags any opportunity still sized
+on the unbounded estimate (``v3_single_tick_estimate``).
+
 Direction convention (Uniswap): ``zeroForOne`` = input token0, output token1,
 price (token1/token0) **decreases**. ``oneForZero`` = input token1, output
 token0, price **increases**.

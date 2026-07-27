@@ -126,27 +126,67 @@ pub fn initial_context(cfg: &ChainConfig) -> ChainContext {
     l2i_gas::assemble_chain_context(cfg.chain_id, 0, 0, gas_cfg, BTreeMap::new(), hubs)
 }
 
+/// Resolve a freshly-read gas/fee value. On a failed read, **retain `last_good`**
+/// rather than fabricating a `0`: a zero gas cost is not real, on-chain-verifiable
+/// data, and it would under-cost gas into phantom profit (prime directive 1). The
+/// read is one off-loop RPC, so a transient failure is expected and must degrade to
+/// the last-good reading, never to zero.
+fn retained_or_last_good<E: std::fmt::Display>(
+    read: std::result::Result<u64, E>,
+    last_good: u64,
+    chain_id: u64,
+    what: &str,
+) -> u64 {
+    match read {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::warn!(
+                chain_id,
+                error = %e,
+                "{what} read failed — retaining last-good value (not fabricating 0)"
+            );
+            last_good
+        }
+    }
+}
+
 /// Assemble a chain's [`ChainContext`]: live gas (execution price + L1 data fee) plus
 /// the derived native-price map and hubs. Two RPCs (gas price + L1 fee) — run by the
 /// refresher off the block cadence, never on the aggregator's per-tick path.
+///
+/// `prev` is the last-good context (from the watch channel). A failed gas / L1 read
+/// **retains `prev`'s value** instead of overwriting it with a fabricated `0`, so a
+/// transient RPC hiccup can never under-cost gas and manufacture phantom profit
+/// (prime directive 1). The native-price map is always recomputed from the local
+/// mirror (no RPC), so it is unaffected.
 pub async fn build_chain_context<P: ChainProvider + ?Sized>(
     cfg: &ChainConfig,
     provider: &P,
     mirror: &Mirror,
+    prev: &ChainContext,
 ) -> ChainContext {
-    let gas_price = l2i_gas::read_gas_price(provider).await.unwrap_or(0);
+    let gas_price = retained_or_last_good(
+        l2i_gas::read_gas_price(provider).await,
+        prev.gas_price_wei,
+        cfg.chain_id,
+        "gas price",
+    );
     let model = l2i_chains::by_id(cfg.chain_id)
         .map(|s| s.gas_model)
         .unwrap_or(l2i_chains::GasModel::Arbitrum);
-    let l1 = l2i_gas::read_l1_data_fee(
-        provider,
-        model,
-        l2i_chains::OP_GAS_PRICE_ORACLE,
-        alloy_primitives::Bytes::new(),
-        BlockId::latest(),
-    )
-    .await
-    .unwrap_or(0);
+    let l1 = retained_or_last_good(
+        l2i_gas::read_l1_data_fee(
+            provider,
+            model,
+            l2i_chains::OP_GAS_PRICE_ORACLE,
+            alloy_primitives::Bytes::new(),
+            BlockId::latest(),
+        )
+        .await,
+        prev.l1_data_fee_wei,
+        cfg.chain_id,
+        "L1 data fee",
+    );
     let hubs: Vec<Address> = cfg.hubs.iter().filter_map(|s| s.parse().ok()).collect();
     let native = derive_native_prices(cfg, mirror);
     let gas_cfg = GasConfig {
@@ -277,6 +317,78 @@ mod tests {
         assert!(
             map.is_empty(),
             "no seeded WETH/T pool → empty native-price map, nothing fabricated"
+        );
+    }
+
+    fn base_cfg() -> ChainConfig {
+        l2i_config::Config::load(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../config/config.example.toml"
+        ))
+        .unwrap()
+        .chains
+        .into_iter()
+        .find(|c| c.chain_id == 8453)
+        .unwrap()
+    }
+
+    #[test]
+    fn retained_or_last_good_keeps_last_good_only_on_err() {
+        // A successful read is used as-is; a failed read degrades to the last-good
+        // value — never to a fabricated 0 that would under-cost gas (prime directive 1).
+        assert_eq!(retained_or_last_good(Ok::<u64, &str>(42), 7, 1, "gas"), 42);
+        assert_eq!(
+            retained_or_last_good(Err::<u64, &str>("boom"), 7, 1, "gas"),
+            7,
+            "a failed read must retain last-good, not fabricate 0"
+        );
+    }
+
+    #[tokio::test]
+    async fn failed_gas_read_retains_last_good_not_zero() {
+        use l2i_rpc::mock::MockProvider;
+        // The off-loop refresher runs against a provider whose gas_price() read fails.
+        // The last-good context carries a real gas price; the rebuilt context must keep
+        // it, never overwrite it with a fabricated 0 (prime directive 1).
+        let provider = MockProvider::new(42161).with_failing_gas_price();
+        let cfg = arbitrum_cfg();
+        let mirror = Mirror::new();
+
+        let mut last_good = initial_context(&cfg);
+        last_good.gas_price_wei = 7_000_000;
+
+        let ctx = build_chain_context(&cfg, &provider, &mirror, &last_good).await;
+        assert_eq!(
+            ctx.gas_price_wei, 7_000_000,
+            "failed gas read must retain last-good gas price"
+        );
+        assert_ne!(
+            ctx.gas_price_wei, 0,
+            "must never fall back to a fabricated 0"
+        );
+    }
+
+    #[tokio::test]
+    async fn failed_l1_fee_read_retains_last_good_not_zero() {
+        use l2i_rpc::mock::MockProvider;
+        // An OP-Stack chain reads the L1 data fee via GasPriceOracle.getL1Fee. With no
+        // recording that eth_call fails, so the rebuilt context must retain the last-good
+        // L1 fee, not fabricate a 0 — while the successful gas read is used as-is.
+        let cfg = base_cfg();
+        let provider = MockProvider::new(cfg.chain_id).with_gas_price(5_000_000);
+        let mirror = Mirror::new();
+
+        let mut last_good = initial_context(&cfg);
+        last_good.l1_data_fee_wei = 4242;
+
+        let ctx = build_chain_context(&cfg, &provider, &mirror, &last_good).await;
+        assert_eq!(
+            ctx.l1_data_fee_wei, 4242,
+            "failed L1 fee read must retain last-good, not fabricate 0"
+        );
+        assert_eq!(
+            ctx.gas_price_wei, 5_000_000,
+            "the successful gas read is used"
         );
     }
 }

@@ -7,6 +7,7 @@ from dataclasses import replace
 import pytest
 
 from graphkit import GraphKit
+from l2arb.model.blockstamp import Blockstamp
 from l2arb.store.memory_cache import PoolStateCache
 
 pytestmark = pytest.mark.unit
@@ -38,6 +39,29 @@ def test_same_block_update_applies(gk: type[GraphKit]) -> None:
     cache.put(gk.v2(10, a, b, 10**18, 10**18))
     # Same block number counts as fresh-enough (>=), so it applies.
     assert cache.put(gk.v2(10, a, b, 10**18, 2 * 10**18)) is True
+
+
+def test_same_height_reorg_replacement_supersedes(gk: type[GraphKit]) -> None:
+    # A reorg produces a *different* block at the same height with corrected
+    # reserves; the monotonic-apply rule accepts it (same-or-newer wins) rather
+    # than dropping it, so the cache reflects the new canonical state.
+    a, b = gk.token(1), gk.token(2)
+    cache = PoolStateCache()
+    ts = 1_700_000_000
+    first = replace(
+        gk.v2(10, a, b, 10**18, 10**18),
+        blockstamp=Blockstamp(gk.CHAIN, 100, "0x" + "ab" * 32, ts),
+    )
+    reorg = replace(
+        gk.v2(10, a, b, 10**18, 5 * 10**18),
+        blockstamp=Blockstamp(gk.CHAIN, 100, "0x" + "cd" * 32, ts),  # same height, new hash
+    )
+    assert cache.put(first) is True
+    assert cache.put(reorg) is True  # not dropped — supersedes the prior state
+    got = cache.get(first.chain_id, first.address)
+    assert got is not None
+    assert got.v2 is not None
+    assert got.v2.reserve1 == 5 * 10**18
 
 
 def test_addresses_collide_across_chains(gk: type[GraphKit]) -> None:

@@ -7,8 +7,30 @@ import pytest
 from graphkit import GraphKit
 from l2arb.detect.cycle import cycle_log_margin, cycle_pools, is_closed
 from l2arb.detect.two_hop import two_hop_candidates
+from l2arb.model.token import Token
 
 pytestmark = pytest.mark.unit
+
+
+def test_quarantined_token_yields_no_route(gk: type[GraphKit]) -> None:
+    # Baseline: two differently-priced pools on (a, b) give a real 2-hop candidate.
+    a, b = gk.token(1), gk.token(2)
+    ok = gk.graph(
+        [
+            gk.v2(10, a, b, 1000 * 10**18, 1000 * 10**18),
+            gk.v2(11, a, b, 1000 * 10**18, 1100 * 10**18),
+        ]
+    )
+    assert two_hop_candidates(ok)
+    # Mark b quarantined (fee-on-transfer / rebasing): no cycle may route through it.
+    bq = Token(chain_id=gk.CHAIN, address=b.address, decimals=b.decimals, quarantined=True)
+    quarantined = gk.graph(
+        [
+            gk.v2(10, a, bq, 1000 * 10**18, 1000 * 10**18),
+            gk.v2(11, a, bq, 1000 * 10**18, 1100 * 10**18),
+        ]
+    )
+    assert two_hop_candidates(quarantined) == []
 
 
 def test_finds_planted_two_hop(gk: type[GraphKit]) -> None:

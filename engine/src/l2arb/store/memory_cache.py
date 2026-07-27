@@ -3,9 +3,13 @@
 Holds the latest :class:`PoolState` per ``(chain_id, address)`` with two
 guarantees the detection path relies on:
 
-* **Freshness / monotonicity** — a stale update (an older or equal block for a
-  pool already seen) is a no-op, so a late-arriving log can never overwrite
-  fresher reserves (uses :meth:`Blockstamp.is_same_or_newer`).
+* **Freshness / monotonicity** — an update from an **older** block is a no-op, so
+  a late-arriving log can never overwrite fresher reserves. An update at the
+  **same or newer** block applies (last write wins at equal height), so a
+  same-height reorg replacement supersedes the prior state rather than being
+  dropped (uses :meth:`Blockstamp.is_same_or_newer`; the block hash is retained
+  for provenance/replay, not used as a gate). Wall-clock staleness is handled
+  separately by :meth:`evict_stale`.
 * **Warm-start persistence** — :meth:`snapshot` produces a JSON-safe list and
   :meth:`from_snapshot` rebuilds the cache, so the engine can survive a restart
   without a full cold re-sync ("persistent memory").

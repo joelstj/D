@@ -10,7 +10,7 @@
 //! are aborted when the loop returns, so each reconnect starts a clean set.
 
 use crate::context::build_chain_context;
-use alloy_primitives::Address;
+use alloy_primitives::{Address, B256};
 use l2i_config::ChainConfig;
 use l2i_core::{Blockstamp, ChainContext, PoolKind};
 use l2i_ingest::event::{decode_sync_reserves, sync_topic};
@@ -18,7 +18,9 @@ use l2i_ingest::mirror::Mirror;
 use l2i_ingest::reconcile::reconcile_batch;
 use l2i_ingest::reorg::{BlockRef, ReorgOutcome, ReorgTracker};
 use l2i_rpc::{BlockId, ChainProvider, Filter, RpcError};
+use l2i_v4::apply_v4_swap;
 use l2i_v4::event::{decode_v4_swap, v4_swap_topic};
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::watch;
@@ -56,6 +58,13 @@ pub struct ChainIngestor<P: ChainProvider> {
     pub mirror: Arc<Mirror>,
     /// Addresses to subscribe `logs` for (V2/V3 pools + the V4 PoolManager).
     pub log_addresses: Vec<Address>,
+    /// V4 poolId → declared `PoolKey.fee` (the `0x800000` sentinel marks a dynamic-fee
+    /// pool). Lets the live path apply a dynamic pool's effective per-swap fee via
+    /// [`apply_v4_swap`] rather than discarding it. Empty on chains without V4.
+    pub v4_declared_fees: HashMap<B256, u32>,
+    /// The V4 `StateView` address, if this chain has V4 liquidity. Used to reconcile
+    /// V4 (`poolId`) pools independently, just as V2/V3 pools are reconciled.
+    pub state_view: Option<Address>,
     /// Reconcile cadence.
     pub reconcile_interval: Duration,
     /// Publishes the freshly-computed [`ChainContext`] to the aggregator (off the
@@ -89,6 +98,7 @@ impl<P: ChainProvider + 'static> ChainIngestor<P> {
             self.chain_id,
             self.provider.clone(),
             self.mirror.clone(),
+            self.state_view,
             self.reconcile_interval,
             shutdown.clone(),
         )));
@@ -181,11 +191,14 @@ impl<P: ChainProvider + 'static> ChainIngestor<P> {
             }
         } else if topic0 == v4_swap_topic() {
             if let Ok(s) = decode_v4_swap(log) {
-                // V4 pools live in the same mirror, keyed by poolId. Dynamic-fee
-                // handling is applied by l2i_v4::apply_v4_swap in the full wiring.
-                let id = l2i_core::PoolAddress::PoolId(s.pool_id);
-                self.mirror
-                    .apply_v3_swap(&id, s.sqrt_price_x96, s.tick, s.liquidity, stamp);
+                // V4 pools live in the same mirror, keyed by poolId. Route through the
+                // adapter so a dynamic-fee pool's effective fee (carried in the Swap
+                // event) actually lands via set_fee_pips instead of being discarded.
+                // `declared_fee` distinguishes a dynamic pool (0x800000) from a static
+                // one; an unknown poolId defaults to 0 (non-dynamic) and apply_v4_swap
+                // is then a no-op for it (the mirror holds no such pool).
+                let declared_fee = self.v4_declared_fees.get(&s.pool_id).copied().unwrap_or(0);
+                apply_v4_swap(&self.mirror, &s, declared_fee, stamp);
             }
         }
     }
@@ -208,7 +221,8 @@ async fn context_refresh_loop<P: ChainProvider + ?Sized>(
         tokio::select! {
             _ = shutdown.changed() => { if *shutdown.borrow() { return; } }
             _ = interval.tick() => {
-                let ctx = build_chain_context(&cfg, &*provider, &mirror).await;
+                let prev = ctx_tx.borrow().clone();
+                let ctx = build_chain_context(&cfg, &*provider, &mirror, &prev).await;
                 let _ = ctx_tx.send(ctx);
             }
         }
@@ -222,6 +236,7 @@ async fn reconcile_loop<P: ChainProvider + ?Sized>(
     chain_id: u64,
     provider: Arc<P>,
     mirror: Arc<Mirror>,
+    state_view: Option<Address>,
     period: Duration,
     mut shutdown: watch::Receiver<bool>,
 ) {
@@ -232,7 +247,7 @@ async fn reconcile_loop<P: ChainProvider + ?Sized>(
         tokio::select! {
             _ = shutdown.changed() => { if *shutdown.borrow() { return; } }
             _ = interval.tick() => {
-                reconcile_round(&*provider, &mirror, &mut cursor).await;
+                reconcile_round(&*provider, &mirror, state_view, &mut cursor).await;
                 metrics::gauge!(
                     l2i_observability::names::VERIFIED_POOLS,
                     "chain_id" => chain_id.to_string()
@@ -249,6 +264,7 @@ async fn reconcile_loop<P: ChainProvider + ?Sized>(
 async fn reconcile_round<P: ChainProvider + ?Sized>(
     provider: &P,
     mirror: &Mirror,
+    state_view: Option<Address>,
     cursor: &mut usize,
 ) {
     let verified = mirror.snapshot_verified();
@@ -263,9 +279,16 @@ async fn reconcile_round<P: ChainProvider + ?Sized>(
         .map(|i| verified[(start + i) % verified.len()].clone())
         .collect();
     let tally = reconcile_batch(provider, mirror, &window).await;
-    if tally.mismatched > 0 {
-        metrics::counter!(l2i_observability::names::RECONCILE_MISMATCHES)
-            .increment(tally.mismatched);
+    let mut mismatched = tally.mismatched;
+    // reconcile_batch skips V4 (poolId) pools; reconcile them independently via the
+    // StateView so they get the same verified-honesty guarantee as V2/V3 — drift / a
+    // missed Swap log flips them verified:false instead of being silently trusted.
+    if let Some(sv) = state_view {
+        let v4 = l2i_v4::reconcile_v4_batch(provider, mirror, sv, &window).await;
+        mismatched += v4.mismatched;
+    }
+    if mismatched > 0 {
+        metrics::counter!(l2i_observability::names::RECONCILE_MISMATCHES).increment(mismatched);
     }
     *cursor = start + batch;
 }

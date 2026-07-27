@@ -41,6 +41,9 @@ pub struct MockProvider {
     head: Option<HeadSummary>,
     /// Optional logs returned by [`ChainProvider::logs`].
     logs: Vec<Log>,
+    /// When set, [`ChainProvider::gas_price`] returns an error — used to exercise a
+    /// transient gas-read failure on the context-refresh path.
+    fail_gas_price: bool,
     /// Count of network round-trips issued (shared across clones).
     round_trips: Arc<AtomicUsize>,
 }
@@ -87,6 +90,14 @@ impl MockProvider {
     /// Set the `eth_gasPrice` value returned.
     pub fn with_gas_price(mut self, wei: u64) -> Self {
         self.gas_price = wei;
+        self
+    }
+
+    /// Make [`ChainProvider::gas_price`] fail, so a test can prove the context
+    /// refresher retains its last-good gas price on a transient read failure instead
+    /// of fabricating a `0` (which would under-cost gas → phantom profit).
+    pub fn with_failing_gas_price(mut self) -> Self {
+        self.fail_gas_price = true;
         self
     }
 
@@ -146,6 +157,9 @@ impl ChainProvider for MockProvider {
 
     async fn gas_price(&self) -> Result<u64> {
         self.round_trips.fetch_add(1, Ordering::SeqCst);
+        if self.fail_gas_price {
+            return Err(RpcError::Call("mock: gas_price read failed".into()));
+        }
         Ok(self.gas_price)
     }
 

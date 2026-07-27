@@ -42,6 +42,24 @@ def test_v3_pool_round_trip(gk: type[GraphKit]) -> None:
     assert pool_from_dict(pool_to_dict(pool)) == pool
 
 
+def test_v3_pool_round_trip_with_active_range_boundaries(gk: type[GraphKit]) -> None:
+    a, b = gk.token(1), gk.token(2)
+    pool = gk.v3(
+        11,
+        a,
+        b,
+        sqrt_price_x96=2**96,
+        liquidity=10**24,
+        sqrt_ratio_lower_x96=99 * 2**96 // 100,
+        sqrt_ratio_upper_x96=101 * 2**96 // 100,
+    )
+    data = pool_to_dict(pool)
+    # Big-int boundaries are encoded as decimal strings and survive the round trip.
+    assert isinstance(data["v3"]["sqrt_ratio_lower_x96"], str)
+    assert isinstance(data["v3"]["sqrt_ratio_upper_x96"], str)
+    assert pool_from_dict(data) == pool
+
+
 def test_stableswap_pool_round_trip(gk: type[GraphKit]) -> None:
     a, b = gk.token(1), gk.token(2)
     pool = gk.stable(12, a, b, 10**24, 2 * 10**24, amp=500)

@@ -3,8 +3,11 @@
 Data-integrity rule (CLAUDE.md §3): *a detection the engine cannot tie back to a
 specific block is a bug.* Every reserve, price, and derived quote therefore
 carries a :class:`Blockstamp` naming the exact chain, block number, block hash,
-and timestamp it was read at. Freshness checks and reorg invalidation are built
-on top of it.
+and timestamp it was read at. The block number drives the caches' monotonic-apply
+ordering (drop older updates; accept a same-or-newer block, including a
+same-height reorg replacement — :meth:`is_same_or_newer`); the timestamp drives
+wall-clock freshness (:meth:`is_stale`, ``PoolStateCache.evict_stale``); the block
+hash is retained for provenance and replay.
 
 Units:
     * ``chain_id``  — EIP-155 chain id (Arbitrum One = 42161, Base = 8453, …).
