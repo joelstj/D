@@ -1,5 +1,6 @@
 import { Pause, Play, Zap } from "lucide-react";
 import { useLive } from "../hooks/useLiveData";
+import { dataSourceBadge } from "../lib/format";
 import { WalletButton } from "./WalletButton";
 import { Badge } from "./ui";
 
@@ -14,6 +15,7 @@ export function Header() {
   const s = STATUS_META[status];
   const running = stats?.running ?? false;
   const engineOn = settings?.engineEnabled ?? false;
+  const dataBadge = stats ? dataSourceBadge(stats.dataSource) : null;
 
   return (
     <header className="glass sticky top-0 z-30 border-b border-border">
@@ -37,11 +39,9 @@ export function Header() {
         </div>
 
         <div className="ml-auto flex items-center gap-2 sm:gap-3">
-          {stats && (
+          {stats && dataBadge && (
             <div className="hidden items-center gap-2 md:flex">
-              <Badge tone={stats.dataSource === "live" ? "accent" : "neutral"}>
-                {stats.dataSource === "live" ? "LIVE DATA" : "SIM DATA"}
-              </Badge>
+              <Badge tone={dataBadge.real ? "accent" : "neutral"}>{dataBadge.label}</Badge>
               <Badge tone={stats.executionMode === "live" ? "neg" : "neutral"}>
                 {stats.executionMode === "live" ? "LIVE EXEC" : "PAPER"}
               </Badge>

@@ -18,15 +18,15 @@
  * cleanly rather than inventing numbers.
  */
 import { createPublicClient, http, type PublicClient } from "viem";
-import { arbitrum, base, optimism, polygon } from "viem/chains";
+import { arbitrum, base, ink, optimism, polygon, unichain } from "viem/chains";
 import type { Chain } from "viem";
 import { createLogger } from "../util/logger";
 
 const log = createLogger("execution-latency");
 
-const VIEM_CHAINS: Record<string, Chain> = { base, arbitrum, optimism, polygon };
+const VIEM_CHAINS: Record<string, Chain> = { base, arbitrum, optimism, polygon, unichain, ink };
 /** Chain preference when none is pinned: the executor's canonical home first. */
-const CHAIN_PREFERENCE = ["arbitrum", "base", "optimism", "polygon"];
+const CHAIN_PREFERENCE = ["arbitrum", "base", "optimism", "polygon", "unichain", "ink"];
 
 /** Minimal `aavePremiumBps()` view ABI — the cheapest contract-level probe. */
 const PREMIUM_ABI = [

@@ -106,6 +106,28 @@ describe("mapEngineOpportunity", () => {
     expect(o.expiresAt).toBe(now + 5000);
     expect(o.status).toBe("new");
   });
+
+  it("flags USD honesty from the numeraire (stablecoin ⇒ dollars)", () => {
+    // USDC numeraire → the `…Usd` figures are genuine dollars.
+    const usd = mapEngineOpportunity(sampleOpp(), 1_700_000_000_000);
+    expect(usd.numeraireIsUsd).toBe(true);
+
+    // WETH numeraire → same magnitudes, but they are ETH units, NOT dollars.
+    const weth = { chain_id: 8453, address: "0xWETH", decimals: 18, symbol: "WETH" };
+    const nonUsd = mapEngineOpportunity(
+      sampleOpp({
+        numeraire: weth,
+        input_amount: "1000000000000000000", // 1 WETH
+        gross_profit: "5000000000000000",
+        gas_cost: "1000000000000000",
+        bridge_cost: "0",
+        net_profit: "4000000000000000",
+      }),
+      1_700_000_000_000,
+    );
+    expect(nonUsd.numeraireIsUsd).toBe(false);
+    expect(nonUsd.tokenIn).toBe("WETH");
+  });
 });
 
 describe("isUsdStable", () => {

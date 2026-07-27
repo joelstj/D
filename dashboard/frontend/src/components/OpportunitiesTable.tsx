@@ -2,7 +2,7 @@ import { useState } from "react";
 import { ArrowRight, Loader2, Zap } from "lucide-react";
 import { useLive } from "../hooks/useLiveData";
 import { useNow } from "../hooks/useNow";
-import { formatUsd, formatBps, formatPct, timeAgo } from "../lib/format";
+import { formatAmount, formatBps, formatPct, timeAgo } from "../lib/format";
 import { networkColor, dexLabel } from "../lib/networkMeta";
 import type { ArbitrageOpportunity } from "../lib/types";
 import { Card } from "./ui";
@@ -101,6 +101,9 @@ function Row({
 }) {
   const tokens = [o.route[0]?.tokenIn, ...o.route.map((l) => l.tokenOut)].filter(Boolean);
   const ttl = Math.max(0, Math.round((o.expiresAt - now) / 1000));
+  // Only show a `$` when the numeraire is a USD stablecoin; otherwise the figures
+  // are numeraire base units and are labeled with the token symbol instead.
+  const isUsd = o.numeraireIsUsd !== false;
 
   return (
     <tr className="row-in border-t border-border-soft hover:bg-surface-2/60">
@@ -125,10 +128,12 @@ function Row({
       </td>
       <td className="tabular px-3 py-2.5 text-right text-ink-muted">{formatBps(o.spreadBps)}</td>
       <td className="tabular px-3 py-2.5 text-right text-ink-muted">
-        {formatUsd(o.amountInUsd, { compact: true })}
+        {formatAmount(o.amountInUsd, { isUsd, symbol: o.tokenIn, compact: true })}
       </td>
       <td className="px-3 py-2.5 text-right">
-        <div className="tabular font-semibold text-pos">{formatUsd(o.netProfitUsd, { sign: true })}</div>
+        <div className="tabular font-semibold text-pos">
+          {formatAmount(o.netProfitUsd, { isUsd, symbol: o.tokenIn, sign: true })}
+        </div>
         <div className="tabular text-[11px] text-ink-faint">{o.profitBps.toFixed(1)} bps</div>
       </td>
       <td className="px-3 py-2.5">

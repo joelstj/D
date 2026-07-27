@@ -1,5 +1,13 @@
 import { describe, it, expect } from "vitest";
-import { formatUsd, formatBps, formatPct, shortAddress, timeAgo } from "./format";
+import {
+  formatUsd,
+  formatAmount,
+  dataSourceBadge,
+  formatBps,
+  formatPct,
+  shortAddress,
+  timeAgo,
+} from "./format";
 
 describe("format", () => {
   it("formats USD with adaptive precision", () => {
@@ -34,5 +42,35 @@ describe("format", () => {
     expect(timeAgo(now, now)).toBe("now");
     expect(timeAgo(now - 5000, now)).toBe("5s ago");
     expect(timeAgo(now - 120_000, now)).toBe("2m ago");
+  });
+});
+
+describe("formatAmount (unit honesty)", () => {
+  it("renders a $ only when the numeraire is USD", () => {
+    expect(formatAmount(1234.5, { isUsd: true })).toBe("$1,235");
+    expect(formatAmount(50, { isUsd: true, sign: true })).toBe("+$50.00");
+  });
+
+  it("renders numeraire units with the token symbol and never a $", () => {
+    const s = formatAmount(1.2345, { isUsd: false, symbol: "WETH" });
+    expect(s).toBe("1.2345 WETH");
+    expect(s).not.toContain("$");
+    expect(formatAmount(2.5, { isUsd: false, symbol: "WETH", sign: true })).toBe("+2.5000 WETH");
+    expect(formatAmount(-2.5, { isUsd: false, symbol: "WETH" })).toBe("-2.5000 WETH");
+  });
+
+  it("defaults to USD when isUsd is omitted", () => {
+    expect(formatAmount(10)).toBe("$10.00");
+  });
+});
+
+describe("dataSourceBadge (honest labeling)", () => {
+  it("treats both real feeds (live, external) as real data", () => {
+    expect(dataSourceBadge("live")).toEqual({ label: "LIVE DATA", real: true });
+    expect(dataSourceBadge("external")).toEqual({ label: "LIVE DATA", real: true });
+  });
+
+  it("labels only the built-in simulator as SIM", () => {
+    expect(dataSourceBadge("simulated")).toEqual({ label: "SIM DATA", real: false });
   });
 });
