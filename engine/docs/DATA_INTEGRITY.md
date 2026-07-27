@@ -41,6 +41,13 @@ sources**:
   tolerance (0 wei for `getReserves`; ≤1 wei for quoter math). Disagreement flags
   the pool `UNVERIFIED` and excludes it from emission until resolved.
 
+> **Configuration.** Blockscout's per-chain REST endpoints are **built into the
+> engine** (`config.BLOCKSCOUT_REST_BASES`), so an operator supplies only an
+> optional `L2ARB__BLOCKSCOUT__API_KEY` — a read-only rate-limit credential, never
+> a signing/write secret. `Settings.blockscout.verify_url(chain)` returns the
+> ready-to-call URL (base + `apikey` when set). There are no per-chain endpoint
+> env vars to manage. See the repo-root `.env.example`.
+
 > **Capture the exact integers.** Blockscout MCP `read_contract` returns large
 > uints as JSON floats — lossy above 2⁵³ (observed: a real V2 reserve rounded by
 > ~18 000 wei, a `sqrtPriceX96` by ~2.5e11, router outputs by 1–590 wei). When the

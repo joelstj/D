@@ -1,4 +1,33 @@
-import "dotenv/config";
+import { existsSync } from "node:fs";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+import { config as loadDotenv } from "dotenv";
+
+/**
+ * Load environment from the consolidated `.env` files. The whole product is
+ * driven by ONE master `.env` at the repo root; a component-local `dashboard/.env`
+ * may override it, and real process env (including what the launcher injects)
+ * overrides both. dotenv never overrides an already-set key, so we load from the
+ * nearest `.env` upward to the repo-root master — nearest wins.
+ *
+ * Anchoring on this module's own location (not the CWD) keeps it correct whether
+ * the backend runs from source (`tsx`) or the bundled `dist/index.js`, and
+ * regardless of the working directory the launcher starts it in.
+ */
+function loadConsolidatedEnv(): void {
+  let dir = dirname(fileURLToPath(import.meta.url));
+  for (let i = 0; i < 8; i++) {
+    const candidate = resolve(dir, ".env");
+    if (existsSync(candidate)) loadDotenv({ path: candidate });
+    // The repo root holds the sibling component folders and the master `.env`.
+    if (existsSync(resolve(dir, "engine")) && existsSync(resolve(dir, "dashboard"))) break;
+    const parent = dirname(dir);
+    if (parent === dir) break;
+    dir = parent;
+  }
+}
+
+loadConsolidatedEnv();
 
 /**
  * Central environment resolution. Every value has a safe default so the server

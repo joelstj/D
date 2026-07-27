@@ -79,9 +79,15 @@ forge test --match-path 'test/foundry/*' --fork-url "$ARBITRUM_RPC_URL" -vvv
 Deploy:
 
 ```bash
-cp .env.example .env          # add PRIVATE_KEY (and verify addresses!)
+cp ../.env.example ../.env     # master .env at the repo root; add PRIVATE_KEY (deploy-only)
 npx hardhat run scripts/deploy.js --network arbitrum
 ```
+
+Deploy config (`PRIVATE_KEY`, the `*_RPC_URL` endpoints, `ETHERSCAN_API_KEY`)
+lives in the repo-root master `.env`, in its clearly-fenced *Contracts* section —
+these are read **only** for this human-gated deploy/verify step, never by the
+running detection stack. Prefer to keep the deploy key isolated? Put it in a local
+`contracts/.env` instead; it overrides the master. Never commit a real key.
 
 See **[docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)** for the full per-chain guide and
 **[docs/INTEGRATION.md](docs/INTEGRATION.md)** for the plug-and-play bot API.
