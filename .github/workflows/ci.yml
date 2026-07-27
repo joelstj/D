@@ -97,7 +97,12 @@ jobs:
       - name: Hardhat offline unit tests
         run: npm test
       - name: Install Foundry
+        # Pin the version: `forge fmt` output is version-sensitive and this tree
+        # is formatted for Foundry 1.5.x. `stable` floats to newer releases whose
+        # formatter reflows otherwise-unchanged code, failing `forge fmt --check`.
         uses: foundry-rs/foundry-toolchain@v1
+        with:
+          version: "1.5.1"
       - name: Vendor forge-std
         run: git clone --depth 1 --branch v1.9.4 https://github.com/foundry-rs/forge-std lib/forge-std
       - name: Forge fmt + build + test (offline; fork self-skips)
