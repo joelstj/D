@@ -10,6 +10,7 @@ Split into two shapes:
 from __future__ import annotations
 
 import os
+import shutil
 import signal
 import subprocess
 import sys
@@ -20,6 +21,22 @@ from . import console
 from .paths import IS_WINDOWS
 
 
+def _resolve(cmd: list[str], env: dict) -> list[str]:
+    """Resolve ``cmd[0]`` to the full path ``PATH`` search actually finds.
+
+    Windows' ``CreateProcess`` (what ``subprocess.Popen`` calls without
+    ``shell=True``) only auto-appends ``.exe`` to an extension-less name — unlike
+    ``cmd.exe``, it never consults ``PATHEXT``. Tools that ship as ``.cmd``/``.bat``
+    shims (pnpm, corepack, npm, …) are found fine by ``shutil.which`` (which does
+    check ``PATHEXT``) but then fail to launch with ``WinError 2`` if the bare name
+    is handed to ``Popen`` directly. Resolving here fixes every caller at once.
+    """
+    if not cmd:
+        return cmd
+    found = shutil.which(cmd[0], path=env.get("PATH"))
+    return [found, *cmd[1:]] if found else cmd
+
+
 def run(cmd: list[str], cwd: Path | None = None, env: dict | None = None, prefix: str = "") -> int:
     """Run a command to completion, streaming combined output. Returns exit code."""
     tag = f"[{prefix}] " if prefix else ""
@@ -27,7 +44,7 @@ def run(cmd: list[str], cwd: Path | None = None, env: dict | None = None, prefix
     full_env = {**os.environ, **(env or {})}
     try:
         proc = subprocess.Popen(
-            cmd,
+            _resolve(cmd, full_env),
             cwd=str(cwd) if cwd else None,
             env=full_env,
             stdout=subprocess.PIPE,
@@ -79,9 +96,10 @@ class Service:
         # log preserves the history that explains why a restart was needed.
         mode = "a" if self._started_once else "w"
         self._log_fh = open(self.log_path, mode, encoding="utf-8", buffering=1)
+        full_env = {**os.environ, **self.env}
         kwargs: dict = {
             "cwd": str(self.cwd),
-            "env": {**os.environ, **self.env},
+            "env": full_env,
             "stdout": self._log_fh,
             "stderr": subprocess.STDOUT,
             "stdin": subprocess.DEVNULL,
@@ -90,7 +108,7 @@ class Service:
             kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP  # type: ignore[attr-defined]
         else:
             kwargs["start_new_session"] = True
-        self.proc = subprocess.Popen(self.cmd, **kwargs)
+        self.proc = subprocess.Popen(_resolve(self.cmd, full_env), **kwargs)
         self._started_once = True
 
     def restart(self) -> None:

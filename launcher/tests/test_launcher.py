@@ -17,6 +17,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from l2arb import config, state  # noqa: E402
 from l2arb.paths import Layout, workspace_root  # noqa: E402
 from l2arb.prereqs import _VERSION_RE, _ge, merge_path  # noqa: E402
+from l2arb.proc import _resolve  # noqa: E402
 
 
 class PathsTest(unittest.TestCase):
@@ -124,6 +125,36 @@ class MergePathTest(unittest.TestCase):
         )
         # The already-present Python dir (different case/slash) is not re-added.
         self.assertEqual(got, "C:\\Python312;C:\\Node;C:\\Cargo\\bin")
+
+
+class ResolveExecutableTest(unittest.TestCase):
+    """`_resolve` is what makes a bare command name (e.g. "pnpm") launch correctly
+    on Windows even when the real file on PATH is a `.cmd`/`.bat` shim — see the
+    docstring on `l2arb.proc._resolve`. The PATHEXT-matching part of that is
+    exercised by Python's own (platform-gated) `shutil.which`; what's tested here
+    is `_resolve`'s own contract: substitute the resolved path when found, and
+    never crash or drop arguments when it isn't.
+    """
+
+    def _tool_dir_with(self, name: str) -> str:
+        d = tempfile.mkdtemp()
+        tool = Path(d) / name
+        tool.write_text("#!/bin/sh\n")
+        tool.chmod(0o755)
+        return d
+
+    def test_substitutes_the_resolved_path(self):
+        d = self._tool_dir_with("mytool")
+        resolved = _resolve(["mytool", "install", "--flag"], {"PATH": d})
+        self.assertEqual(resolved, [str(Path(d) / "mytool"), "install", "--flag"])
+
+    def test_leaves_command_unchanged_when_not_found_on_path(self):
+        d = self._tool_dir_with("mytool")
+        cmd = ["definitely-not-a-real-tool-xyz", "install"]
+        self.assertEqual(_resolve(cmd, {"PATH": d}), cmd)
+
+    def test_empty_command_is_a_no_op(self):
+        self.assertEqual(_resolve([], {"PATH": "/usr/bin"}), [])
 
 
 if __name__ == "__main__":
