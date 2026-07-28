@@ -91,9 +91,13 @@ human-gated execution path. Ctrl-C stops the stack cleanly.
 
 A single **`L2ArbBot.exe`** — **double-click it** and it installs everything on
 first run, then just launches and opens the dashboard (safe paper mode) on later
-runs. To go live, `L2ArbBot.exe setup` and paste one RPC URL. Build the exe with
-the `build-windows-exe` GitHub Actions workflow (or `scripts/build_windows_exe.ps1`
-on Windows). See **[`docs/INSTALL.md`](docs/INSTALL.md)**.
+runs. To go live, `L2ArbBot.exe setup` and paste one RPC URL.
+
+Don't have the `.exe` yet? On a Windows machine, double-click
+**[`Build_L2ArbBot.bat`](Build_L2ArbBot.bat)** in the repo root — it builds
+`launcher\dist\L2ArbBot.exe` for you (no PowerShell flags to remember). Or build
+it via the `build-windows-exe` GitHub Actions workflow. See
+**[`docs/INSTALL.md`](docs/INSTALL.md)**.
 
 ### Option C — Docker
 

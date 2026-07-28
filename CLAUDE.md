@@ -171,9 +171,11 @@ Reads real Arbitrum pool state → engine `/detect` → WS envelope → dashboar
 `LiveExecutor` refuses to broadcast. Skips cleanly (exit 0) when the dashboard
 isn't built or there's no outbound Arbitrum RPC, so it's safe offline.
 
-**The `.exe`:** `python scripts/build_exe.py` (any OS, for testing) or
-`scripts/build_windows_exe.ps1` on Windows / the `build-windows-exe` CI workflow
-for the real `L2ArbBot.exe`. See `docs/INSTALL.md`.
+**The `.exe`:** on Windows, double-click **`Build_L2ArbBot.bat`** (repo root) — the
+easy-to-find entry point that wraps `scripts/build_windows_exe.ps1`. Also buildable
+via `python scripts/build_exe.py` (any OS, for testing), directly via
+`scripts/build_windows_exe.ps1`, or the `build-windows-exe` CI workflow, all
+producing the real `L2ArbBot.exe`. See `docs/INSTALL.md`.
 
 **Container path:** `docker compose up --build` (see `docker-compose.yml`).
 

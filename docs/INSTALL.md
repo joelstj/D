@@ -20,15 +20,22 @@ first run**, then on every later run just launches and opens the dashboard.
 A Windows program can't be built on Linux/macOS, so the `.exe` is produced on a
 Windows machine or in CI:
 
-- **CI (recommended):** run the **`build-windows-exe`** GitHub Actions workflow
-  (`Actions → build-windows-exe → Run workflow`, or push a `v*` tag). It builds
-  `L2ArbBot.exe`, smoke-tests it, and uploads it as a downloadable artifact (and
-  attaches it to tagged releases).
-- **On your own Windows machine:**
+- **On your own Windows machine (easiest):** in the repo root, **double-click
+  [`Build_L2ArbBot.bat`](../Build_L2ArbBot.bat)**. It runs the build for you (no
+  PowerShell flags, no execution-policy prompts) and leaves the result at
+  `launcher\dist\L2ArbBot.exe`. From a terminal that's:
+  ```
+  Build_L2ArbBot.bat
+  ```
+  which is a thin wrapper around:
   ```powershell
   powershell -ExecutionPolicy Bypass -File scripts\build_windows_exe.ps1
   # → launcher\dist\L2ArbBot.exe
   ```
+- **CI:** run the **`build-windows-exe`** GitHub Actions workflow
+  (`Actions → build-windows-exe → Run workflow`, or push a `v*` tag). It builds
+  `L2ArbBot.exe`, smoke-tests it, and uploads it as a downloadable artifact (and
+  attaches it to tagged releases).
 
 ### Run it
 
