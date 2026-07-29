@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+import traceback
 
 from . import __version__, console, config, installer, payload, prereqs, run, setup, state
 from .paths import IS_WINDOWS, is_frozen, layout
@@ -163,11 +164,40 @@ def main(argv: list[str] | None = None) -> int:
         return 130
 
 
+def _run_main_safely(argv: list[str]) -> int:
+    """Run ``main``, turning any crash into an exit code instead of letting it
+    propagate. ``main`` only catches ``KeyboardInterrupt`` around its own command
+    dispatch — argument parsing and the first-run payload unpack
+    (``payload.ensure_payload``) run outside that, and any other exception type is
+    never caught at all. Without this wrapper, an uncaught exception skips the
+    "keep the window open" logic below entirely: a frozen exe's freshly-spawned
+    console would vanish with the traceback never seen.
+    """
+    try:
+        return main(argv)
+    except KeyboardInterrupt:
+        console.warn("interrupted")
+        return 130
+    except Exception:
+        console.err("L2ArbBot hit an unexpected error:")
+        traceback.print_exc()
+        return 1
+
+
+def _should_pause_before_exit(code: int) -> bool:
+    """Double-clicking a frozen .exe spawns a console that Windows closes the
+    instant the process exits, so on failure we pause for the user to read it.
+    Gated on an interactive stdin — a non-interactive invocation (redirected or
+    piped) has nobody there to press Enter, and ``input()`` would just hang it.
+    """
+    return is_frozen() and IS_WINDOWS and code != 0 and sys.stdin.isatty()
+
+
 def _entrypoint() -> None:
     # When a frozen .exe is double-clicked with no args, default to auto and keep
     # the console open long enough to read any error.
-    code = main(sys.argv[1:])
-    if is_frozen() and IS_WINDOWS and code != 0 and not sys.stdin.isatty():
+    code = _run_main_safely(sys.argv[1:])
+    if _should_pause_before_exit(code):
         try:
             input("\nPress Enter to close…")
         except EOFError:
