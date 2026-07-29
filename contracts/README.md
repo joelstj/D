@@ -33,7 +33,7 @@ Compiled with **solc 0.8.20** (zero warnings) and tested with Hardhat:
 
 | Suite | What it proves | Result |
 | --- | --- | --- |
-| `test/*.test.js` (offline) | Full mechanics on mock tokens/pools/providers: 2-hop & 3-hop arbs via Aave and Balancer, min-profit revert, access control, pause, griefer-callback rejection, optimal-sizing math | **24 passing** |
+| `test/*.test.js` (offline) | Full mechanics on mock tokens/pools/providers: 2-hop & 3-hop arbs via Aave and Balancer, min-profit revert, access control, pause, griefer-callback rejection, GENERIC-router allowlisting, optimal-sizing math | **29 passing** |
 | `test/fork/ArbitrumFork.test.js` (**live Arbitrum fork**) | **Real** atomic cross-DEX flash-loan arbs against **live** Uniswap V3 + SushiSwap V2, borrowing from **both Balancer V2 and Aave V3**, plus a live Aave premium read and an atomic revert when no arb exists | **4 passing** |
 
 The live-fork test manufactures a price dislocation and then **captures it
@@ -127,8 +127,16 @@ reverts.**
 ## Security model
 
 - **OpenZeppelin** `AccessControl`, `ReentrancyGuard`, `Pausable`, `SafeERC20`.
-- Only `EXECUTOR_ROLE` can start an arbitrage; only `GUARDIAN_ROLE` can pause or
-  sweep funds.
+- Only `EXECUTOR_ROLE` can start an arbitrage; only `GUARDIAN_ROLE` can pause,
+  sweep funds, or allowlist a router for `DexType.GENERIC` hops.
+- `GENERIC` hops (the raw-calldata escape hatch for exotic venues) may only
+  target a router `GUARDIAN_ROLE` has explicitly allowlisted via
+  `setGenericRouterAllowed` (deny-all by default) — otherwise a compromised
+  `EXECUTOR_ROLE` key could direct a `GENERIC` step's arbitrary calldata to
+  move the contract's entire balance of any held token, not just the current
+  hop's amount. The typed dex types (V2/V3/Curve) don't need this: their call
+  shape is fixed to a well-known selector with the output recipient hardcoded
+  to `address(this)`.
 - **Checks-effects-interactions** throughout; `nonReentrant` on the entry point.
 - Both flash callbacks verify the caller **is** the expected provider **and**
   that this contract itself armed the loan — blocking griefers who try to invoke

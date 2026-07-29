@@ -296,6 +296,119 @@ describe("FlashLoanArbitrage (offline mechanics)", () => {
     expect(await f.usdc.balanceOf(f.admin.address)).to.equal(e(123, 6n));
   });
 
+  // --------------------------------------------------------------------- //
+  //   GENERIC-hop router allowlist                                        //
+  // --------------------------------------------------------------------- //
+
+  function genericStep(router, tokenIn, tokenOut, data, amountInOffset = 0n) {
+    return {
+      dexType: DexType.GENERIC,
+      router,
+      tokenIn,
+      tokenOut,
+      poolFee: 0,
+      curveI: 0,
+      curveJ: 0,
+      minOut: 0n,
+      data,
+      amountInOffset,
+    };
+  }
+
+  it("only a guardian can update the GENERIC router allowlist, not the executor bot", async () => {
+    const f = await deploy();
+    await expect(
+      f.arb.connect(f.attacker).setGenericRouterAllowed(f.poolRich.target, true)
+    ).to.be.revertedWithCustomError(f.arb, "AccessControlUnauthorizedAccount");
+    // The bot holds EXECUTOR_ROLE (can pick routes) but not GUARDIAN_ROLE — it
+    // must not also be able to expand what GENERIC is allowed to call.
+    await expect(
+      f.arb.connect(f.bot).setGenericRouterAllowed(f.poolRich.target, true)
+    ).to.be.revertedWithCustomError(f.arb, "AccessControlUnauthorizedAccount");
+
+    await expect(f.arb.connect(f.admin).setGenericRouterAllowed(f.poolRich.target, true))
+      .to.emit(f.arb, "GenericRouterAllowlistUpdated")
+      .withArgs(f.poolRich.target, true);
+    expect(await f.arb.allowedGenericRouters(f.poolRich.target)).to.equal(true);
+
+    await f.arb.connect(f.admin).setGenericRouterAllowed(f.poolRich.target, false);
+    expect(await f.arb.allowedGenericRouters(f.poolRich.target)).to.equal(false);
+  });
+
+  it("rejects a GENERIC hop whose router isn't allowlisted", async () => {
+    const f = await deploy();
+    const path = [f.weth.target, f.usdc.target];
+    const data = f.poolRich.interface.encodeFunctionData("swapExactTokensForTokens", [
+      0n,
+      0n,
+      path,
+      f.arb.target,
+      MAX_DEADLINE,
+    ]);
+    const params = twoHopParams(f, Provider.AAVE_V3, e(10000, 6n));
+    params.steps[1] = genericStep(f.poolRich.target, f.weth.target, f.usdc.target, data, 4n);
+
+    await expect(f.arb.connect(f.bot).executeArbitrage(params))
+      .to.be.revertedWithCustomError(f.arb, "GenericRouterNotAllowed")
+      .withArgs(f.poolRich.target);
+  });
+
+  it("executes a GENERIC hop successfully once its router is allowlisted (regression check)", async () => {
+    const f = await deploy();
+    await f.arb.connect(f.admin).setGenericRouterAllowed(f.poolRich.target, true);
+
+    const amount = e(10000, 6n);
+    const out1 = getAmountOut(amount, e(180000, 6n), e(100), FEE_BPS);
+    const generated = getAmountOut(out1, e(100), e(220000, 6n), FEE_BPS);
+    const premium = (amount * AAVE_PREMIUM_BPS) / 10000n;
+    const expectedProfit = generated - (amount + premium);
+    expect(expectedProfit).to.be.gt(0n);
+
+    // amountInOffset=4 patches the first param (amountIn) with the real,
+    // dynamically-sized running balance at call time — the amountIn passed
+    // to encodeFunctionData below is only a placeholder.
+    const path = [f.weth.target, f.usdc.target];
+    const data = f.poolRich.interface.encodeFunctionData("swapExactTokensForTokens", [
+      0n,
+      0n,
+      path,
+      f.arb.target,
+      MAX_DEADLINE,
+    ]);
+    const params = twoHopParams(f, Provider.AAVE_V3, amount);
+    params.steps[1] = genericStep(f.poolRich.target, f.weth.target, f.usdc.target, data, 4n);
+
+    const before = await f.usdc.balanceOf(f.receiver.address);
+    await expect(f.arb.connect(f.bot).executeArbitrage(params)).to.emit(f.arb, "ArbitrageExecuted");
+    const after = await f.usdc.balanceOf(f.receiver.address);
+    expect(after - before).to.equal(expectedProfit);
+    expect(await f.usdc.balanceOf(f.arb.target)).to.equal(0n);
+  });
+
+  it("prevents an unallowlisted GENERIC router from draining an unrelated held token", async () => {
+    const f = await deploy();
+    // The engine happens to hold idle USDC already — e.g. dust from a prior
+    // trade — completely unrelated to this attempted arbitrage's own route.
+    const heldAmount = e(50000, 6n);
+    await f.usdc.mint(f.arb.target, heldAmount);
+
+    const maliciousData = f.usdc.interface.encodeFunctionData("transfer", [
+      f.attacker.address,
+      heldAmount,
+    ]);
+    const params = twoHopParams(f, Provider.AAVE_V3, e(10000, 6n));
+    // Declared tokenIn/tokenOut satisfy the outer route-asset check; the real
+    // calldata does something else entirely (the exact gap this closes).
+    params.steps[1] = genericStep(f.usdc.target, f.weth.target, f.usdc.target, maliciousData);
+
+    await expect(f.arb.connect(f.bot).executeArbitrage(params))
+      .to.be.revertedWithCustomError(f.arb, "GenericRouterNotAllowed")
+      .withArgs(f.usdc.target);
+
+    expect(await f.usdc.balanceOf(f.attacker.address)).to.equal(0n);
+    expect(await f.usdc.balanceOf(f.arb.target)).to.equal(heldAmount);
+  });
+
   it("reports the Aave premium in bps", async () => {
     const f = await deploy();
     expect(await f.arb.aavePremiumBps()).to.equal(AAVE_PREMIUM_BPS);

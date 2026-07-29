@@ -7,7 +7,7 @@ import {Pausable} from "@openzeppelin/contracts/utils/Pausable.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 
-import {ArbParams, SwapStep, FlashProvider} from "./libraries/ArbTypes.sol";
+import {ArbParams, SwapStep, FlashProvider, DexType} from "./libraries/ArbTypes.sol";
 import {DexRouter} from "./libraries/DexRouter.sol";
 import {OptimalArbitrage} from "./libraries/OptimalArbitrage.sol";
 import {IAaveV3Pool, IAaveFlashLoanSimpleReceiver} from "./interfaces/IAaveV3Pool.sol";
@@ -77,6 +77,27 @@ contract FlashLoanArbitrage is
     uint256 private _callbackState = _CB_IDLE;
 
     // --------------------------------------------------------------------- //
+    //                    GENERIC-hop router allowlist                       //
+    // --------------------------------------------------------------------- //
+
+    /// @notice Routers a GENERIC-type hop is allowed to call. Empty (deny-all)
+    ///         until a guardian explicitly allows one.
+    /// @dev GENERIC exists so an exotic venue can be integrated without a
+    ///      contract upgrade — but unlike the typed dex types (which only ever
+    ///      call a fixed, well-known selector shape with the output recipient
+    ///      hardcoded to `address(this)`), GENERIC hands `step.router` fully
+    ///      attacker-controlled calldata. Without this allowlist, a route
+    ///      whose `dexType == GENERIC` could target ANY address with ANY
+    ///      calldata — e.g. `transfer(attacker, hugeAmount)` on a completely
+    ///      unrelated token this contract happens to hold — draining far more
+    ///      than the current hop's `amountIn`, while `steps[0].tokenIn`/
+    ///      `steps[n-1].tokenOut` and the overall profit check (which only
+    ///      look at the declared route and the balance delta of `p.asset`)
+    ///      never notice, because those checks trust the declared route, not
+    ///      what the calldata actually does. See `_runRoute`.
+    mapping(address => bool) public allowedGenericRouters;
+
+    // --------------------------------------------------------------------- //
     //                               Errors                                  //
     // --------------------------------------------------------------------- //
 
@@ -92,6 +113,7 @@ contract FlashLoanArbitrage is
     error CallbackAssetMismatch();
     error InsufficientProfit(uint256 generated, uint256 required);
     error NothingToRescue();
+    error GenericRouterNotAllowed(address router);
 
     // --------------------------------------------------------------------- //
     //                               Events                                  //
@@ -111,6 +133,9 @@ contract FlashLoanArbitrage is
 
     /// @notice Emitted when tokens are swept out by a guardian.
     event Rescued(address indexed token, address indexed to, uint256 amount);
+
+    /// @notice Emitted when a guardian changes a GENERIC-hop router's allowlist status.
+    event GenericRouterAllowlistUpdated(address indexed router, bool allowed);
 
     // --------------------------------------------------------------------- //
     //                            Construction                               //
@@ -256,6 +281,15 @@ contract FlashLoanArbitrage is
         uint256 n = steps.length;
         for (uint256 i; i < n;) {
             SwapStep memory step = steps[i];
+            // GENERIC hands the router fully attacker-controlled calldata (see
+            // allowedGenericRouters' docstring) — gate it before it can run.
+            // The typed dex types below don't need this: their call shape is
+            // fixed to a well-known selector with the recipient hardcoded to
+            // address(this), so they can't be repurposed to move an unrelated
+            // held token the way an arbitrary GENERIC call could.
+            if (step.dexType == DexType.GENERIC && !allowedGenericRouters[step.router]) {
+                revert GenericRouterNotAllowed(step.router);
+            }
             uint256 bal = DexRouter.balanceOf(step.tokenIn, address(this));
             if (amountIn > bal) amountIn = bal;
             if (amountIn == 0) revert ZeroAmount();
@@ -395,6 +429,16 @@ contract FlashLoanArbitrage is
     /// @notice Resumes arbitrage executions.
     function unpause() external onlyRole(GUARDIAN_ROLE) {
         _unpause();
+    }
+
+    /// @notice Allow or revoke a router address for GENERIC-type hops.
+    /// @dev GUARDIAN_ROLE, not EXECUTOR_ROLE: the hot bot key that picks routes
+    ///      each call must not also be able to expand what GENERIC is allowed
+    ///      to call — a compromised EXECUTOR_ROLE key is limited to routes
+    ///      through already-guardian-approved routers.
+    function setGenericRouterAllowed(address router, bool allowed) external onlyRole(GUARDIAN_ROLE) {
+        allowedGenericRouters[router] = allowed;
+        emit GenericRouterAllowlistUpdated(router, allowed);
     }
 
     /// @notice Sweeps an ERC20 balance (e.g. accumulated profit) to `to`.

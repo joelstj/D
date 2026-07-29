@@ -83,7 +83,7 @@ await (await arb.executeArbitrage(p)).wait();
 | 3-hop triangular | `[asset→X, X→Y, Y→asset]` |
 | Uni V3 multi-hop leg | one `UNISWAP_V3_MULTI` step with `data` = `abi.encodePacked(tokenIn, fee, mid, fee, tokenOut)` |
 | Curve stable leg | `CURVE` step with `curveI`/`curveJ` set to the pool's coin indices |
-| Exotic venue | `GENERIC` step: put the router's raw calldata in `data`; if the input amount isn't known until runtime, set `amountInOffset` to the 32-byte word where the amount goes and the engine patches the live balance in |
+| Exotic venue | `GENERIC` step: put the router's raw calldata in `data`; if the input amount isn't known until runtime, set `amountInOffset` to the 32-byte word where the amount goes and the engine patches the live balance in. **The router must first be allowlisted by a `GUARDIAN_ROLE` holder** via `setGenericRouterAllowed(router, true)` — a `GENERIC` step whose `router` isn't allowlisted reverts with `GenericRouterNotAllowed` before any call is made (deny-all by default; see the Security model in the repo README) |
 
 ## Events
 
