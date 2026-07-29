@@ -5,8 +5,10 @@
   "main": "index.js",
   "scripts": {
     "compile": "hardhat compile",
-    "test": "hardhat test test/FlashLoanArbitrage.test.js test/OptimalArbitrage.test.js test/CrossChainArbitrageExecutor.test.js",
+    "test": "hardhat test test/FlashLoanArbitrage.test.js test/OptimalArbitrage.test.js test/CrossChainArbitrageExecutor.test.js test/DexRouter.test.js",
     "test:fork": "hardhat test test/fork/ArbitrumFork.test.js",
+    "test:fork:polygon": "hardhat test test/fork/PolygonFork.test.js",
+    "test:fork:crosschain": "hardhat test test/fork/CrossChainDualFork.test.js",
     "test:all": "hardhat test",
     "coverage": "hardhat coverage --testfiles \"test/*.test.js\"",
     "deploy": "hardhat run scripts/deploy.js"

@@ -43,6 +43,15 @@ import {IBridgeAdapter} from "../interfaces/IBridgeAdapter.sol";
 ///
 ///      This contract deliberately holds inventory (unlike the flash-loan
 ///      engine, which never should) and is guarded by roles + pause + rescue.
+///
+///      Yul scope: both legs' hot loop (`_walkRoute`) already runs entirely
+///      through `DexRouter.balanceOf`/`DexRouter.execute`, which carry their
+///      own hand-optimised Yul (see DexRouter.sol) — every swap this contract
+///      makes already benefits from that. There is no *additional* low-level
+///      call this contract makes itself (the bridge call takes a caller-
+///      supplied `bytes options` of unknown shape, so it can't be hand-encoded
+///      the way DexRouter's fixed-shape swap calls can) worth converting —
+///      considered, not skipped.
 contract CrossChainArbitrageExecutor is AccessControl, ReentrancyGuard, Pausable {
     using SafeERC20 for IERC20;
 

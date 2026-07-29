@@ -18,6 +18,25 @@ import {ICurvePool} from "../interfaces/dex/ICurvePool.sol";
 ///      across every venue and makes the engine agnostic to router return-value
 ///      quirks. Fee-on-transfer / rebasing tokens are intentionally NOT
 ///      supported (the balance-delta accounting would misprice them).
+///
+///      Yul scope (house style — see contracts/CLAUDE.md: "Yul... on the hot
+///      path... only where it measurably wins"): UNISWAP_V2 and
+///      UNISWAP_V3_SINGLE hand-encode their call in raw assembly (see
+///      `_swapUniswapV2`/`_swapUniswapV3Single`), skipping the ABI-encoder's
+///      memory allocation for the fixed-shape calls this engine always makes
+///      (a static 2-element path; a fully static params struct). Selectors
+///      come from the imported interfaces' `.selector` — a compile-time
+///      constant — rather than a hand-typed hex literal, so a wrong signature
+///      is a compile error, not a runtime guess. CURVE and GENERIC were
+///      already raw low-level calls (the caller supplies the calldata, or a
+///      fixed 4-arg selector). UNISWAP_V3_MULTI keeps the typed call: its
+///      `bytes path` parameter is variable-length, and hand-rolling dynamic-
+///      bytes ABI encoding for a comparatively cold path (multi-hop V3) isn't
+///      worth the added risk for the gas it would save. The branch
+///      *selection* itself (if/else over a 5-way enum) is left to the
+///      Solidity optimizer (viaIR, already on): it already compiles a small
+///      enum dispatch efficiently, so a hand-written Yul `switch` here
+///      wouldn't measurably win — and "measurably wins" is the bar.
 library DexRouter {
     using SafeERC20 for IERC20;
 
@@ -38,24 +57,9 @@ library DexRouter {
         uint256 balBefore = balanceOf(step.tokenOut, address(this));
 
         if (step.dexType == DexType.UNISWAP_V2) {
-            address[] memory path = new address[](2);
-            path[0] = step.tokenIn;
-            path[1] = step.tokenOut;
-            IUniswapV2Router(step.router)
-                .swapExactTokensForTokens(amountIn, step.minOut, path, address(this), block.timestamp);
+            _swapUniswapV2(step.router, amountIn, step.minOut, step.tokenIn, step.tokenOut);
         } else if (step.dexType == DexType.UNISWAP_V3_SINGLE) {
-            ISwapRouter02(step.router)
-                .exactInputSingle(
-                    ISwapRouter02.ExactInputSingleParams({
-                        tokenIn: step.tokenIn,
-                        tokenOut: step.tokenOut,
-                        fee: step.poolFee,
-                        recipient: address(this),
-                        amountIn: amountIn,
-                        amountOutMinimum: step.minOut,
-                        sqrtPriceLimitX96: 0
-                    })
-                );
+            _swapUniswapV3Single(step.router, amountIn, step.minOut, step.tokenIn, step.tokenOut, step.poolFee);
         } else if (step.dexType == DexType.UNISWAP_V3_MULTI) {
             ISwapRouter02(step.router)
                 .exactInput(
@@ -113,6 +117,79 @@ library DexRouter {
                 revert(0x00, returndatasize())
             }
             bal := mload(0x00)
+        }
+    }
+
+    /// @dev Hand-encodes and calls `swapExactTokensForTokens(amountIn, minOut,
+    ///      [tokenIn, tokenOut], address(this), block.timestamp)` — the fixed
+    ///      2-element-path shape this engine always uses. Layout (selector +
+    ///      8 words; the dynamic `path` array's offset is always 0xa0 since
+    ///      it's the 3rd of 5 top-level params, i.e. 5 head slots x 32 bytes):
+    ///        0x00 selector             0x64 to (address(this))
+    ///        0x04 amountIn             0x84 deadline (block.timestamp)
+    ///        0x24 amountOutMin         0xa4 path.length (2)
+    ///        0x44 path offset (0xa0)   0xc4 path[0] (tokenIn)
+    ///                                  0xe4 path[1] (tokenOut)
+    ///      On failure, bubbles the router's own revert data (more useful for
+    ///      off-chain simulation than a generic error) instead of swallowing
+    ///      it into SwapCallFailed.
+    function _swapUniswapV2(address router, uint256 amountIn, uint256 minOut, address tokenIn, address tokenOut)
+        private
+    {
+        bytes4 selector = IUniswapV2Router.swapExactTokensForTokens.selector;
+        assembly {
+            let ptr := mload(0x40)
+            mstore(ptr, selector)
+            mstore(add(ptr, 0x04), amountIn)
+            mstore(add(ptr, 0x24), minOut)
+            mstore(add(ptr, 0x44), 0xa0)
+            mstore(add(ptr, 0x64), address())
+            mstore(add(ptr, 0x84), timestamp())
+            mstore(add(ptr, 0xa4), 2)
+            mstore(add(ptr, 0xc4), tokenIn)
+            mstore(add(ptr, 0xe4), tokenOut)
+            if iszero(call(gas(), router, 0, ptr, 0x104, 0x00, 0x00)) {
+                returndatacopy(ptr, 0x00, returndatasize())
+                revert(ptr, returndatasize())
+            }
+        }
+    }
+
+    /// @dev Hand-encodes and calls `exactInputSingle` with the params struct
+    ///      this engine always uses (recipient = address(this),
+    ///      sqrtPriceLimitX96 = 0). The struct is fully static (address,
+    ///      address, uint24, address, uint256, uint256, uint160 — no dynamic
+    ///      members), so its ABI encoding is 7 words back-to-back with no
+    ///      offset/length header. Layout (selector + 7 words):
+    ///        0x00 selector    0x64 recipient (address(this))
+    ///        0x04 tokenIn     0x84 amountIn
+    ///        0x24 tokenOut    0xa4 amountOutMinimum
+    ///        0x44 fee         0xc4 sqrtPriceLimitX96 (0)
+    ///      On failure, bubbles the router's own revert data (see
+    ///      `_swapUniswapV2`).
+    function _swapUniswapV3Single(
+        address router,
+        uint256 amountIn,
+        uint256 minOut,
+        address tokenIn,
+        address tokenOut,
+        uint24 fee
+    ) private {
+        bytes4 selector = ISwapRouter02.exactInputSingle.selector;
+        assembly {
+            let ptr := mload(0x40)
+            mstore(ptr, selector)
+            mstore(add(ptr, 0x04), tokenIn)
+            mstore(add(ptr, 0x24), tokenOut)
+            mstore(add(ptr, 0x44), fee)
+            mstore(add(ptr, 0x64), address())
+            mstore(add(ptr, 0x84), amountIn)
+            mstore(add(ptr, 0xa4), minOut)
+            mstore(add(ptr, 0xc4), 0)
+            if iszero(call(gas(), router, 0, ptr, 0xe4, 0x00, 0x00)) {
+                returndatacopy(ptr, 0x00, returndatasize())
+                revert(ptr, returndatasize())
+            }
         }
     }
 }

@@ -3,6 +3,19 @@
 > This repo is built **by an autonomous "Ralph" loop** (see `ralph/`). You may be that loop,
 > or a human-driven session. Either way, read this file first, then `ralph/OPERATING_RULES.md`.
 
+> **2026-07-29 note for the next session (Ralph or human):** a separate task extended the
+> **other** tree in this repo — `contracts/`, `test/`, `script/`, `scripts/` (solc 0.8.20,
+> Hardhat-primary, what this component's own `README.md`/CI actually build today) — NOT this
+> file's `src/`/`ralph/` rewrite. That work added Polygon mainnet-fork tests, a live dual-fork
+> Polygon<->Arbitrum cross-chain execution proof, hand-encoded Yul for `DexRouter`'s
+> `UNISWAP_V2`/`UNISWAP_V3_SINGLE` calls plus `aavePremiumBps`/`OptimalArbitrage.getAmountOut`,
+> and cross-chain-executor deploy support in both deploy scripts. See `../README.md` and
+> `../docs/notes-cross-chain-flash-loans.md` for details and results. This Ralph backlog and
+> progress log are untouched — Phase 0 is still the starting point for `src/` — but if a future
+> iteration considers adding Polygon to *this* tree's scope, the address/DEX research already
+> done for the other tree (`contracts/config/addresses.js`) is a real starting point, not a
+> blocker to re-derive from scratch.
+
 ## What this project is
 
 A **plug-and-play L2 flash-loan arbitrage engine**: gas-optimised Solidity + Yul smart contracts

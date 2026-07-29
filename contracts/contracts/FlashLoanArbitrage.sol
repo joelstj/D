@@ -306,9 +306,25 @@ contract FlashLoanArbitrage is
     }
 
     /// @notice The Aave flash-loan premium in bps (0 if Aave is not configured).
-    function aavePremiumBps() external view returns (uint256) {
-        if (AAVE_POOL == address(0)) return 0;
-        return uint256(IAaveV3Pool(AAVE_POOL).FLASHLOAN_PREMIUM_TOTAL());
+    /// @dev Raw staticcall in Yul, same idiom as `_getReserves`/`_token0`/
+    ///      `_token1` below: a single-word external read with no meaningful
+    ///      Solidity-side logic to keep. The selector comes from the imported
+    ///      interface's `.selector` (a compile-time constant), not a typed
+    ///      hex literal, so a wrong signature would be a compile error.
+    function aavePremiumBps() external view returns (uint256 premium) {
+        address pool = AAVE_POOL;
+        if (pool == address(0)) return 0;
+        bytes4 selector = IAaveV3Pool.FLASHLOAN_PREMIUM_TOTAL.selector;
+        assembly {
+            let ptr := mload(0x40)
+            mstore(ptr, selector)
+            let ok := staticcall(gas(), pool, ptr, 0x04, 0x00, 0x20)
+            if or(iszero(ok), lt(returndatasize(), 0x20)) {
+                returndatacopy(0x00, 0x00, returndatasize())
+                revert(0x00, returndatasize())
+            }
+            premium := mload(0x00)
+        }
     }
 
     /// @dev Returns (reserveOfToken, reserveOfOther, otherToken) for a V2 pair.
