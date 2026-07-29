@@ -99,6 +99,10 @@ Don't have the `.exe` yet? On a Windows machine, double-click
 it via the `build-windows-exe` GitHub Actions workflow. See
 **[`docs/INSTALL.md`](docs/INSTALL.md)**.
 
+For the complete reference — every API key/credential the system can use,
+which ones you actually need, and how to run it day to day — see
+**[`docs/OPERATIONS.md`](docs/OPERATIONS.md)**.
+
 ### Option C — Docker
 
 ```bash
@@ -117,7 +121,7 @@ docker compose up --build
 | [`dashboard/`](dashboard/) | Node backend + React UI (REST + WebSocket) | `pnpm verify` |
 | [`launcher/`](launcher/) | Stdlib-Python installer / launcher / self-healing supervisor (health HUD) | `python3 -m unittest discover -s launcher/tests` |
 | [`scripts/`](scripts/) | `.exe` build (PyInstaller spec + drivers) | — |
-| [`docs/`](docs/) | Architecture + install guides | — |
+| [`docs/`](docs/) | Architecture, install, and operations guides | — |
 
 Each component keeps its own README and `CLAUDE.md`/`AGENTS.md` for internals.
 
