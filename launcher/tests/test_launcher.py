@@ -15,7 +15,7 @@ from unittest import mock
 # Make the launcher package importable when run from the repo root.
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from l2arb import config, console, state  # noqa: E402
+from l2arb import cli, config, console, state  # noqa: E402
 from l2arb.paths import Layout, workspace_root  # noqa: E402
 from l2arb.prereqs import _VERSION_RE, _ge, merge_path  # noqa: E402
 from l2arb.proc import _resolve  # noqa: E402
@@ -202,6 +202,74 @@ class ConsoleUtf8Test(unittest.TestCase):
             console.step("build starting → staging payload")  # → = the reported crash char
             console.ok("done")
             buf.flush()
+
+
+class _FakeStdin:
+    """Minimal stand-in for `sys.stdin` exposing only what `_should_pause_before_exit`
+    reads, following the same fake-stream pattern as `ConsoleUtf8Test` above."""
+
+    def __init__(self, is_tty: bool):
+        self._is_tty = is_tty
+
+    def isatty(self) -> bool:
+        return self._is_tty
+
+
+class CliEntrypointTest(unittest.TestCase):
+    """Regression coverage for the "exe window vanishes on failure" bug: double-
+    clicking a frozen .exe spawns a console that Windows closes the instant the
+    process exits, so `_entrypoint` must keep it open on *any* failure — a
+    handled non-zero return, or an uncaught exception — long enough to read why.
+    Before the fix, `_should_pause_before_exit`'s stdin check was inverted (it
+    skipped the pause exactly when double-clicked), and nothing wrapped `main()`,
+    so a crash bypassed the pause entirely. See `l2arb.cli._run_main_safely` and
+    `_should_pause_before_exit`.
+    """
+
+    def test_pauses_when_frozen_windows_failed_and_interactive(self):
+        with mock.patch.object(cli, "is_frozen", return_value=True), mock.patch.object(cli, "IS_WINDOWS", True), mock.patch.object(cli.sys, "stdin", _FakeStdin(True)):
+            self.assertTrue(cli._should_pause_before_exit(1))
+
+    def test_no_pause_on_success(self):
+        with mock.patch.object(cli, "is_frozen", return_value=True), mock.patch.object(cli, "IS_WINDOWS", True), mock.patch.object(cli.sys, "stdin", _FakeStdin(True)):
+            self.assertFalse(cli._should_pause_before_exit(0))
+
+    def test_no_pause_when_not_frozen(self):
+        with mock.patch.object(cli, "is_frozen", return_value=False), mock.patch.object(cli, "IS_WINDOWS", True), mock.patch.object(cli.sys, "stdin", _FakeStdin(True)):
+            self.assertFalse(cli._should_pause_before_exit(1))
+
+    def test_no_pause_when_not_windows(self):
+        with mock.patch.object(cli, "is_frozen", return_value=True), mock.patch.object(cli, "IS_WINDOWS", False), mock.patch.object(cli.sys, "stdin", _FakeStdin(True)):
+            self.assertFalse(cli._should_pause_before_exit(1))
+
+    def test_no_pause_when_stdin_is_not_interactive(self):
+        # Redirected/piped/closed stdin: nobody is there to press Enter, and
+        # input() would just hang a non-interactive run instead of helping.
+        with mock.patch.object(cli, "is_frozen", return_value=True), mock.patch.object(cli, "IS_WINDOWS", True), mock.patch.object(cli.sys, "stdin", _FakeStdin(False)):
+            self.assertFalse(cli._should_pause_before_exit(1))
+
+    def test_run_main_safely_returns_mains_code_on_success(self):
+        with mock.patch.object(cli, "main", return_value=0):
+            self.assertEqual(cli._run_main_safely([]), 0)
+
+    def test_run_main_safely_survives_an_uncaught_exception(self):
+        """The historical bug: an exception `main()` doesn't itself catch (e.g. a
+        crash while unpacking the first-run payload, which runs before `main`'s
+        own try/except) used to propagate straight out of `_entrypoint`, skipping
+        the pause entirely. `_run_main_safely` must convert it to an exit code."""
+
+        def boom(argv):
+            raise RuntimeError("first-run payload unpack failed")
+
+        with mock.patch.object(cli, "main", side_effect=boom):
+            self.assertEqual(cli._run_main_safely([]), 1)
+
+    def test_run_main_safely_maps_keyboard_interrupt_to_130(self):
+        def interrupted(argv):
+            raise KeyboardInterrupt
+
+        with mock.patch.object(cli, "main", side_effect=interrupted):
+            self.assertEqual(cli._run_main_safely([]), 130)
 
 
 if __name__ == "__main__":

@@ -163,6 +163,14 @@ python3 -m unittest discover -s launcher/tests   # launcher unit tests
 
 ## Troubleshooting
 
+- **`L2ArbBot.exe` window flashes and closes instantly, or nothing seems to
+  happen when you double-click it** — on any failure the exe now prints the
+  real error and waits for **Enter** before closing, instead of the window
+  vanishing before you can read it. If you're still seeing this, make sure
+  you're on a build that includes this fix (rebuild via `Build_L2ArbBot.bat`),
+  and check `%LOCALAPPDATA%\L2ArbBot\.l2arb\logs\*.log` for what was written
+  before it exited. Also double-check you didn't dismiss a SmartScreen prompt
+  (see above) without choosing *Run anyway*.
 - **`doctor` shows a toolchain missing** — install it (the report says which
   version) and re-run. On Windows the `.exe` attempts `winget` automatically and
   refreshes `PATH`; if it still can't find a just-installed tool, close the window
