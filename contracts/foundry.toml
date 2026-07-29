@@ -9,6 +9,15 @@
 #   forge build
 #   ARBITRUM_RPC_URL="https://arb1.arbitrum.io/rpc" \
 #     forge test --match-path 'test/foundry/*' --fork-url "$ARBITRUM_RPC_URL" -vvv
+#
+# Polygon fork suite (single-chain, needs its own --fork-url):
+#   POLYGON_RPC_URL="https://polygon-rpc.com" \
+#     forge test --match-path 'test/foundry/PolygonFork.t.sol' --fork-url "$POLYGON_RPC_URL" -vvv
+#
+# Cross-chain dual-fork suite (creates BOTH forks itself via vm.createFork —
+# do NOT pass --fork-url for this one):
+#   POLYGON_RPC_URL="https://polygon-rpc.com" ARBITRUM_RPC_URL="https://arb1.arbitrum.io/rpc" \
+#     forge test --match-path 'test/foundry/CrossChainDualFork.t.sol' -vvv
 
 [profile.default]
 src = "contracts"
