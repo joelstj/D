@@ -17,6 +17,7 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
+from l2arb.config import get_settings
 from l2arb.model.blockstamp import Blockstamp
 from l2arb.model.opportunity import Opportunity
 from l2arb.model.token import Token
@@ -40,14 +41,23 @@ class ChainConfig(BaseModel):
     l1_data_fee_wei: int = 0
     base_gas: int = 150_000
     per_hop_gas: int = 100_000
-    gas_safety_multiplier: float = 1.5
-    min_profit_bps: float = 5.0
+    # Omitting either field defers to the operator's L2ARB__GAS_SAFETY_MULTIPLIER
+    # / L2ARB__MIN_PROFIT_BPS default (l2arb.config.Settings) — a caller that
+    # sends an explicit value always wins; default_factory only fires when the
+    # field is absent from the request.
+    gas_safety_multiplier: float = Field(
+        default_factory=lambda: get_settings().gas_safety_multiplier
+    )
+    min_profit_bps: float = Field(default_factory=lambda: float(get_settings().min_profit_bps))
     # numeraire-base-units per 1 native (gas-token) wei, keyed by lower-case token
     # address on this chain. A numeraire with no price cannot be gas-costed and is
     # rejected (conservative). ``default_native_price`` optionally covers the rest.
     native_price_in: dict[str, float] = Field(default_factory=dict)
     default_native_price: float | None = None
     hubs: list[str] = Field(default_factory=list)  # curated hub token addresses
+    # Per-request freshness override (seconds); ``None`` defers to the operator's
+    # ``L2ARB__MAX_POOL_AGE_SECONDS`` default (see l2arb.config.Settings).
+    max_pool_age_seconds: int | None = Field(default=None, gt=0)
 
 
 class AssetSpec(BaseModel):
@@ -76,11 +86,16 @@ class DetectRequest(BaseModel):
     """The full detection request: state + config."""
 
     top_n: int = 10
-    max_hops: int = Field(default=4, ge=2, le=8)
+    # Omitting this defers to the operator's L2ARB__MAX_HOPS default.
+    max_hops: int = Field(default_factory=lambda: get_settings().max_hops, ge=2, le=8)
     incremental: bool = False
     chains: list[ChainConfig] = Field(default_factory=list)
     pools: list[dict[str, Any]] = Field(default_factory=list)  # serde pool dicts
     cross_chain: CrossChainConfig | None = None
+    # Unix seconds this request is evaluated "as of" — drives the freshness gate
+    # (see ChainConfig.max_pool_age_seconds). Omit to use the server's real
+    # clock; set explicitly so a test (or a replay) can pin a deterministic "now".
+    now_ts: int | None = None
 
 
 def token_to_output(token: Token) -> dict[str, Any]:

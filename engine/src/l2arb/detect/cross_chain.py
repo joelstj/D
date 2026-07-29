@@ -153,6 +153,26 @@ def _build_opportunity(
     sell_ctx: ProfitContext,
     min_profit_bps: float,
 ) -> Opportunity | None:
+    # Checked first, before any AMM math: never report a spread resting on an
+    # unverified or (when the context opts in) stale pool on either leg
+    # (CLAUDE.md §3) — mirrors the same-chain gate in detect/profit.py.
+    verified = buy_pool.verified and sell_pool.verified
+    if not verified:
+        return None
+    buy_now, buy_age = buy_ctx.now_ts, buy_ctx.max_pool_age_seconds
+    if (
+        buy_now is not None
+        and buy_age is not None
+        and buy_pool.blockstamp.is_stale(buy_now, buy_age)
+    ):
+        return None
+    sell_now, sell_age = sell_ctx.now_ts, sell_ctx.max_pool_age_seconds
+    if (
+        sell_now is not None
+        and sell_age is not None
+        and sell_pool.blockstamp.is_stale(sell_now, sell_age)
+    ):
+        return None
     bought = quote.amount_out(buy_pool, num_x_key, size)
     bridged = bquote.net_after(bought)
     num_out = quote.amount_out(sell_pool, asset_y_key, bridged)
@@ -194,7 +214,7 @@ def _build_opportunity(
         chain_ids=tuple(sorted({buy_pool.chain_id, sell_pool.chain_id})),
         risk=risk,
         score=float(expected_net),
-        verified=buy_pool.verified and sell_pool.verified,
+        verified=verified,
         expected_net=expected_net,
         bridge_cost=num_out_no_bridge - num_out,
         settle_seconds=bquote.settle_seconds,

@@ -115,12 +115,23 @@ class MevModel:
 
 @dataclass(frozen=True, slots=True)
 class ProfitContext:
-    """Everything the gate needs beyond the graph: gas, thresholds, risk model."""
+    """Everything the gate needs beyond the graph: gas, thresholds, risk model.
+
+    ``now_ts``/``max_pool_age_seconds`` gate freshness (CLAUDE.md §3 — "reject or
+    flag stale state"): when **both** are set, any cycle touching a pool older
+    than ``max_pool_age_seconds`` at ``now_ts`` is rejected. Both default to
+    ``None`` (no freshness check) so the gate stays pure and deterministic —
+    "now" is never read from the wall clock here; the caller (the API boundary)
+    supplies it explicitly, which keeps this function trivially testable with a
+    frozen clock.
+    """
 
     gas_cost_fn: GasCostFn
     min_profit_bps: float = 5.0
     mev: MevModel = field(default_factory=MevModel)
     seed_size_hint: int | None = None
+    now_ts: int | None = None
+    max_pool_age_seconds: int | None = None
 
 
 def input_capacity(pool: PoolState, token_in_key: TokenKey) -> int:
@@ -248,8 +259,22 @@ def evaluate(
 
     Returns a fully-populated :class:`Opportunity`, or ``None`` when no size makes
     it net-profitable above ``min_profit_bps``. Never reports a losing cycle.
+    Also never reports a cycle touching an unverified or (when ``ctx`` opts in)
+    stale pool — checked first so a cycle that can't be reported never pays for
+    the size search (CLAUDE.md §3).
     """
     if not cycle:
+        return None
+    pools = [graph.pool(e.pool) for e in cycle]
+    verified = all(p.verified for p in pools)
+    if not verified:
+        return None
+    now_ts, max_age = ctx.now_ts, ctx.max_pool_age_seconds
+    if (
+        now_ts is not None
+        and max_age is not None
+        and any(p.blockstamp.is_stale(now_ts, max_age) for p in pools)
+    ):
         return None
     numeraire = _numeraire_token(cycle, graph)
     numeraire_key = numeraire.key
@@ -277,7 +302,6 @@ def evaluate(
         # overstate across ticks. Never leave that unmarked (CLAUDE.md §3).
         risk = replace(risk, notes=(*risk.notes, "v3_single_tick_estimate"))
     expected_net = int(net_profit * risk.capture_ratio * risk.success_probability)
-    verified = all(graph.pool(e.pool).verified for e in cycle)
 
     return Opportunity(
         strategy=strategy,

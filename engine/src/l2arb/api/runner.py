@@ -19,6 +19,7 @@ from typing import IO, Any
 import orjson
 
 from l2arb.api.service import run_detection
+from l2arb.logging import configure_logging
 
 __all__ = ["main", "process"]
 
@@ -34,6 +35,7 @@ def process(raw: bytes) -> tuple[dict[str, Any], int]:
 
 def main(stdin: IO[bytes] | None = None, stdout: IO[bytes] | None = None) -> int:
     """Read a request from stdin, write the response to stdout, return the exit code."""
+    configure_logging()  # real L2ARB__LOG_LEVEL wiring, same as the HTTP surface
     source = stdin if stdin is not None else sys.stdin.buffer
     sink = stdout if stdout is not None else sys.stdout.buffer
     response, code = process(source.read())

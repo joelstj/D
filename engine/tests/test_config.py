@@ -77,6 +77,26 @@ def test_negative_min_profit_rejected() -> None:
         Settings(min_profit_bps=-1)
 
 
+def test_max_pool_age_seconds_default_and_validation() -> None:
+    assert Settings().max_pool_age_seconds == 120
+    with pytest.raises(ValidationError):
+        Settings(max_pool_age_seconds=0)
+
+
+def test_max_pool_age_seconds_env_override(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("L2ARB__MAX_POOL_AGE_SECONDS", "300")
+    assert Settings().max_pool_age_seconds == 300
+
+
+def test_log_level_is_normalised_case_insensitively() -> None:
+    assert Settings(log_level="debug").log_level == "DEBUG"
+
+
+def test_log_level_rejects_an_unknown_level() -> None:
+    with pytest.raises(ValidationError):
+        Settings(log_level="VERBOSE")
+
+
 def test_get_settings_is_cached() -> None:
     get_settings.cache_clear()
     first = get_settings()

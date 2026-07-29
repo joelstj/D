@@ -27,6 +27,7 @@ def _request(gk: type[GraphKit]) -> dict[str, Any]:
     ]
     return {
         "top_n": 10,
+        "now_ts": gk.BS.timestamp,  # pin "now" to the fixture pools' own block time
         "chains": [
             {
                 "chain_id": gk.CHAIN,
@@ -57,6 +58,19 @@ def test_detect_rejects_malformed_request(client: TestClient) -> None:
     # max_hops out of the validated range -> 422 from FastAPI/pydantic.
     resp = client.post("/detect", json={"max_hops": 99})
     assert resp.status_code == 422
+
+
+def test_startup_configures_logging_and_warms_up_numba(monkeypatch: pytest.MonkeyPatch) -> None:
+    import l2arb.api.http as http_module
+
+    calls: list[str] = []
+    monkeypatch.setattr(http_module, "configure_logging", lambda: calls.append("logging"))
+    monkeypatch.setattr(http_module, "warmup", lambda: calls.append("warmup"))
+
+    with TestClient(http_module.create_app()):
+        pass  # the lifespan context manager runs on __enter__/__exit__
+
+    assert calls == ["logging", "warmup"]
 
 
 def test_detect_response_includes_engine_timing(client: TestClient, gk: type[GraphKit]) -> None:

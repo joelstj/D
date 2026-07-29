@@ -108,7 +108,43 @@ def test_verified_flag_reflects_pools(gk: type[GraphKit]) -> None:
     graph, cycle = _profitable_two_pool(gk)
     opp = evaluate(cycle, graph, StrategyKind.TWO_HOP, _ctx())
     assert opp is not None
-    assert opp.verified is False  # test pools are unverified by default
+    assert opp.verified is True  # GraphKit pools default to verified
+
+
+def test_any_unverified_pool_in_the_cycle_is_rejected(gk: type[GraphKit]) -> None:
+    # CLAUDE.md §3: only real, verifiable on-chain data may produce an
+    # opportunity. One unverified leg must veto the whole cycle, even though the
+    # cycle is otherwise identical to the profitable one above.
+    a, b = gk.token(1), gk.token(2)
+    p1 = gk.v2(10, a, b, 1000 * 10**18, 1000 * 10**18, verified=False)
+    p2 = gk.v2(11, a, b, 1000 * 10**18, 1100 * 10**18)
+    graph = gk.graph([p1, p2])
+    cycle = [_edge(graph, a.key, b.key, p2.address), _edge(graph, b.key, a.key, p1.address)]
+    assert evaluate(cycle, graph, StrategyKind.TWO_HOP, _ctx()) is None
+
+
+def test_freshness_gate_is_opt_in(gk: type[GraphKit]) -> None:
+    # Without now_ts/max_pool_age_seconds set on the context, evaluate() never
+    # reads the wall clock and never rejects on staleness — the default context
+    # (as used by every other test in this file) is unaffected.
+    graph, cycle = _profitable_two_pool(gk)
+    ctx = _ctx()
+    assert ctx.now_ts is None
+    assert ctx.max_pool_age_seconds is None
+    assert evaluate(cycle, graph, StrategyKind.TWO_HOP, ctx) is not None
+
+
+def test_stale_pool_is_rejected_when_freshness_is_enforced(gk: type[GraphKit]) -> None:
+    from dataclasses import replace
+
+    graph, cycle = _profitable_two_pool(gk)
+    pool_ts = GraphKit.BS.timestamp
+    fresh_ctx = replace(_ctx(), now_ts=pool_ts + 60, max_pool_age_seconds=120)
+    assert (
+        evaluate(cycle, graph, StrategyKind.TWO_HOP, fresh_ctx) is not None
+    )  # 60s old, within 120s
+    stale_ctx = replace(_ctx(), now_ts=pool_ts + 121, max_pool_age_seconds=120)
+    assert evaluate(cycle, graph, StrategyKind.TWO_HOP, stale_ctx) is None  # 121s old, past 120s
 
 
 def test_cycle_through_stableswap_pool(gk: type[GraphKit]) -> None:
