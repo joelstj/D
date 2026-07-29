@@ -24,6 +24,22 @@ import subprocess
 import sys
 from pathlib import Path
 
+
+def _force_utf8_streams() -> None:
+    """Reconfigure stdout/stderr to UTF-8 so the arrows/checkmarks below can't
+    raise UnicodeEncodeError under a non-UTF-8 codepage — e.g. Windows falling
+    back to cp1252 when this script's output is piped through PowerShell's
+    ``| Out-Host``, as ``build_windows_exe.ps1`` does."""
+    for stream in (sys.stdout, sys.stderr):
+        if stream is not None and hasattr(stream, "reconfigure"):
+            try:
+                stream.reconfigure(encoding="utf-8", errors="replace")
+            except Exception:  # pragma: no cover - defensive; never block the build
+                pass
+
+
+_force_utf8_streams()
+
 ROOT = Path(__file__).resolve().parents[1]
 LAUNCHER = ROOT / "launcher"
 BUILD = LAUNCHER / "build"

@@ -10,6 +10,27 @@ import os
 import sys
 
 
+def _force_utf8_streams() -> None:
+    """Make stdout/stderr encode as UTF-8 regardless of the ambient codepage.
+
+    Windows consoles — and piped output, e.g. PowerShell's ``| Out-Host`` —
+    often default to a legacy ANSI codepage (cp1252, cp437, …) that can't
+    encode the ✓/✗/▶/─ symbols this module prints, raising UnicodeEncodeError
+    mid-run. Reconfiguring is a no-op when the stream is already UTF-8 and
+    safe on every platform; ``errors="replace"`` is a last-resort backstop so
+    output never crashes the process even if reconfiguring itself can't help.
+    """
+    for stream in (sys.stdout, sys.stderr):
+        if stream is not None and hasattr(stream, "reconfigure"):
+            try:
+                stream.reconfigure(encoding="utf-8", errors="replace")
+            except Exception:  # pragma: no cover - defensive; never block startup
+                pass
+
+
+_force_utf8_streams()
+
+
 def _enable_windows_vt() -> bool:
     """Turn on ANSI/VT processing for the Windows console so colour works there too
     (modern Windows 10+ terminals support it once the mode bit is set). Returns True
