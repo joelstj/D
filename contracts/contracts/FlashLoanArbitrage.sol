@@ -12,7 +12,6 @@ import {DexRouter} from "./libraries/DexRouter.sol";
 import {OptimalArbitrage} from "./libraries/OptimalArbitrage.sol";
 import {IAaveV3Pool, IAaveFlashLoanSimpleReceiver} from "./interfaces/IAaveV3Pool.sol";
 import {IBalancerVault, IBalancerFlashLoanRecipient} from "./interfaces/IBalancerVault.sol";
-import {IUniswapV2Pair} from "./interfaces/dex/IUniswapV2.sol";
 
 /// @title FlashLoanArbitrage
 /// @author L2_on-chain
@@ -295,9 +294,8 @@ contract FlashLoanArbitrage is
         uint256 feeBpsBuy,
         uint256 feeBpsSell
     ) external view returns (uint256 amountIn, uint256 expectedProfit) {
-        (uint256 rInA, uint256 rOutA) = _reservesFor(pairBuy, tokenBorrow);
-        address intermediate = _otherToken(pairBuy, tokenBorrow);
-        (uint256 rInB, uint256 rOutB) = _reservesFor(pairSell, intermediate);
+        (uint256 rInA, uint256 rOutA, address intermediate) = _pairInfo(pairBuy, tokenBorrow);
+        (uint256 rInB, uint256 rOutB,) = _pairInfo(pairSell, intermediate);
 
         (amountIn,) = OptimalArbitrage.optimalV2Amount(rInA, rOutA, rInB, rOutB, feeBpsBuy);
         if (amountIn == 0) return (0, 0);
@@ -313,23 +311,76 @@ contract FlashLoanArbitrage is
         return uint256(IAaveV3Pool(AAVE_POOL).FLASHLOAN_PREMIUM_TOTAL());
     }
 
-    /// @dev Returns (reserveOfToken, reserveOfOther) for a V2 pair.
-    function _reservesFor(address pair, address token)
+    /// @dev Returns (reserveOfToken, reserveOfOther, otherToken) for a V2 pair.
+    ///      Reads `token0()` exactly once (the naive `_reservesFor` +
+    ///      `_otherToken` split each re-read it, doubling that call) and
+    ///      derives both the ordered reserves and the non-`token` address from
+    ///      the single cached value.
+    function _pairInfo(address pair, address token)
         private
         view
-        returns (uint256 reserveToken, uint256 reserveOther)
+        returns (uint256 reserveToken, uint256 reserveOther, address otherToken)
     {
-        (uint112 r0, uint112 r1,) = IUniswapV2Pair(pair).getReserves();
-        if (IUniswapV2Pair(pair).token0() == token) {
-            return (uint256(r0), uint256(r1));
+        (uint256 r0, uint256 r1) = _getReserves(pair);
+        address t0 = _token0(pair);
+        if (t0 == token) {
+            return (r0, r1, _token1(pair));
         }
-        return (uint256(r1), uint256(r0));
+        return (r1, r0, t0);
     }
 
-    /// @dev Returns whichever of a pair's tokens is not `token`.
-    function _otherToken(address pair, address token) private view returns (address) {
-        address t0 = IUniswapV2Pair(pair).token0();
-        return t0 == token ? IUniswapV2Pair(pair).token1() : t0;
+    /// @notice Gas-lean `getReserves()` read via a single staticcall in Yul
+    ///         (same idiom as DexRouter.balanceOf). blockTimestampLast is
+    ///         unused by the sizing math, so it's read but not returned.
+    /// @dev The 3-word (0x60-byte) return doesn't fit the 0x00-0x3f scratch
+    ///      space `balanceOf` uses for its single-word case, so input and
+    ///      output both live at the free-memory pointer `ptr` instead — safe
+    ///      because nothing below `ptr` is touched and the function returns
+    ///      immediately after reading the words out, before any further
+    ///      Solidity-level allocation.
+    function _getReserves(address pair) private view returns (uint256 reserve0, uint256 reserve1) {
+        assembly {
+            let ptr := mload(0x40)
+            // getReserves() selector = 0x0902f1ac
+            mstore(ptr, 0x0902f1ac00000000000000000000000000000000000000000000000000000000)
+            let ok := staticcall(gas(), pair, ptr, 0x04, ptr, 0x60)
+            if or(iszero(ok), lt(returndatasize(), 0x60)) {
+                returndatacopy(ptr, 0x00, returndatasize())
+                revert(ptr, returndatasize())
+            }
+            reserve0 := mload(ptr)
+            reserve1 := mload(add(ptr, 0x20))
+        }
+    }
+
+    /// @notice Gas-lean `token0()` read via a single staticcall in Yul.
+    function _token0(address pair) private view returns (address token) {
+        assembly {
+            let ptr := mload(0x40)
+            // token0() selector = 0x0dfe1681
+            mstore(ptr, 0x0dfe168100000000000000000000000000000000000000000000000000000000)
+            let ok := staticcall(gas(), pair, ptr, 0x04, 0x00, 0x20)
+            if or(iszero(ok), lt(returndatasize(), 0x20)) {
+                returndatacopy(0x00, 0x00, returndatasize())
+                revert(0x00, returndatasize())
+            }
+            token := mload(0x00)
+        }
+    }
+
+    /// @notice Gas-lean `token1()` read via a single staticcall in Yul.
+    function _token1(address pair) private view returns (address token) {
+        assembly {
+            let ptr := mload(0x40)
+            // token1() selector = 0xd21220a7
+            mstore(ptr, 0xd21220a700000000000000000000000000000000000000000000000000000000)
+            let ok := staticcall(gas(), pair, ptr, 0x04, 0x00, 0x20)
+            if or(iszero(ok), lt(returndatasize(), 0x20)) {
+                returndatacopy(0x00, 0x00, returndatasize())
+                revert(0x00, returndatasize())
+            }
+            token := mload(0x00)
+        }
     }
 
     // --------------------------------------------------------------------- //

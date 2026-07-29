@@ -1,5 +1,9 @@
 # Install & run
 
+> **Looking for the complete API-key/credential reference, or how to operate
+> the bot day to day?** See **[`docs/OPERATIONS.md`](OPERATIONS.md)** — this
+> page is the quickstart; that one is the detailed reference.
+
 **In a hurry?** On Windows: get `L2ArbBot.exe` (below), **double-click it**, wait
 for the one-time setup, and the dashboard opens in your browser. That's it — it
 starts in **safe paper mode** (it simulates; it never sends a real transaction or

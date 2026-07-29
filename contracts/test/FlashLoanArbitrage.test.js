@@ -77,6 +77,33 @@ describe("FlashLoanArbitrage (offline mechanics)", () => {
     expect(expectedProfit).to.be.gt(0n);
   });
 
+  // quoteOptimalTwoHopV2 resolves each pair via _pairInfo, which branches on
+  // whether the pair's token0() is the borrowed asset or the intermediate.
+  // The test above borrows USDC; this one borrows WETH against the same pools
+  // (with pairBuy/pairSell swapped so the trade is still profitable) so the
+  // opposite branch — and its Yul token0()/token1()/getReserves() reads — is
+  // exercised too.
+  it("quotes correctly when borrowing the other token of the pair (opposite _pairInfo branch)", async () => {
+    const f = await deploy();
+    const rWeth = e(100);
+    const rUsdcCheap = e(180000, 6n);
+    const rUsdcRich = e(220000, 6n);
+
+    const [amountIn, expectedProfit] = await f.arb.quoteOptimalTwoHopV2(
+      f.poolRich.target, // sell WETH where it's dear (2200 USDC/WETH)
+      f.poolCheap.target, // buy WETH back where it's cheap (1800 USDC/WETH)
+      f.weth.target,
+      FEE_BPS,
+      FEE_BPS
+    );
+    expect(amountIn).to.be.gt(0n);
+    expect(expectedProfit).to.be.gt(0n);
+
+    const out1 = getAmountOut(amountIn, rWeth, rUsdcRich, FEE_BPS);
+    const out2 = getAmountOut(out1, rUsdcCheap, rWeth, FEE_BPS);
+    expect(expectedProfit).to.equal(out2 - amountIn);
+  });
+
   it("executes a profitable 2-hop arb via Aave V3 and forwards exact profit", async () => {
     const f = await deploy();
     const amount = e(10000, 6n);

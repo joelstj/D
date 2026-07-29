@@ -26,7 +26,10 @@ if have forge; then
 else
   log "installing Foundry ..."
   if curl -fsSL https://foundry.paradigm.xyz | bash >/dev/null 2>&1; then
-    "$HOME/.foundry/bin/foundryup" >/dev/null 2>&1 || log "WARN: foundryup failed (network policy?). Install manually: https://book.getfoundry.sh/getting-started/installation"
+    # Pin to the same version CI uses (.github/workflows/ci.yml) — `forge fmt`
+    # output is version-sensitive, so a floating/newer install here reformats
+    # otherwise-unchanged code and fails `forge fmt --check` in CI.
+    "$HOME/.foundry/bin/foundryup" --install 1.5.1 >/dev/null 2>&1 || log "WARN: foundryup failed (network policy?). Install manually: https://book.getfoundry.sh/getting-started/installation"
   else
     log "WARN: could not download Foundry installer (offline / restricted network)."
     log "      Install manually later; the rest of bootstrap will continue."
