@@ -77,20 +77,26 @@ impl Drop for LatencyTimer {
     }
 }
 
-/// The health + metrics HTTP router.
+/// The health + metrics HTTP router (both endpoints on one listener).
 pub fn router(handle: PrometheusHandle) -> Router {
-    Router::new()
-        .route(
-            "/health",
-            get(|| async { Json(serde_json::json!({ "status": "ok" })) }),
-        )
-        .route(
-            "/metrics",
-            get(move || {
-                let handle = handle.clone();
-                async move { handle.render() }
-            }),
-        )
+    Router::new().merge(health_router()).route(
+        "/metrics",
+        get(move || {
+            let handle = handle.clone();
+            async move { handle.render() }
+        }),
+    )
+}
+
+/// A `/health`-only router, for a dedicated listener separate from `/metrics`
+/// (`[observability].health_bind`, distinct from `.metrics_bind`) — the split the
+/// config schema, the Dockerfile's `EXPOSE`, and `--check-config`'s summary all
+/// document. Shares the exact same handler as [`router`], so the two never drift.
+pub fn health_router() -> Router {
+    Router::new().route(
+        "/health",
+        get(|| async { Json(serde_json::json!({ "status": "ok" })) }),
+    )
 }
 
 /// Bind and serve the health + metrics router; returns the bound address. The

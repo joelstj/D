@@ -44,11 +44,22 @@ struct ChainHandle {
 
 /// Run the whole component until a shutdown signal.
 pub async fn run(config: Config) -> anyhow::Result<()> {
-    // Observability: install the recorder, serve /health + /metrics.
+    // Observability: install the recorder, serve /health + /metrics on metrics_bind
+    // (kept for compatibility with anything already scraping /health there) *and*
+    // /health alone on its own configured health_bind — previously parsed and
+    // printed by --check-config but never actually bound to a listener.
     if let Ok(handle) = l2i_observability::install_metrics() {
         let router = l2i_observability::router(handle);
         if let Err(e) = l2i_observability::serve(&config.observability.metrics_bind, router).await {
             tracing::warn!(error = %e, "metrics server failed to bind");
+        }
+    }
+    if config.observability.health_bind != config.observability.metrics_bind {
+        let health_router = l2i_observability::health_router();
+        if let Err(e) =
+            l2i_observability::serve(&config.observability.health_bind, health_router).await
+        {
+            tracing::warn!(error = %e, "health server failed to bind");
         }
     }
 
@@ -367,6 +378,36 @@ fn now_wall_ms() -> u64 {
         .unwrap_or(0)
 }
 
+/// Whether the aggregator tick should hold `chain_id` back this round rather than
+/// cost verified pools against a gas/fee reading that looks fabricated. Returns a
+/// human-readable reason, or `None` to proceed.
+///
+/// A `0` execution gas price is never real on any of the five chains — it is
+/// `context::initial_context`'s pre-first-read sentinel. Costing a verified pool
+/// against it would under-cost gas into phantom profit (prime directive 1), so the
+/// chain is held back until a real reading lands.
+///
+/// The same risk applies to the L1 data-availability fee, but **only** on the four
+/// OP-Stack chains (Base/Optimism/Unichain/Ink): there, `0` is likewise the
+/// pre-first-read sentinel for `GasPriceOracle.getL1Fee`. Arbitrum's
+/// `l1_data_fee_wei` is *legitimately* always `0` (its L1 cost is folded into gas
+/// units — `l2i_chains::GasModel::Arbitrum`), so gating on it there would hold
+/// Arbitrum back forever; an unrecognised chain id conservatively behaves like
+/// Arbitrum (not held back on this check alone) since it cannot be an OP-Stack
+/// chain in the compiled-in registry.
+fn hold_back_reason(chain_id: u64, ctx: &ChainContext) -> Option<&'static str> {
+    if ctx.gas_price_wei == 0 {
+        return Some("no real gas price yet (won't cost pools against a 0)");
+    }
+    let is_op_stack = l2i_chains::by_id(chain_id)
+        .map(|s| s.gas_model == l2i_chains::GasModel::OpStack)
+        .unwrap_or(false);
+    if is_op_stack && ctx.l1_data_fee_wei == 0 {
+        return Some("no real L1 data fee yet (won't cost pools against a 0)");
+    }
+    None
+}
+
 #[allow(clippy::too_many_lines)]
 async fn aggregator_loop(
     config: Config,
@@ -457,15 +498,8 @@ async fn aggregator_loop(
                         .set(pools.len() as f64);
                     if pools.is_empty() { continue; }
                     let ctx = h.ctx_rx.borrow().clone(); // cached — no RPC on the tick
-                    // A gas price of 0 is never a real L2 value — it is the pre-first-read
-                    // sentinel (or a failed read that retained it). Costing a verified pool
-                    // against it would under-cost gas into phantom profit, so hold the chain
-                    // back until a real gas reading lands (prime directive 1).
-                    if ctx.gas_price_wei == 0 {
-                        tracing::debug!(
-                            chain_id = h.cfg.chain_id,
-                            "holding chain: no real gas price yet (won't cost pools against a 0)"
-                        );
+                    if let Some(reason) = hold_back_reason(h.cfg.chain_id, &ctx) {
+                        tracing::debug!(chain_id = h.cfg.chain_id, reason, "holding chain back this tick");
                         continue;
                     }
                     let head = pools
@@ -578,4 +612,60 @@ async fn wait_for_signals(shutdown_tx: watch::Sender<bool>) {
     }
     tracing::info!("shutdown signal received");
     let _ = shutdown_tx.send(true);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const ARBITRUM: u64 = 42161;
+    const BASE: u64 = 8453; // any OP-Stack chain works; Base is representative
+
+    fn ctx(gas_price_wei: u64, l1_data_fee_wei: u64) -> ChainContext {
+        ChainContext {
+            chain_id: 0,
+            gas_price_wei,
+            l1_data_fee_wei,
+            base_gas: 150_000,
+            per_hop_gas: 100_000,
+            gas_safety_multiplier: 1.5,
+            min_profit_bps: 5.0,
+            native_price_in: Default::default(),
+            hubs: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn zero_gas_price_holds_back_any_chain() {
+        assert!(hold_back_reason(ARBITRUM, &ctx(0, 0)).is_some());
+        assert!(hold_back_reason(BASE, &ctx(0, 1)).is_some());
+    }
+
+    #[test]
+    fn zero_l1_fee_holds_back_an_op_stack_chain() {
+        // Real gas price, but the L1 fee hasn't been read yet — the same
+        // phantom-profit risk the gas-price gate exists to prevent (§ pipeline.rs).
+        assert!(hold_back_reason(BASE, &ctx(1_000_000, 0)).is_some());
+    }
+
+    #[test]
+    fn zero_l1_fee_does_not_hold_back_arbitrum() {
+        // Arbitrum's l1_data_fee_wei is legitimately always 0 (folded into gas
+        // units) — gating on it would hold Arbitrum back forever.
+        assert!(hold_back_reason(ARBITRUM, &ctx(1_000_000, 0)).is_none());
+    }
+
+    #[test]
+    fn real_readings_never_hold_back() {
+        assert!(hold_back_reason(ARBITRUM, &ctx(1_000_000, 0)).is_none());
+        assert!(hold_back_reason(BASE, &ctx(1_000_000, 2_000)).is_none());
+    }
+
+    #[test]
+    fn unrecognised_chain_id_is_not_gated_on_l1_fee() {
+        // Not in the compiled-in registry -> treated as non-OP-Stack for this
+        // check alone; only the universal gas-price gate can hold it back.
+        assert!(hold_back_reason(999_999, &ctx(1_000_000, 0)).is_none());
+        assert!(hold_back_reason(999_999, &ctx(0, 0)).is_some());
+    }
 }

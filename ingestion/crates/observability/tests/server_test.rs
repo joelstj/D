@@ -3,7 +3,7 @@
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
-use l2i_observability::{install_metrics, names, router, LatencyTimer};
+use l2i_observability::{health_router, install_metrics, names, router, LatencyTimer};
 use tower::ServiceExt;
 
 #[tokio::test]
@@ -79,4 +79,38 @@ async fn health_and_metrics_endpoints() {
             "missing latency histogram {name}:\n{text}"
         );
     }
+}
+
+/// A dedicated `health_bind` listener (distinct from `metrics_bind`) serves the
+/// exact same `/health` response, and — being health-only — has no `/metrics`.
+#[tokio::test]
+async fn health_only_router_serves_health_and_nothing_else() {
+    let app = health_router();
+
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/health")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    assert!(String::from_utf8_lossy(&body).contains("\"status\":\"ok\""));
+
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .uri("/metrics")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
 }
