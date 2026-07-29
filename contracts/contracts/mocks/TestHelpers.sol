@@ -3,6 +3,8 @@ pragma solidity 0.8.20;
 
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {OptimalArbitrage} from "../libraries/OptimalArbitrage.sol";
+import {DexRouter} from "../libraries/DexRouter.sol";
+import {SwapStep} from "../libraries/ArbTypes.sol";
 import {IBridgeAdapter} from "../interfaces/IBridgeAdapter.sol";
 
 /// @title OptimalArbitrageHarness
@@ -38,5 +40,16 @@ contract MockBridgeAdapter is IBridgeAdapter {
     {
         IERC20(token).transferFrom(msg.sender, address(this), amount);
         emit Bridged(token, amount, dstChainId, recipient, options);
+    }
+}
+
+/// @title DexRouterHarness
+/// @notice Exposes the internal DexRouter.execute for isolated unit testing
+///         of the per-DexType dispatch and (for UNISWAP_V2/UNISWAP_V3_SINGLE)
+///         its hand-encoded Yul call paths, without pulling in the whole
+///         FlashLoanArbitrage flash-loan flow.
+contract DexRouterHarness {
+    function execute(SwapStep calldata step, uint256 amountIn, uint256 index) external returns (uint256) {
+        return DexRouter.execute(step, amountIn, index);
     }
 }

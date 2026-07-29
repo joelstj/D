@@ -1,11 +1,19 @@
 /**
- * Deploys FlashLoanArbitrage to the selected network using config/addresses.js.
+ * Deploys FlashLoanArbitrage AND CrossChainArbitrageExecutor to the selected
+ * network using config/addresses.js.
  *
  *   npx hardhat run scripts/deploy.js --network arbitrum
+ *   npx hardhat run scripts/deploy.js --network polygon
  *
  * Requires PRIVATE_KEY in the environment (see .env.example). The deployer
- * becomes the initial admin/guardian/executor; transfer/grant roles to your
- * bot key and a multisig guardian afterwards.
+ * becomes the initial admin/guardian/executor on both contracts; transfer/
+ * grant roles to your bot key and a multisig guardian afterwards.
+ *
+ * CrossChainArbitrageExecutor needs one sibling deployment per chain you
+ * bridge between (e.g. run this on both "arbitrum" and "polygon" to get the
+ * pair of executors the cross-chain flow needs — see docs/DEPLOYMENT.md).
+ * Set SKIP_CROSSCHAIN=1 to deploy only FlashLoanArbitrage, matching this
+ * script's pre-existing behavior.
  */
 const fs = require("fs");
 const path = require("path");
@@ -39,6 +47,16 @@ async function main() {
   const address = await arb.getAddress();
   console.log(`\n✅ FlashLoanArbitrage deployed at: ${address}`);
 
+  let crossChainAddress = null;
+  if (process.env.SKIP_CROSSCHAIN !== "1") {
+    console.log(`\nDeploying CrossChainArbitrageExecutor to ${net}`);
+    const XChain = await ethers.getContractFactory("CrossChainArbitrageExecutor");
+    const xchain = await XChain.deploy(deployer.address);
+    await xchain.waitForDeployment();
+    crossChainAddress = await xchain.getAddress();
+    console.log(`✅ CrossChainArbitrageExecutor deployed at: ${crossChainAddress}`);
+  }
+
   // Persist a deployment record (git-ignored) for tooling.
   const outDir = path.join(__dirname, "..", "deployments");
   fs.mkdirSync(outDir, { recursive: true });
@@ -46,6 +64,7 @@ async function main() {
     network: net,
     chainId: book.chainId,
     address,
+    crossChainAddress,
     aavePool,
     balancerVault,
     deployer: deployer.address,
@@ -55,9 +74,13 @@ async function main() {
     path.join(outDir, `${net}.json`),
     JSON.stringify(record, null, 2)
   );
-  console.log(`   record written to deployments/${net}.json`);
+  console.log(`\n   record written to deployments/${net}.json`);
 
-  console.log(`\nVerify with:\n  npx hardhat verify --network ${net} ${address} ${aavePool} ${balancerVault} ${deployer.address}\n`);
+  console.log(`\nVerify with:\n  npx hardhat verify --network ${net} ${address} ${aavePool} ${balancerVault} ${deployer.address}`);
+  if (crossChainAddress) {
+    console.log(`  npx hardhat verify --network ${net} ${crossChainAddress} ${deployer.address}`);
+  }
+  console.log("");
 }
 
 main().catch((err) => {

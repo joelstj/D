@@ -27,6 +27,50 @@ describe("OptimalArbitrage library", () => {
     expect(out).to.equal(getAmountOut(e(1000, 6n), e(180000, 6n), e(100), 30n));
   });
 
+  it("getAmountOut (Yul) agrees with the reference formula across a wide sweep of inputs", async () => {
+    // Differential test for the Yul rewrite (contracts/CLAUDE.md: every
+    // assembly block gets a test against a reference implementation). Sweeps
+    // tiny/large amounts, lopsided/balanced reserves, and the full fee range,
+    // including the documented edge cases (amountIn/reserveIn/reserveOut == 0,
+    // feeBps == 0, feeBps just under BPS).
+    const h = await deploy();
+    const amounts = [0n, 1n, 2n, e(1), e(1000), e(1_000_000), 123456789012345n];
+    const reserves = [0n, 1n, e(1), e(100_000), e(50_000_000)];
+    const fees = [0n, 1n, 30n, 500n, 3000n, 9999n];
+    const BPS = 10_000n;
+    // test/helpers.js's getAmountOut is the raw formula only (no guard clause,
+    // and callers before this test never exercised zero reserves) — mirror the
+    // Solidity function's own early-return-zero guard here rather than change
+    // a shared helper other tests also rely on.
+    const reference = (amountIn, reserveIn, reserveOut, feeBps) =>
+      amountIn === 0n || reserveIn === 0n || reserveOut === 0n || feeBps >= BPS
+        ? 0n
+        : getAmountOut(amountIn, reserveIn, reserveOut, feeBps);
+
+    let compared = 0;
+    for (const amountIn of amounts) {
+      for (const reserveIn of reserves) {
+        for (const reserveOut of reserves) {
+          for (const feeBps of fees) {
+            const onchain = await h.getAmountOut(amountIn, reserveIn, reserveOut, feeBps);
+            const expected = reference(amountIn, reserveIn, reserveOut, feeBps);
+            expect(onchain, `amountIn=${amountIn} reserveIn=${reserveIn} reserveOut=${reserveOut} feeBps=${feeBps}`)
+              .to.equal(expected);
+            compared++;
+          }
+        }
+      }
+    }
+    expect(compared).to.equal(amounts.length * reserves.length * reserves.length * fees.length);
+  });
+
+  it("getAmountOut (Yul) rejects fees at or above BPS (the assembly path is never reached)", async () => {
+    const h = await deploy();
+    for (const feeBps of [10_000n, 10_001n, 2n ** 32n]) {
+      expect(await h.getAmountOut(e(100), e(100_000), e(100_000), feeBps)).to.equal(0n);
+    }
+  });
+
   it("returns zero when there is no profitable arbitrage", async () => {
     const h = await deploy();
     // Identical pools => no cross-pool price gap to exploit.

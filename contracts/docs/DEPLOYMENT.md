@@ -22,16 +22,35 @@ Expected: `Compiled N Solidity files successfully` with **zero warnings**.
 ## Test
 
 ```bash
-npm test                                            # 24 offline unit tests
+npm test                                            # 33 offline unit tests
 FORK_RPC_URL=https://arb1.arbitrum.io/rpc \
   npm run test:fork                                 # 4 live Arbitrum-fork tests
+FORK_RPC_URL=https://polygon-rpc.com \
+  npm run test:fork:polygon                         # 5 live Polygon-fork tests
+POLYGON_RPC_URL=https://polygon-rpc.com \
+ARBITRUM_RPC_URL=https://arb1.arbitrum.io/rpc \
+  npm run test:fork:crosschain                      # 1 live dual-fork cross-chain test
 ```
 
 The fork tests execute under the **Cancun** hardfork (`hardhat.config.js`
 `hardfork: "cancun"`) because live contracts reached over the fork use post-Paris
-opcodes — see [A note on Aave V3 on forks](#a-note-on-aave-v3-on-forks). They both
-manufacture a price dislocation and capture it atomically via a real flash loan,
-once from **Balancer V2** and once from **Aave V3**.
+opcodes — see [A note on Aave V3 on forks](#a-note-on-aave-v3-on-forks). The
+per-chain suites both manufacture a price dislocation and capture it atomically
+via a real flash loan, once from **Balancer V2** and once from **Aave V3**. The
+cross-chain suite re-points the *same* in-process chain at a different fork
+mid-test via `hardhat_reset` — Polygon for the source leg, then Arbitrum for the
+destination leg — so both legs run against genuinely independent live state,
+not two mocked chains; only the bridge/relayer delivery between them is
+simulated (see `test/fork/CrossChainDualFork.test.js`'s header comment, and
+[Limitations](../README.md#limitations) in the README).
+
+> Some free public RPCs rate-limit or reject the bulk archival calls a mainnet
+> fork makes even though a single plain JSON-RPC call to them succeeds (seen
+> with `polygon-rpc.com` in a sandboxed CI-like environment; `https://
+> polygon.gateway.tenderly.co` and `https://polygon-bor-rpc.publicnode.com`
+> both worked). If a fork test fails with a proxy/HTTP error rather than a
+> contract error or assertion, try a different RPC before assuming a code
+> problem.
 
 Foundry (same sources):
 
@@ -40,6 +59,11 @@ forge install foundry-rs/forge-std OpenZeppelin/openzeppelin-contracts@v5.0.2
 forge build
 ARBITRUM_RPC_URL=https://arb1.arbitrum.io/rpc \
   forge test --match-path 'test/foundry/*' --fork-url "$ARBITRUM_RPC_URL" -vvv
+POLYGON_RPC_URL=https://polygon-rpc.com \
+  forge test --match-path 'test/foundry/PolygonFork.t.sol' --fork-url "$POLYGON_RPC_URL" -vvv
+# Cross-chain: creates both forks itself via vm.createFork — no single --fork-url.
+POLYGON_RPC_URL=https://polygon-rpc.com ARBITRUM_RPC_URL=https://arb1.arbitrum.io/rpc \
+  forge test --match-path 'test/foundry/CrossChainDualFork.t.sol' -vvv
 ```
 
 `foundry.toml` sets `evm_version = "cancun"` so Forge executes the fork suite
@@ -54,7 +78,15 @@ automatically).
 
 ## Deploy
 
-The constructor is:
+Both deploy scripts deploy **two** contracts per chain: `FlashLoanArbitrage`
+(same-chain atomic engine) and `CrossChainArbitrageExecutor` (inventory-based
+cross-chain legs — deploy it on every chain you plan to bridge between; e.g.
+run the deploy step once for `arbitrum` and once for `polygon` to get the
+executor pair a Polygon<->Arbitrum cross-chain flow needs). Pass
+`SKIP_CROSSCHAIN=1` to deploy only `FlashLoanArbitrage`, matching this
+tooling's original (pre-cross-chain-deploy) behavior.
+
+The `FlashLoanArbitrage` constructor is:
 
 ```solidity
 constructor(address aavePool, address balancerVault, address admin)
@@ -64,15 +96,19 @@ constructor(address aavePool, address balancerVault, address admin)
   must be non-zero).
 - `admin` receives `DEFAULT_ADMIN_ROLE`, `GUARDIAN_ROLE`, `EXECUTOR_ROLE`.
 
+`CrossChainArbitrageExecutor`'s constructor is just `constructor(address
+admin)` — no provider addresses, since it never borrows; it holds inventory.
+
 ### Hardhat
 
 ```bash
 npx hardhat run scripts/deploy.js --network arbitrum
+npx hardhat run scripts/deploy.js --network polygon
 # networks: optimism | base | arbitrum | polygon | unichain | ink
 ```
 
-The script pulls provider addresses from `config/addresses.js`, deploys, and
-writes a record to `deployments/<network>.json`.
+The script pulls provider addresses from `config/addresses.js`, deploys both
+contracts, and writes a record (both addresses) to `deployments/<network>.json`.
 
 ### Foundry
 
@@ -81,6 +117,7 @@ AAVE_POOL=0x794a61358D6845594F94dc1DB02A252b5b4814aD \
 BALANCER_VAULT=0xBA12222222228d8Ba445958a75a0704d566BF2C8 \
 ADMIN=0xYourMultisig \
 forge script script/Deploy.s.sol:Deploy --rpc-url "$ARBITRUM_RPC_URL" --broadcast --verify -vvvv
+# Repeat with --rpc-url "$POLYGON_RPC_URL" for the Polygon-side executor pair.
 ```
 
 ### Post-deploy hardening
@@ -104,14 +141,21 @@ npx hardhat verify --network arbitrum <address> <aavePool> <balancerVault> <admi
 
 ## Per-chain provider matrix
 
-| Chain | Chain ID | Aave V3 Pool | Balancer V2 Vault | Recommended flash source |
-| --- | --- | --- | --- | --- |
-| Optimism | 10 | ✅ `0x794a…4aD` | ✅ `0xBA12…F2C8` | either |
-| Base | 8453 | ✅ `0xA238…d1c5` | ✅ `0xBA12…F2C8` | either |
-| Arbitrum One | 42161 | ✅ `0x794a…4aD` | ✅ `0xBA12…F2C8` | either |
-| Polygon PoS | 137 | ✅ `0x794a…4aD` | ✅ `0xBA12…F2C8` | either |
-| Unichain | 130 | ⚠️ verify | ⚠️ verify | verify before deploy |
-| Ink | 57073 | ⚠️ verify | ⚠️ verify | verify before deploy |
+| Chain | Chain ID | Aave V3 Pool | Balancer V2 Vault | Recommended flash source | Fork-verified |
+| --- | --- | --- | --- | --- | --- |
+| Optimism | 10 | ✅ `0x794a…4aD` | ✅ `0xBA12…F2C8` | either | not yet |
+| Base | 8453 | ✅ `0xA238…d1c5` | ✅ `0xBA12…F2C8` | either | not yet |
+| Arbitrum One | 42161 | ✅ `0x794a…4aD` | ✅ `0xBA12…F2C8` | either | ✅ `test/fork/ArbitrumFork.test.js` |
+| Polygon PoS | 137 | ✅ `0x794a…4aD` | ✅ `0xBA12…F2C8` | either | ✅ `test/fork/PolygonFork.test.js` |
+| Unichain | 130 | ⚠️ verify | ⚠️ verify | verify before deploy | not yet |
+| Ink | 57073 | ⚠️ verify | ⚠️ verify | verify before deploy | not yet |
+
+"Fork-verified" means a live-mainnet-fork test suite actually borrows,
+swaps, and repays against that chain's real, deployed contracts (not just
+that an address is recorded in `config/addresses.js`) — see
+[Verified in this repo](../README.md#verified-in-this-repo). Polygon<->Arbitrum
+is also the pair proven end-to-end for the cross-chain (inventory-based) model
+in `test/fork/CrossChainDualFork.test.js`.
 
 **Verify every address** against the protocol's official documentation before
 mainnet use — addresses in `config/addresses.js` marked `null` are pending your

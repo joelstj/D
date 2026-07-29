@@ -21,6 +21,17 @@ pragma solidity 0.8.20;
 ///      an integer square root, and when the two pools have different fees the
 ///      sizing is a close approximation. The atomic on-chain minProfit guard in
 ///      FlashLoanArbitrage — not this estimate — is the real safety net.
+///
+///      Yul scope: `sqrt` (below) and `getAmountOut` are hand-optimised — both
+///      are the arithmetic leaves called on every quote. `optimalV2Amount`'s
+///      own orchestration (early-return guards, the k/lhs/rhs comparison) is
+///      deliberately left in checked Solidity: it runs once per quote (not a
+///      tight loop), it is only ever reached via an off-chain `eth_call` or
+///      this library's own callers — never inside FlashLoanArbitrage's actual
+///      borrow/swap/repay path — and its multi-step comparisons are exactly
+///      the kind of logic where Solidity's default overflow checks are worth
+///      more than the marginal gas they'd save. "Yul only where it measurably
+///      wins" (contracts/CLAUDE.md) argues for stopping at the leaves here.
 library OptimalArbitrage {
     uint256 internal constant BPS = 10_000;
 
@@ -70,17 +81,31 @@ library OptimalArbitrage {
     }
 
     /// @notice Constant-product output for `amountIn`, with a bps fee on input.
-    /// @dev Mirrors UniswapV2Library.getAmountOut.
+    /// @dev Mirrors UniswapV2Library.getAmountOut. Yul-optimised: this is the
+    ///      arithmetic core of the library (called from `optimalV2Amount`
+    ///      twice per quote, and exposed directly for callers pricing a single
+    ///      hop), so it drops Solidity's default checked-arithmetic overhead.
+    ///      Safe because `reserveIn` is guarded non-zero above, so
+    ///      `denominator = reserveIn*BPS + amountInWithFee` can never be zero
+    ///      (Yul's `div` silently returns 0 on a zero denominator rather than
+    ///      reverting, unlike Solidity's checked division — there is no such
+    ///      path here). Overflow is bounded the same way the rest of this
+    ///      library already documents: real pool reserves/amounts are far
+    ///      below the ~1e38-per-operand ceiling where a uint256 product could
+    ///      wrap (see `optimalV2Amount`'s `k` comment) — callers with
+    ///      reserves above that should down-scale first.
     function getAmountOut(uint256 amountIn, uint256 reserveIn, uint256 reserveOut, uint256 feeBps)
         internal
         pure
-        returns (uint256)
+        returns (uint256 amountOut)
     {
         if (amountIn == 0 || reserveIn == 0 || reserveOut == 0 || feeBps >= BPS) return 0;
-        uint256 amountInWithFee = amountIn * (BPS - feeBps);
-        uint256 numerator = amountInWithFee * reserveOut;
-        uint256 denominator = reserveIn * BPS + amountInWithFee;
-        return numerator / denominator;
+        assembly {
+            let amountInWithFee := mul(amountIn, sub(BPS, feeBps))
+            let numerator := mul(amountInWithFee, reserveOut)
+            let denominator := add(mul(reserveIn, BPS), amountInWithFee)
+            amountOut := div(numerator, denominator)
+        }
     }
 
     /// @notice Integer square root (floor), Yul-optimised.
