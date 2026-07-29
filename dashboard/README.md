@@ -30,7 +30,11 @@ repo gives you all of it, working together and tested end-to-end:
   gas costs.
 - **Every control is wired.** Change the loan size, profit threshold, slippage,
   networks, DEX venues, risk limits — validated on the backend and effective on
-  the **next scan**, no restart.
+  the **next scan**, no restart, uniformly across every data source (including
+  the real `external` production feed, not just the simulated demo). Settings
+  also **survive a restart** (`backend/.data/settings.json`) — only
+  `executionMode` always re-seeds from `EXECUTION_MODE` on boot, the one
+  deliberate exception (see [Safety](#-safety)).
 - **MetaMask + L2.** Connect via wagmi/viem; switch between Base, Arbitrum,
   Optimism, and Polygon.
 - **Any language can drive it.** The GUI has no privileged backdoor — it's all a
@@ -129,7 +133,7 @@ ralph/ralph.sh --once             # one real iteration (needs a coding-agent CLI
 
 ```bash
 pnpm verify      # typecheck + tests + build across all packages
-pnpm test        # unit tests (backend: 21 · frontend: 15)
+pnpm test        # unit tests (backend: 76 · frontend: 28)
 ```
 
 The engine, settings store, REST API, formatters, live-state reducer, and UI
@@ -154,7 +158,7 @@ as-is under the MIT license; nothing here is financial advice.
 ## Roadmap
 
 Tracked in [`ralph/backlog.md`](ralph/backlog.md): real DEX quoting for live data,
-a PnL-over-time chart, persistence, API-key auth, gated live-execution preflight,
+a PnL-over-time chart, API-key auth, gated live-execution preflight,
 Playwright E2E, and more.
 
 ## License

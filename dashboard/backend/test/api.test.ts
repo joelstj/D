@@ -1,3 +1,6 @@
+import { randomUUID } from "node:crypto";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import request from "supertest";
 import { buildServer, type AppHandles } from "../src/server";
@@ -13,6 +16,9 @@ describe("REST API", () => {
       provider: new StubProvider([makeOpportunity({ netProfitUsd: 175 })]),
       autoStartEngine: false,
       initialSettings: { minProfitUsd: 0, minProfitBps: 0 },
+      // Isolated, guaranteed-nonexistent path — a real developer's persisted
+      // .data/settings.json must never leak into (or be overwritten by) a test.
+      settingsFile: join(tmpdir(), `l2arb-test-settings-${randomUUID()}.json`),
     });
   });
 
