@@ -47,21 +47,21 @@ library DexRouter {
             ISwapRouter02(step.router)
                 .exactInputSingle(
                     ISwapRouter02.ExactInputSingleParams({
-                    tokenIn: step.tokenIn,
-                    tokenOut: step.tokenOut,
-                    fee: step.poolFee,
-                    recipient: address(this),
-                    amountIn: amountIn,
-                    amountOutMinimum: step.minOut,
-                    sqrtPriceLimitX96: 0
-                })
+                        tokenIn: step.tokenIn,
+                        tokenOut: step.tokenOut,
+                        fee: step.poolFee,
+                        recipient: address(this),
+                        amountIn: amountIn,
+                        amountOutMinimum: step.minOut,
+                        sqrtPriceLimitX96: 0
+                    })
                 );
         } else if (step.dexType == DexType.UNISWAP_V3_MULTI) {
             ISwapRouter02(step.router)
                 .exactInput(
                     ISwapRouter02.ExactInputParams({
-                    path: step.data, recipient: address(this), amountIn: amountIn, amountOutMinimum: step.minOut
-                })
+                        path: step.data, recipient: address(this), amountIn: amountIn, amountOutMinimum: step.minOut
+                    })
                 );
         } else if (step.dexType == DexType.CURVE) {
             // Low-level call: some Curve pools' `exchange` returns nothing.
