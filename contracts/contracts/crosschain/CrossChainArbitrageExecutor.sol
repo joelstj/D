@@ -53,6 +53,8 @@ contract CrossChainArbitrageExecutor is AccessControl, ReentrancyGuard, Pausable
     error EmptyRoute();
     error InsufficientBridgeAmount(uint256 produced, uint256 minBridge);
     error InsufficientLegOutput(uint256 produced, uint256 minOut);
+    error RouteSeedMismatch();
+    error ZeroRouteInput();
     error NothingToRescue();
 
     /// @notice Emitted after the source leg swaps and dispatches funds to a bridge.
@@ -154,14 +156,14 @@ contract CrossChainArbitrageExecutor is AccessControl, ReentrancyGuard, Pausable
         uint256 n = steps.length;
         if (n == 0) revert EmptyRoute();
         // Validate the route actually starts at the seed token.
-        require(steps[0].tokenIn == seedToken, "route seed mismatch");
+        if (steps[0].tokenIn != seedToken) revert RouteSeedMismatch();
 
         uint256 amountIn = seedAmount;
         for (uint256 i; i < n;) {
             SwapStep memory step = steps[i];
             uint256 bal = DexRouter.balanceOf(step.tokenIn, address(this));
             if (amountIn > bal) amountIn = bal;
-            require(amountIn != 0, "zero route input");
+            if (amountIn == 0) revert ZeroRouteInput();
             amountIn = DexRouter.execute(step, amountIn, i);
             unchecked {
                 ++i;
