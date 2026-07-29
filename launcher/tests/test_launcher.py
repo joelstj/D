@@ -10,11 +10,12 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 # Make the launcher package importable when run from the repo root.
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from l2arb import config, state  # noqa: E402
+from l2arb import config, console, state  # noqa: E402
 from l2arb.paths import Layout, workspace_root  # noqa: E402
 from l2arb.prereqs import _VERSION_RE, _ge, merge_path  # noqa: E402
 from l2arb.proc import _resolve  # noqa: E402
@@ -155,6 +156,52 @@ class ResolveExecutableTest(unittest.TestCase):
 
     def test_empty_command_is_a_no_op(self):
         self.assertEqual(_resolve([], {"PATH": "/usr/bin"}), [])
+
+
+class ConsoleUtf8Test(unittest.TestCase):
+    """Guards against the Windows UnicodeEncodeError regression: a console/pipe
+    pinned to a legacy codepage (e.g. cp1252) must not crash on the ✓/✗/▶/─
+    symbols `console.py` prints — see `_force_utf8_streams`."""
+
+    def test_force_utf8_streams_reconfigures_stdout_and_stderr_to_utf8(self):
+        calls = []
+
+        class FakeStream:
+            def reconfigure(self, **kwargs):
+                calls.append(kwargs)
+
+        with mock.patch.object(console.sys, "stdout", FakeStream()), mock.patch.object(console.sys, "stderr", FakeStream()):
+            console._force_utf8_streams()
+
+        self.assertEqual(calls, [{"encoding": "utf-8", "errors": "replace"}] * 2)
+
+    def test_force_utf8_streams_never_raises_when_reconfigure_fails(self):
+        class BrokenStream:
+            def reconfigure(self, **kwargs):
+                raise ValueError("boom")
+
+        with mock.patch.object(console.sys, "stdout", BrokenStream()), mock.patch.object(console.sys, "stderr", BrokenStream()):
+            console._force_utf8_streams()  # must not raise
+
+    def test_force_utf8_streams_skips_streams_without_reconfigure(self):
+        class NoReconfigure:
+            pass
+
+        with mock.patch.object(console.sys, "stdout", NoReconfigure()), mock.patch.object(console.sys, "stderr", NoReconfigure()):
+            console._force_utf8_streams()  # must not raise
+
+    def test_a_cp1252_pinned_stdout_no_longer_crashes_on_symbols(self):
+        """End-to-end regression check for the reported crash: printing the ✓/▶/─
+        symbols through a stream hard-pinned to cp1252 (what Windows falls back to
+        for piped output, e.g. PowerShell's `| Out-Host`) must not raise."""
+        import io
+
+        buf = io.TextIOWrapper(io.BytesIO(), encoding="cp1252")
+        with mock.patch.object(console.sys, "stdout", buf):
+            console._force_utf8_streams()
+            console.step("build starting → staging payload")  # → = the reported crash char
+            console.ok("done")
+            buf.flush()
 
 
 if __name__ == "__main__":
