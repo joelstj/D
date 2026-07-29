@@ -79,29 +79,48 @@ def run(lo: Layout, *, live: bool, port: int, open_browser: bool = True) -> int:
     lo.ensure_state_dirs()
     services: list[Service] = []
 
-    if live:
-        console.banner("Starting live stack (engine → ingestion → dashboard)")
-        engine = _service(lo, "engine", config.engine_cmd(lo), lo.engine, {}, port=port)
-        engine.start()
-        services.append(engine)
-        if not wait_http(f"http://127.0.0.1:{config.ENGINE_PORT}/health", 40):
-            console.warn("engine did not become healthy in time; check .l2arb/logs/engine.log")
-        ingestion = _service(lo, "ingestion", config.ingestion_cmd(lo), lo.ingestion, {}, port=port)
-        ingestion.start()
-        services.append(ingestion)
-    else:
-        console.banner("Starting dashboard (paper / simulation mode)")
+    try:
+        if live:
+            console.banner("Starting live stack (engine → ingestion → dashboard)")
+            engine = _service(lo, "engine", config.engine_cmd(lo), lo.engine, {}, port=port)
+            engine.start()
+            services.append(engine)
+            if not wait_http(f"http://127.0.0.1:{config.ENGINE_PORT}/health", 40):
+                console.warn("engine did not become healthy in time; check .l2arb/logs/engine.log")
+            ingestion = _service(
+                lo, "ingestion", config.ingestion_cmd(lo), lo.ingestion, {}, port=port
+            )
+            ingestion.start()
+            services.append(ingestion)
+        else:
+            console.banner("Starting dashboard (paper / simulation mode)")
 
-    dash_env = config.dashboard_env(lo, live=live, port=port)
-    dashboard = _service(lo, "dashboard", config.dashboard_cmd(lo), lo.dashboard / "backend", dash_env, port=port)
-    dashboard.start()
-    services.append(dashboard)
+        dash_env = config.dashboard_env(lo, live=live, port=port)
+        dashboard = _service(
+            lo, "dashboard", config.dashboard_cmd(lo), lo.dashboard / "backend", dash_env, port=port
+        )
+        dashboard.start()
+        services.append(dashboard)
 
-    url = f"http://localhost:{port}"
-    if wait_http(f"{url}/api/health", 30):
-        console.ok(f"dashboard is up at {url}")
-    else:
-        console.warn(f"dashboard health check timed out; try {url} manually (see .l2arb/logs/dashboard.log)")
+        url = f"http://localhost:{port}"
+        if wait_http(f"{url}/api/health", 30):
+            console.ok(f"dashboard is up at {url}")
+        else:
+            console.warn(
+                f"dashboard health check timed out; try {url} manually (see .l2arb/logs/dashboard.log)"
+            )
+    except BaseException:
+        # A crash anywhere in the startup sequence above, or Ctrl-C while
+        # wait_http was polling (KeyboardInterrupt — a BaseException, not an
+        # Exception, so it must be caught here too) must not leave an
+        # already-started engine/ingestion/dashboard process orphaned, holding
+        # its port for the *next* `l2arb run`. The HealthMonitor's own cleanup
+        # (below) only covers services it was actually handed; nothing runs it
+        # if we never get that far, so this is the only place that can stop
+        # them. Reverse order mirrors HealthMonitor.run()'s own shutdown.
+        for svc in reversed(services):
+            svc.stop()
+        raise
 
     if open_browser:
         try:
