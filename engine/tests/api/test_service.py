@@ -23,6 +23,7 @@ def _single_chain_request(gk: type[GraphKit], *, price_numeraire: bool = True) -
     return {
         "top_n": 10,
         "max_hops": 4,
+        "now_ts": gk.BS.timestamp,  # pin "now" to the fixture pools' own block time
         "chains": [
             {
                 "chain_id": gk.CHAIN,
@@ -92,6 +93,7 @@ def test_cross_chain_via_service(gk: type[GraphKit]) -> None:
     sell = gk.v2(11, weth_y, num_y, 1000 * 10**18, 1_100_000 * 10**18)
     req = {
         "top_n": 10,
+        "now_ts": gk.BS.timestamp,
         "chains": [
             {
                 "chain_id": arb,
@@ -139,6 +141,47 @@ def test_cross_chain_via_service(gk: type[GraphKit]) -> None:
     }
     resp = run_detection(req)
     assert any(o["strategy"] == "cross_chain_two_hop" for o in resp["opportunities"])
+
+
+def test_stale_request_is_rejected_by_the_default_freshness_gate(gk: type[GraphKit]) -> None:
+    # No now_ts override in this request -> real wall clock; way past any pool's
+    # 2023-era test timestamp, so every pool reads as stale under the operator
+    # default (120s) and the opportunity is dropped (CLAUDE.md §3).
+    req = _single_chain_request(gk)
+    del req["now_ts"]
+    assert run_detection(req)["count"] == 0
+
+
+def test_now_ts_pins_freshness_relative_to_the_default_max_age(gk: type[GraphKit]) -> None:
+    req = _single_chain_request(gk)
+    req["now_ts"] = gk.BS.timestamp + 121  # 1s past the 120s operator default
+    assert run_detection(req)["count"] == 0
+
+
+def test_chain_config_max_pool_age_overrides_the_operator_default(gk: type[GraphKit]) -> None:
+    # 121s old would fail the 120s operator default (see the test above), but a
+    # per-chain override that explicitly allows more must take precedence.
+    req = _single_chain_request(gk)
+    req["now_ts"] = gk.BS.timestamp + 121
+    req["chains"][0]["max_pool_age_seconds"] = 300
+    assert run_detection(req)["count"] >= 1
+
+
+def test_operator_max_pool_age_setting_is_honoured(
+    gk: type[GraphKit], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from l2arb.config import get_settings
+
+    # Raise the operator default via the env var this engine claims to support;
+    # a request 200s stale then clears it without any per-request override.
+    monkeypatch.setenv("L2ARB__MAX_POOL_AGE_SECONDS", "300")
+    get_settings.cache_clear()
+    try:
+        req = _single_chain_request(gk)
+        req["now_ts"] = gk.BS.timestamp + 200
+        assert run_detection(req)["count"] >= 1
+    finally:
+        get_settings.cache_clear()
 
 
 def test_invalid_pool_payload_raises(gk: type[GraphKit]) -> None:

@@ -142,6 +142,50 @@ def test_gas_wipes_out_the_spread(gk: type[GraphKit]) -> None:
     assert _run(_setup(gk, gas_price_wei=10**30)) is None
 
 
+def test_unverified_pool_on_either_leg_is_rejected(gk: type[GraphKit]) -> None:
+    # CLAUDE.md §3: an unverified pool on the buy leg or the sell leg must veto
+    # the whole cross-chain spread, even though it would otherwise be reported.
+    env = _setup(gk)
+    assert _run(env) is not None  # sanity: the baseline spread is reported
+
+    unverified_buy = GraphKit.v2(
+        10,
+        gk.token(1, chain=ARB),
+        gk.token(2, chain=ARB),
+        1_000_000 * 10**18,
+        1000 * 10**18,
+        verified=False,
+    )
+    env_bad_buy = env._replace(buy_graph=gk.graph([unverified_buy], chain=ARB))
+    assert _run(env_bad_buy) is None
+
+    unverified_sell = GraphKit.v2(
+        11,
+        gk.token(3, chain=BASE),
+        gk.token(4, chain=BASE),
+        1000 * 10**18,
+        1_100_000 * 10**18,
+        verified=False,
+    )
+    env_bad_sell = env._replace(sell_graph=gk.graph([unverified_sell], chain=BASE))
+    assert _run(env_bad_sell) is None
+
+
+def test_stale_pool_on_either_leg_is_rejected_when_freshness_is_enforced(
+    gk: type[GraphKit],
+) -> None:
+    from dataclasses import replace
+
+    pool_ts = GraphKit.BS.timestamp
+    env = _setup(gk)
+    fresh_ctx = replace(env.buy_ctx, now_ts=pool_ts + 30, max_pool_age_seconds=60)
+    stale_ctx = replace(env.buy_ctx, now_ts=pool_ts + 61, max_pool_age_seconds=60)
+
+    assert _run(env._replace(buy_ctx=fresh_ctx, sell_ctx=fresh_ctx)) is not None
+    assert _run(env._replace(buy_ctx=stale_ctx, sell_ctx=fresh_ctx)) is None
+    assert _run(env._replace(buy_ctx=fresh_ctx, sell_ctx=stale_ctx)) is None
+
+
 def test_bridge_quote_math() -> None:
     q = BridgeQuote(fee_bps=10.0, fixed_fee=5, settle_seconds=60)
     assert q.cost(10_000) == 5 + 10  # 0.1% of 10000 + fixed 5

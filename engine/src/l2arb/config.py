@@ -25,8 +25,10 @@ from __future__ import annotations
 from functools import lru_cache
 from pathlib import Path
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+_LOG_LEVELS = ("CRITICAL", "ERROR", "WARNING", "INFO", "DEBUG", "NOTSET")
 
 
 def _split_csv(raw: str) -> tuple[str, ...]:
@@ -167,12 +169,28 @@ class Settings(BaseSettings):
     max_latency_ms_p99: int = Field(default=250, gt=0)
     gas_safety_multiplier: float = Field(default=1.5, ge=1.0)
 
+    # Data-integrity: a pool whose block is older than this at request time is
+    # excluded from detection (CLAUDE.md §3 — "reject or flag stale state"). A
+    # request's ``ChainConfig.max_pool_age_seconds`` overrides this per call; this
+    # is the operator-wide default when it doesn't. See docs/DATA_INTEGRITY.md.
+    max_pool_age_seconds: int = Field(default=120, gt=0)
+
     # Infra (read side only).
     redis_url: str = "redis://localhost:6379/0"
 
-    # Observability.
+    # Observability. log_level drives real structlog/logging setup (see
+    # l2arb.logging.configure_logging) — validated here so a typo fails loud at
+    # load time rather than silently falling back at first use.
     log_level: str = "INFO"
     metrics_port: int = Field(default=9090, gt=0, lt=65536)
+
+    @field_validator("log_level")
+    @classmethod
+    def _validate_log_level(cls, v: str) -> str:
+        upper = v.strip().upper()
+        if upper not in _LOG_LEVELS:
+            raise ValueError(f"log_level must be one of {_LOG_LEVELS}, got {v!r}")
+        return upper
 
     @property
     def enabled_chains(self) -> list[str]:

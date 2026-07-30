@@ -73,11 +73,20 @@ Before a pool is trusted:
 ## 4. Freshness & currency ("verifiable current")
 
 - Every subscription tracks head; every quote records the block it used.
-- A configurable **staleness bound** (in blocks and in seconds) rejects or flags
-  state older than the bound. L2 block times are short (~250ms–2s); the bound is
-  set per chain.
-- Opportunities include `age_blocks` / `age_ms`; a consumer can reject anything
-  not derived from head or head-1.
+- A configurable **staleness bound** (in seconds) rejects state older than the
+  bound: `detect.evaluate()`/`detect.cross_chain._build_opportunity()` reject
+  any cycle touching a pool whose `Blockstamp.is_stale(now_ts, max_age)` is
+  true, when the caller's `ProfitContext` sets both `now_ts` and
+  `max_pool_age_seconds`. The HTTP/stdin API always sets both: `now_ts`
+  defaults to the server's real clock (or `DetectRequest.now_ts`, for a pinned
+  replay), and `max_pool_age_seconds` defaults to the operator's
+  `L2ARB__MAX_POOL_AGE_SECONDS` (`Settings`, default 120s) unless a request's
+  `ChainConfig.max_pool_age_seconds` overrides it. The pure `evaluate()`/
+  `cross_chain_two_hop()` functions themselves stay deterministic — the check
+  is skipped (not "always on") when a caller doesn't supply both fields, which
+  is what keeps them trivially testable with a frozen clock.
+- Opportunities carry their binding `Blockstamp`; a consumer can independently
+  compute its age against wall-clock time.
 
 ## 5. Reorg safety
 
@@ -111,7 +120,13 @@ opportunity:
 - `verify`-tier tests pin blocks and assert A≡B; fixtures document
   chain+block+address so a human can confirm on a block explorer.
 - Any pool that cannot be two-source-verified is excluded from emission by
-  construction (the engine filters on `verified is True`).
+  construction: `detect/profit.py::evaluate()` and
+  `detect/cross_chain.py::_build_opportunity()` both check
+  `all(pool.verified for pool in cycle)` (or `buy_pool.verified and
+  sell_pool.verified`) *before* any sizing/pricing work, and return `None` on
+  any unverified pool — so a caller cannot get a priced opportunity back for
+  a cycle it (or a bug) marked `verified: false`, regardless of transport
+  (HTTP, stdin, or embedding `ArbitrageEngine` directly).
 
 ## 8. Note on the requested CEX/quant data sources
 

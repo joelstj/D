@@ -120,12 +120,50 @@ export class ArbitrageEngine extends EventEmitter {
     }
   }
 
+  /**
+   * Applies every provider-agnostic filter: network/DEX/token universe and the
+   * profit/position thresholds. Checked here — the one funnel every candidate
+   * passes through regardless of provider (simulated, external, live) — so a
+   * network or DEX chip toggled off in Settings actually stops opportunities on
+   * it from qualifying, not just for providers that happen to consult it
+   * themselves (previously only SimulatedProvider did; ExternalProvider, the
+   * real production data source, silently ignored these controls entirely).
+   */
   private qualifies(opp: ArbitrageOpportunity, s: Settings): boolean {
+    if (!s.networks.includes(opp.network)) return false;
+    if (opp.tokenIn !== s.baseToken) return false;
+    const allowedTokens = new Set(s.tokens);
+    allowedTokens.add(s.baseToken);
+    for (const leg of opp.route) {
+      if (!s.dexes.includes(leg.dex)) return false;
+      if (!allowedTokens.has(leg.tokenIn) || !allowedTokens.has(leg.tokenOut)) return false;
+    }
     return (
       opp.netProfitUsd >= s.minProfitUsd &&
       opp.profitBps >= s.minProfitBps &&
       opp.amountInUsd <= s.maxPositionUsd
     );
+  }
+
+  /**
+   * The reason `opp` cannot execute right now under the current risk limits, or
+   * `null` if it's clear. This is the authoritative gate — called from
+   * {@link executeOpportunity} itself, so a manual click or a direct
+   * `POST /api/execute/:id` call is bound by the same "Risk & Limits" settings
+   * as the auto-execute loop, not just whatever the loop happened to pre-filter.
+   */
+  private riskLimitBlock(opp: ArbitrageOpportunity, s: Settings): string | null {
+    if (this.stats.dailyPnlUsd <= -s.maxDailyLossUsd) {
+      return `daily loss limit reached ($${s.maxDailyLossUsd})`;
+    }
+    if (this.inFlight >= s.maxConcurrentTrades) {
+      return `max concurrent trades reached (${s.maxConcurrentTrades})`;
+    }
+    const last = this.lastExecByNetwork.get(opp.network) ?? 0;
+    if (Date.now() - last < s.cooldownMs) {
+      return `cooldown active for ${opp.network} (${s.cooldownMs}ms remaining budget)`;
+    }
+    return null;
   }
 
   private addOpportunity(opp: ArbitrageOpportunity) {
@@ -187,6 +225,12 @@ export class ArbitrageEngine extends EventEmitter {
   ): Promise<ExecutionResult> {
     const opp = typeof oppOrId === "string" ? this.active.get(oppOrId) : oppOrId;
     if (!opp) throw new Error("opportunity not found or expired");
+
+    const block = this.riskLimitBlock(opp, settings);
+    if (block) {
+      this.emit("alert", { level: "warn", message: `execution blocked: ${block}` });
+      throw new Error(block);
+    }
 
     const priorStatus = opp.status;
     opp.status = "executing";

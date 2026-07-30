@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import pytest
 
-from l2arb.api.schema import DetectRequest, opportunity_to_dict, token_to_output
+from l2arb.api.schema import ChainConfig, DetectRequest, opportunity_to_dict, token_to_output
+from l2arb.config import get_settings
 from l2arb.model.blockstamp import Blockstamp
 from l2arb.model.opportunity import Leg, Opportunity, RiskAssessment, StrategyKind
 from l2arb.model.token import Token
@@ -31,6 +32,34 @@ def test_request_rejects_out_of_range_max_hops() -> None:
         DetectRequest(max_hops=1)
     with pytest.raises(ValidationError):
         DetectRequest(max_hops=99)
+
+
+def test_omitted_max_hops_defers_to_the_operator_setting(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("L2ARB__MAX_HOPS", "6")
+    get_settings.cache_clear()
+    try:
+        assert DetectRequest().max_hops == 6  # omitted -> the operator default
+        assert DetectRequest(max_hops=3).max_hops == 3  # explicit -> always wins
+    finally:
+        get_settings.cache_clear()
+
+
+def test_omitted_chain_config_thresholds_defer_to_operator_settings(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("L2ARB__MIN_PROFIT_BPS", "42")
+    monkeypatch.setenv("L2ARB__GAS_SAFETY_MULTIPLIER", "2.5")
+    get_settings.cache_clear()
+    try:
+        cfg = ChainConfig(chain_id=1)
+        assert cfg.min_profit_bps == 42.0
+        assert cfg.gas_safety_multiplier == pytest.approx(2.5)
+        # An explicit value in the request always overrides the operator default.
+        explicit = ChainConfig(chain_id=1, min_profit_bps=1.0, gas_safety_multiplier=1.1)
+        assert explicit.min_profit_bps == 1.0
+        assert explicit.gas_safety_multiplier == pytest.approx(1.1)
+    finally:
+        get_settings.cache_clear()
 
 
 def test_token_to_output() -> None:

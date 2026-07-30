@@ -23,6 +23,9 @@ pnpm-debug.log*
 ralph/.state/
 ralph/logs/
 
+# Persisted runtime settings (backend/.data/settings.json) — local state, not source
+.data/
+
 # Editor / OS
 .DS_Store
 .vscode/

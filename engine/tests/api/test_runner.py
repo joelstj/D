@@ -23,6 +23,7 @@ def _request_bytes(gk: type[GraphKit]) -> bytes:
     return orjson.dumps(
         {
             "top_n": 5,
+            "now_ts": gk.BS.timestamp,  # pin "now" to the fixture pools' own block time
             "chains": [
                 {
                     "chain_id": gk.CHAIN,
@@ -63,6 +64,15 @@ def test_main_pipes_stdin_to_stdout(gk: type[GraphKit]) -> None:
     payload = orjson.loads(stdout.getvalue())
     assert payload["count"] >= 1
     assert payload["opportunities"][0]["strategy"] == "two_hop"
+
+
+def test_main_configures_logging_on_every_invocation(monkeypatch: pytest.MonkeyPatch) -> None:
+    import l2arb.api.runner as runner_module
+
+    calls: list[None] = []
+    monkeypatch.setattr(runner_module, "configure_logging", lambda: calls.append(None))
+    main(stdin=io.BytesIO(b"garbage"), stdout=io.BytesIO())
+    assert len(calls) == 1
 
 
 def test_main_reports_errors_as_json() -> None:

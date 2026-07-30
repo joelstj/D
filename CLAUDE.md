@@ -198,3 +198,79 @@ In scope: **detecting** 2-hop / triangular / bounded multi-hop / cross-chain
 **simulating** execution against audited flash-loan contracts. Out of scope
 (never built here): signing/broadcasting live transactions from the loop,
 deploying contracts from the loop, holding private keys, and MEV extraction.
+
+---
+
+## 8. Production debugging + enhancement pass (2026-07-29)
+
+A full-stack audit (`claude/prod-debug-enhancements-x4gzp7`) found the baseline
+already green across all five component gates (zero errors) but surfaced real
+gaps between what was *documented* as live/enforced and what the code actually
+did. Fixed, all covered by new tests, every gate green:
+
+1. **Engine — data-integrity gating was computed but never enforced.**
+   `Opportunity.verified` and pool freshness were both tracked but no code path
+   ever rejected an unverified/stale pool before pricing it — contradicting
+   `docs/DATA_INTEGRITY.md`'s own claim that this was already enforced.
+   `detect/profit.py::evaluate()` and `detect/cross_chain.py::_build_opportunity()`
+   now gate on both, first (before any AMM math). Freshness is opt-in at the
+   pure-compute layer (`ProfitContext.now_ts`/`max_pool_age_seconds`, both
+   `None` by default so the gate stays deterministic/testable) but always-on at
+   the API boundary (`api/service.py::detect()` resolves a real `now_ts`
+   default and the new `L2ARB__MAX_POOL_AGE_SECONDS` operator default, 120s).
+2. **Engine — the entire `L2ARB__*` env-config surface was dead code.**
+   `get_settings()` had zero call sites outside its own tests. `ChainConfig`/
+   `DetectRequest` fields now use `Field(default_factory=lambda:
+   get_settings().X)` so an *omitted* request field genuinely falls back to
+   the operator's env default (an explicit request value still always wins —
+   pydantic only invokes `default_factory` when the field is absent). Also
+   wired `L2ARB__LOG_LEVEL` to real `structlog`/stdlib logging
+   (`l2arb/logging.py`, new) and fixed the numba JIT cold-start SLO gap by
+   calling `graph/tropical.py::warmup()` from the FastAPI lifespan.
+3. **Ingestion — L1 data fee had no phantom-profit gate.** The aggregator held
+   a chain back when `gas_price_wei == 0` (a fabricated-looking sentinel) but
+   had no equivalent for a not-yet-read `l1_data_fee_wei` on the four OP-Stack
+   chains. Extracted the combined check into `pipeline.rs::hold_back_reason()`
+   (now unit-tested) — gated to OP-Stack only, since Arbitrum's L1 fee is
+   legitimately always 0. Also bound `[observability].health_bind` (:9090) on
+   its own listener — previously parsed and printed by `--check-config` but
+   never actually bound; `/health`+`/metrics` were silently both living on
+   `metrics_bind` (:9100) only.
+4. **Dashboard — settings enforcement wasn't uniform across providers/paths.**
+   `ExternalProvider` (the real production data source) ignored
+   `networks`/`dexes`/`tokens`/`baseToken` entirely — only `SimulatedProvider`
+   respected them. Moved that filtering into `ArbitrageEngine.qualifies()`
+   (the one funnel every provider's candidates pass through) and made
+   `maxConcurrentTrades`/`cooldownMs`/`maxDailyLossUsd` (previously enforced
+   only inside the `autoExecute()` loop) also gate a manual/API
+   `executeOpportunity()` call via a new `riskLimitBlock()` check.
+5. **Dashboard — every setting reverted to schema defaults on restart.**
+   `settings/persistence.ts` (new) loads/saves `backend/.data/settings.json`
+   (git-ignored); `server.ts` wires load-on-boot + save-on-change.
+   `executionMode` is the deliberate exception — it always re-seeds from the
+   operator's current `EXECUTION_MODE` rather than resuming a possibly-stale
+   persisted value (invariant 3 above stays boot-time authoritative).
+6. **Launcher — a startup crash or Ctrl-C could orphan already-started
+   services.** `run.py`'s sequential engine→ingestion→dashboard startup had no
+   `try`/`except` — a mid-sequence failure (or `KeyboardInterrupt`, a
+   `BaseException`, while `wait_http` was polling) propagated straight out,
+   leaving already-started processes running and holding their ports for the
+   next `l2arb run`. Now wrapped so every started service is stopped before
+   the error propagates.
+7. **Contracts — `DexType.GENERIC` had no router allowlist.** Unlike the typed
+   dex types (fixed selector, output recipient hardcoded to `address(this)`),
+   `GENERIC` handed `step.router` fully attacker-controlled calldata — a
+   compromised `EXECUTOR_ROLE` key could route a step to e.g.
+   `transfer(attacker, hugeAmount)` on any token the contract holds, entirely
+   bypassing the route-asset and profit checks (which only look at the
+   declared first/last leg and the overall balance delta). Added
+   `allowedGenericRouters` (deny-all default) + `setGenericRouterAllowed`,
+   gated `GUARDIAN_ROLE` (not `EXECUTOR_ROLE` — the hot bot key must not be
+   able to expand what `GENERIC` can call). See `contracts/README.md` §Security
+   model and `contracts/docs/INTEGRATION.md`.
+
+**Net effect on "is every setting live-adjustable and operational?"**: yes,
+with the boot-time exceptions that are deliberate safety invariants
+(`EXECUTION_MODE`, `L2ARB__*` env vars — process-level, not hot-reloaded
+without a restart, same as before). Full research notes:
+`docs/notes-prod-debug-enhancements.md`.

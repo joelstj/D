@@ -43,7 +43,9 @@ class GraphKit:
         )
 
     @staticmethod
-    def v2(n: int, t0: Token, t1: Token, r0: int, r1: int, fee: int = 3000) -> PoolState:
+    def v2(
+        n: int, t0: Token, t1: Token, r0: int, r1: int, fee: int = 3000, *, verified: bool = True
+    ) -> PoolState:
         return PoolState(
             address=f"0x{n:040x}",
             kind=PoolKind.CONSTANT_PRODUCT,
@@ -52,6 +54,7 @@ class GraphKit:
             fee_pips=fee,
             blockstamp=GraphKit.blockstamp(t0.chain_id),
             v2=V2Reserves(reserve0=r0, reserve1=r1),
+            verified=verified,
         )
 
     @staticmethod
@@ -66,6 +69,7 @@ class GraphKit:
         tick: int = 0,
         sqrt_ratio_lower_x96: int | None = None,
         sqrt_ratio_upper_x96: int | None = None,
+        verified: bool = True,
     ) -> PoolState:
         return PoolState(
             address=f"0x{n:040x}",
@@ -81,11 +85,20 @@ class GraphKit:
                 sqrt_ratio_lower_x96=sqrt_ratio_lower_x96,
                 sqrt_ratio_upper_x96=sqrt_ratio_upper_x96,
             ),
+            verified=verified,
         )
 
     @staticmethod
     def stable(
-        n: int, t0: Token, t1: Token, bal0: int, bal1: int, amp: int = 200, fee: int = 1000
+        n: int,
+        t0: Token,
+        t1: Token,
+        bal0: int,
+        bal1: int,
+        amp: int = 200,
+        fee: int = 1000,
+        *,
+        verified: bool = True,
     ) -> PoolState:
         return PoolState(
             address=f"0x{n:040x}",
@@ -95,6 +108,7 @@ class GraphKit:
             fee_pips=fee,
             blockstamp=GraphKit.blockstamp(t0.chain_id),
             stable=StableSwapState(balance0=bal0, balance1=bal1, amp=amp),
+            verified=verified,
         )
 
     @staticmethod
@@ -107,6 +121,8 @@ class GraphKit:
         weight0: int = 5 * 10**17,
         weight1: int = 5 * 10**17,
         fee: int = 3000,
+        *,
+        verified: bool = True,
     ) -> PoolState:
         return PoolState(
             address=f"0x{n:040x}",
@@ -116,6 +132,7 @@ class GraphKit:
             fee_pips=fee,
             blockstamp=GraphKit.blockstamp(t0.chain_id),
             weighted=WeightedState(balance0=bal0, balance1=bal1, weight0=weight0, weight1=weight1),
+            verified=verified,
         )
 
     @staticmethod

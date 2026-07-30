@@ -8,8 +8,16 @@ discover follow-up work, add it here rather than expanding the task in flight.
 
 - [ ] Add a `GET /api/opportunities/:id` endpoint returning a single opportunity
       (404 when missing) and cover it with an API test.
-- [ ] Persist settings to disk (`backend/.data/settings.json`) so restarts keep
+- [x] Persist settings to disk (`backend/.data/settings.json`) so restarts keep
       the operator's configuration; load on boot, debounce writes on change.
+      Done: `settings/persistence.ts` (load/save, `.partial()` schema so an
+      older file still loads) + `server.ts` wiring (`store.onChange` saves;
+      `executionMode` always re-seeds from `EXECUTION_MODE`, never resumes a
+      stale persisted value — see root `CLAUDE.md` §2 invariant 3). Writes are
+      synchronous on every settings change rather than debounced — settings
+      patches are infrequent/user-driven, not a hot path, so this was judged
+      simple-and-correct over premature batching; revisit if that assumption
+      stops holding. Tests: `test/persistence.test.ts`, `test/settingsRestart.test.ts`.
 - [ ] Add request logging + a global Express error handler that returns a
       consistent `{ error, message }` shape; test the 404 and error paths.
 - [ ] Add a `/api/stats/history` endpoint backed by an in-memory ring buffer of

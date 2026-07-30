@@ -13,9 +13,11 @@ never reported — the engine never invents a price.
 
 from __future__ import annotations
 
+import time
 from typing import Any
 
 from l2arb.api.schema import AssetSpec, ChainConfig, DetectRequest, opportunity_to_dict
+from l2arb.config import get_settings
 from l2arb.detect.cross_chain import BridgeQuote, StaticBridgeModel
 from l2arb.detect.profit import GasCostFn, GasModel, ProfitContext
 from l2arb.engine.engine import ArbitrageEngine
@@ -65,14 +67,29 @@ def _registry(assets: list[AssetSpec]) -> AssetRegistry:
     return registry
 
 
-def build_engine(request: DetectRequest) -> ArbitrageEngine:
-    """Construct and populate an engine from a validated request."""
+def build_engine(request: DetectRequest, *, now_ts: int) -> ArbitrageEngine:
+    """Construct and populate an engine from a validated request.
+
+    ``now_ts`` is the wall-clock instant (unix seconds) the request is evaluated
+    "as of" — it drives the freshness gate (CLAUDE.md §3) via each chain's
+    :class:`~l2arb.detect.profit.ProfitContext`. Required (not defaulted here) so
+    this stays a pure function of its inputs; :func:`detect` resolves the real
+    default.
+    """
     engine = ArbitrageEngine(max_hops=request.max_hops)
+    operator_max_age = get_settings().max_pool_age_seconds
     for cfg in request.chains:
         hubs = frozenset((cfg.chain_id, a.lower()) for a in cfg.hubs) or None
-        engine.configure_chain(
-            cfg.chain_id, ProfitContext(_gas_cost_fn(cfg), cfg.min_profit_bps), hubs
+        max_age = (
+            cfg.max_pool_age_seconds if cfg.max_pool_age_seconds is not None else operator_max_age
         )
+        ctx = ProfitContext(
+            _gas_cost_fn(cfg),
+            cfg.min_profit_bps,
+            now_ts=now_ts,
+            max_pool_age_seconds=max_age,
+        )
+        engine.configure_chain(cfg.chain_id, ctx, hubs)
     for pool_dict in request.pools:
         engine.ingest(pool_from_dict(pool_dict))
     xc = request.cross_chain
@@ -95,10 +112,14 @@ def detect(request: DetectRequest) -> dict[str, Any]:
     ``rank`` → ``serialize``, milliseconds) for the latency-health-check pipeline.
     It is pure instrumentation: measuring the stages never changes which
     opportunities are found or their order.
+
+    ``request.now_ts`` pins the freshness gate's "now"; when absent (the normal
+    HTTP/stdin caller), the server's real clock is used.
     """
+    now_ts = request.now_ts if request.now_ts is not None else int(time.time())
     sw = Stopwatch()
     with sw.stage("build"):
-        engine = build_engine(request)
+        engine = build_engine(request, now_ts=now_ts)
     with sw.stage("detect"):
         found = engine.detect_all(incremental=request.incremental)
     with sw.stage("rank"):

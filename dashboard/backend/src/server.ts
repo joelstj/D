@@ -6,6 +6,11 @@ import cors from "cors";
 import { loadEnv, type Env } from "./config/env";
 import { SettingsStore } from "./settings/store";
 import type { Settings } from "./settings/schema";
+import {
+  defaultSettingsPath,
+  loadPersistedSettings,
+  savePersistedSettings,
+} from "./settings/persistence";
 import { SimulatedProvider } from "./arbitrage/providers/simulated";
 import { LiveProvider } from "./arbitrage/providers/live";
 import { ExternalProvider } from "./arbitrage/providers/external";
@@ -42,6 +47,10 @@ export interface BuildOptions {
   executors?: { paper: Executor; live: Executor };
   /** When false the engine is constructed but its scan loop is not started (tests). */
   autoStartEngine?: boolean;
+  /** Where settings persist across restarts. Defaults to `SETTINGS_FILE` or
+   *  `<backend>/.data/settings.json`. Tests should pass an isolated path so a
+   *  stray real file from local dev never leaks into a test run. */
+  settingsFile?: string;
 }
 
 /**
@@ -70,10 +79,21 @@ function selectProvider(env: Env, latency: LatencyMonitor): OpportunityProvider 
 export function buildServer(opts: BuildOptions = {}): AppHandles {
   const env = opts.env ?? loadEnv();
   const startedAt = Date.now();
+
+  // Restore whatever was last PATCHed before the previous restart (P0 in
+  // ralph/backlog.md — every adjustable setting used to silently revert to
+  // schema defaults on every restart). `executionMode` is the one exception:
+  // it's always re-seeded from the operator's current EXECUTION_MODE, the
+  // boot-time safety posture, rather than resuming a possibly-stale persisted
+  // value — see CLAUDE.md §2 invariant 3 (paper-by-default).
+  const settingsFile = opts.settingsFile ?? process.env.SETTINGS_FILE ?? defaultSettingsPath();
+  const persisted = loadPersistedSettings(settingsFile) ?? {};
   const store = new SettingsStore({
+    ...persisted,
     executionMode: env.executionMode,
     ...opts.initialSettings,
   });
+  store.onChange(({ settings }) => savePersistedSettings(settingsFile, settings));
 
   // End-to-end latency aggregator (ingestion → engine → dashboard) and the
   // separate, read-only on-chain execution-readiness probe.
