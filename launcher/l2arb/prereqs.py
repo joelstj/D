@@ -45,7 +45,11 @@ def which(cmd: str) -> str | None:
 
 def _run(cmd: list[str]) -> tuple[int, str]:
     try:
-        p = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+        # Pin UTF-8 (with a replace backstop) rather than default to
+        # locale.getpreferredencoding() — see proc.run()'s docstring for why a
+        # Windows cp1252 locale can otherwise crash on tool output (e.g. winget's
+        # progress/box-drawing characters).
+        p = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=30)
         return p.returncode, (p.stdout + p.stderr).strip()
     except (OSError, subprocess.SubprocessError) as exc:
         return 127, str(exc)
