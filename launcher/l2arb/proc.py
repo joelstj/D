@@ -38,7 +38,15 @@ def _resolve(cmd: list[str], env: dict) -> list[str]:
 
 
 def run(cmd: list[str], cwd: Path | None = None, env: dict | None = None, prefix: str = "") -> int:
-    """Run a command to completion, streaming combined output. Returns exit code."""
+    """Run a command to completion, streaming combined output. Returns exit code.
+
+    ``encoding``/``errors`` are pinned rather than left to default to
+    ``text=True``'s ``locale.getpreferredencoding()`` — on Windows that's often a
+    legacy codepage (cp1252, …), and build tools (pnpm, tsup, …) emit UTF-8, so
+    the pipe read can hit a byte cp1252 has no mapping for (e.g. 0x8f) and raise
+    ``UnicodeDecodeError`` mid-build. Pinning UTF-8 decodes real tool output
+    correctly; ``errors="replace"`` is a backstop against any other stray byte.
+    """
     tag = f"[{prefix}] " if prefix else ""
     console.step(f"{tag}{' '.join(cmd)}")
     full_env = {**os.environ, **(env or {})}
@@ -50,6 +58,8 @@ def run(cmd: list[str], cwd: Path | None = None, env: dict | None = None, prefix
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             bufsize=1,
         )
     except OSError as exc:

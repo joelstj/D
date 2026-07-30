@@ -5,6 +5,7 @@ Run with:  python -m unittest discover -s launcher/tests
 
 from __future__ import annotations
 
+import io
 import os
 import sys
 import tempfile
@@ -15,7 +16,7 @@ from unittest import mock
 # Make the launcher package importable when run from the repo root.
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from l2arb import cli, config, console, state  # noqa: E402
+from l2arb import cli, config, console, prereqs, proc, state  # noqa: E402
 from l2arb.paths import Layout, workspace_root  # noqa: E402
 from l2arb.prereqs import _VERSION_RE, _ge, merge_path  # noqa: E402
 from l2arb.proc import _resolve  # noqa: E402
@@ -202,6 +203,70 @@ class ConsoleUtf8Test(unittest.TestCase):
             console.step("build starting → staging payload")  # → = the reported crash char
             console.ok("done")
             buf.flush()
+
+
+class ProcRunUtf8Test(unittest.TestCase):
+    """Guards against the Windows UnicodeDecodeError regression: reading a build
+    tool's (pnpm, tsup, …) UTF-8 stdout through `proc.run`'s pipe must not crash
+    when the process locale's preferred encoding is a legacy codepage like
+    cp1252 — see `proc.run`'s docstring."""
+
+    def test_run_pins_utf8_and_replace_on_the_subprocess_pipe(self):
+        captured = {}
+
+        class FakePopen:
+            def __init__(self, *args, **kwargs):
+                captured.update(kwargs)
+                self.stdout = iter(())
+
+            def wait(self):
+                return 0
+
+        with mock.patch.object(proc.subprocess, "Popen", FakePopen):
+            rc = proc.run(["true"])
+
+        self.assertEqual(rc, 0)
+        self.assertEqual(captured.get("encoding"), "utf-8")
+        self.assertEqual(captured.get("errors"), "replace")
+
+    def test_run_decodes_utf8_subprocess_output_invalid_under_cp1252(self):
+        """"”" (a right double quotation mark, plausible in real CLI output)
+        encodes to UTF-8 bytes e2 80 9d — 0x9d has no cp1252 mapping, so decoding
+        it under cp1252 (what `text=True` falls back to without a pinned
+        ``encoding`` on a Windows box) raises UnicodeDecodeError, exactly like the
+        reported crash on byte 0x8f."""
+        script = "import sys; sys.stdout.buffer.write('”\\n'.encode('utf-8'))"
+        buf = io.StringIO()
+        with mock.patch.object(proc.sys, "stdout", buf):
+            rc = proc.run([sys.executable, "-c", script])
+
+        self.assertEqual(rc, 0)
+        self.assertIn("”", buf.getvalue())
+
+
+class PrereqsRunUtf8Test(unittest.TestCase):
+    """Same class of regression as `ProcRunUtf8Test`, for the toolchain-detection
+    subprocess helper — also on the winget auto-install path, whose progress
+    output is UTF-8."""
+
+    def test_run_pins_utf8_and_replace(self):
+        captured = {}
+
+        class FakeCompleted:
+            returncode = 0
+            stdout = ""
+            stderr = ""
+
+        def fake_run(cmd, **kwargs):
+            captured.update(kwargs)
+            return FakeCompleted()
+
+        with mock.patch.object(prereqs.subprocess, "run", fake_run):
+            rc, _out = prereqs._run(["true"])
+
+        self.assertEqual(rc, 0)
+        self.assertEqual(captured.get("encoding"), "utf-8")
+        self.assertEqual(captured.get("errors"), "replace")
 
 
 class _FakeStdin:
