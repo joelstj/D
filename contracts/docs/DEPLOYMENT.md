@@ -124,15 +124,36 @@ not a missing-file or missing-var error. `--verify` additionally needs
 `ETHERSCAN_API_KEY` set (see `foundry.toml`'s `[etherscan]` table) or that step
 fails separately after a successful deploy.
 
+`forge` also doesn't read the master `.env`'s `PRIVATE_KEY` (again, Hardhat-only
+wiring) — you must pass an explicit signer. Omit one entirely and forge simulates
+the whole deploy successfully, prints the contract addresses it *would* deploy to,
+and only then aborts the real broadcast with `Error: You seem to be using
+Foundry's default sender. Be sure to set your own --sender.` — nothing gets sent
+on-chain, but it's easy to misread the simulated output as a completed deploy.
+The recommended signer is Foundry's encrypted keystore:
+
+```bash
+cast wallet import deployer --interactive   # one-time; prompts for the key + a password
+```
+
+then pass `--account deployer` on every deploy, as below. `--private-key 0x...`
+works too but lands in your shell history in plaintext; prefer `--ledger`/`--trezor`
+for a key that will hold `DEFAULT_ADMIN_ROLE`/`GUARDIAN_ROLE` long-term.
+
 ```bash
 AAVE_POOL=0x794a61358D6845594F94dc1DB02A252b5b4814aD \
 BALANCER_VAULT=0xBA12222222228d8Ba445958a75a0704d566BF2C8 \
 ADMIN=0xREPLACE_WITH_YOUR_REAL_MULTISIG_ADDRESS \
 ARBITRUM_RPC_URL="https://arb1.arbitrum.io/rpc" \
 ETHERSCAN_API_KEY="your-etherscan-v2-api-key" \
-forge script script/Deploy.s.sol:Deploy --rpc-url "$ARBITRUM_RPC_URL" --broadcast --verify -vvvv
+forge script script/Deploy.s.sol:Deploy --account deployer \
+  --rpc-url "$ARBITRUM_RPC_URL" --broadcast --verify -vvvv
 # Repeat with --rpc-url "$POLYGON_RPC_URL" for the Polygon-side executor pair.
 ```
+
+If `ADMIN` is set to something that isn't a valid address (e.g. a stale
+placeholder), `Deploy.s.sol` now reverts loudly instead of silently deploying
+with the broadcasting key as admin.
 
 ### Post-deploy hardening
 
