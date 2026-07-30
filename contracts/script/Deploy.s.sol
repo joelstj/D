@@ -11,8 +11,15 @@ import {CrossChainArbitrageExecutor} from "../contracts/crosschain/CrossChainArb
 /// @dev Provide the flash-loan provider addresses and admin via env vars, then:
 ///
 ///   AAVE_POOL=0x... BALANCER_VAULT=0x... ADMIN=0x... \
+///   ARBITRUM_RPC_URL="https://arb1.arbitrum.io/rpc" \
 ///   forge script script/Deploy.s.sol:Deploy \
 ///     --rpc-url "$ARBITRUM_RPC_URL" --broadcast --verify -vvvv
+///
+///   ARBITRUM_RPC_URL is not read from any repo .env by forge — set it in this
+///   same shell invocation. Left unset, `--rpc-url` silently receives an empty
+///   string and forge fails with a confusing "Internal transport error ...
+///   os error 2" pointing at your current directory, not a clear missing-var
+///   error.
 ///
 ///   At least one of AAVE_POOL / BALANCER_VAULT must be non-zero. VERIFY every
 ///   address against official protocol docs first (see config/addresses.js).
