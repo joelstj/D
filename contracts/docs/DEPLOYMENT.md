@@ -112,10 +112,24 @@ contracts, and writes a record (both addresses) to `deployments/<network>.json`.
 
 ### Foundry
 
+`ARBITRUM_RPC_URL` and `ADMIN` below are **not optional defaults** — `forge` does
+not read the repo-root master `.env` (that's Hardhat-only, wired in
+`hardhat.config.js`), so both must be real values you set yourself in the same
+shell invocation, exactly like `AAVE_POOL`/`BALANCER_VAULT` are here. If
+`ARBITRUM_RPC_URL` is left unset, `--rpc-url "$ARBITRUM_RPC_URL"` silently
+expands to an empty string, and Foundry falls back to treating it as a local
+IPC socket path — the resulting failure is a confusing
+`Internal transport error: ... os error 2 ... with <your current directory>`,
+not a missing-file or missing-var error. `--verify` additionally needs
+`ETHERSCAN_API_KEY` set (see `foundry.toml`'s `[etherscan]` table) or that step
+fails separately after a successful deploy.
+
 ```bash
 AAVE_POOL=0x794a61358D6845594F94dc1DB02A252b5b4814aD \
 BALANCER_VAULT=0xBA12222222228d8Ba445958a75a0704d566BF2C8 \
-ADMIN=0xYourMultisig \
+ADMIN=0xREPLACE_WITH_YOUR_REAL_MULTISIG_ADDRESS \
+ARBITRUM_RPC_URL="https://arb1.arbitrum.io/rpc" \
+ETHERSCAN_API_KEY="your-etherscan-v2-api-key" \
 forge script script/Deploy.s.sol:Deploy --rpc-url "$ARBITRUM_RPC_URL" --broadcast --verify -vvvv
 # Repeat with --rpc-url "$POLYGON_RPC_URL" for the Polygon-side executor pair.
 ```
