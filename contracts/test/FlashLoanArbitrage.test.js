@@ -409,6 +409,48 @@ describe("FlashLoanArbitrage (offline mechanics)", () => {
     expect(await f.usdc.balanceOf(f.arb.target)).to.equal(heldAmount);
   });
 
+  it("reverts a discontinuous route that would vacuum a held non-asset token (RouteNotContiguous)", async () => {
+    const f = await deploy();
+    // The contract holds a parked, unrelated non-asset token (airdrop / dust /
+    // mis-send) — exactly what rescueTokens exists to sweep, so a non-zero
+    // holding is realistic.
+    const ERC20 = await ethers.getContractFactory("MockERC20");
+    const wbtc = await ERC20.deploy("Wrapped BTC", "WBTC", 8);
+    const heldWbtc = e(1, 8n); // 1 WBTC
+    await wbtc.mint(f.arb.target, heldWbtc);
+
+    // A pool that could sell that held WBTC back into the borrowed asset.
+    const Pool = await ethers.getContractFactory("MockUniV2");
+    const poolWbtc = await Pool.deploy(f.usdc.target, wbtc.target, FEE_BPS);
+    await f.usdc.mint(poolWbtc.target, e(200000, 6n));
+    await wbtc.mint(poolWbtc.target, e(3, 8n));
+
+    // Route: USDC -> WETH (real), then a DISCONTINUOUS hop whose tokenIn is WBTC
+    // (NOT the WETH the prior hop produced). First/last legs still start and end
+    // in USDC, so the route-asset check passes — only the contiguity check
+    // catches this. Without it, `_runRoute`'s live-balance cap would swap the
+    // entire held WBTC into USDC and `_settle` would pay it to profitReceiver.
+    const params = twoHopParams(f, Provider.AAVE_V3, e(10000, 6n));
+    params.steps[1] = v2Step(poolWbtc.target, wbtc.target, f.usdc.target);
+
+    await expect(f.arb.connect(f.bot).executeArbitrage(params))
+      .to.be.revertedWithCustomError(f.arb, "RouteNotContiguous")
+      .withArgs(1);
+
+    // Held WBTC untouched; nothing reached the attacker; no flash loan taken.
+    expect(await wbtc.balanceOf(f.arb.target)).to.equal(heldWbtc);
+    expect(await wbtc.balanceOf(f.attacker.address)).to.equal(0n);
+  });
+
+  it("still executes a legitimate contiguous multi-hop route (contiguity guard is not over-broad)", async () => {
+    const f = await deploy();
+    const params = twoHopParams(f, Provider.AAVE_V3, e(10000, 6n));
+    await expect(f.arb.connect(f.bot).executeArbitrage(params)).to.emit(
+      f.arb,
+      "ArbitrageExecuted"
+    );
+  });
+
   it("reports the Aave premium in bps", async () => {
     const f = await deploy();
     expect(await f.arb.aavePremiumBps()).to.equal(AAVE_PREMIUM_BPS);

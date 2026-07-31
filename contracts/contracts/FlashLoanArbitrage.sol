@@ -106,6 +106,7 @@ contract FlashLoanArbitrage is
     error DeadlineExpired();
     error InvalidRoute();
     error RouteAssetMismatch();
+    error RouteNotContiguous(uint256 step);
     error ZeroAmount();
     error UnexpectedCaller(address caller);
     error UnexpectedInitiator(address initiator);
@@ -173,6 +174,22 @@ contract FlashLoanArbitrage is
         if (p.amount == 0) revert ZeroAmount();
         if (p.steps[0].tokenIn != p.asset || p.steps[nSteps - 1].tokenOut != p.asset) {
             revert RouteAssetMismatch();
+        }
+        // Every hop must consume exactly what the previous hop produced. Without
+        // this, an intermediate hop could name a `tokenIn` the prior hop did NOT
+        // produce but that the contract happens to hold (a parked/airdropped
+        // token). `_runRoute`'s "spend up to the live balance" cap would then
+        // vacuum that entire unrelated holding into the trade, and `_settle`
+        // (which measures profit only as the balance delta of `p.asset`) would
+        // hand it to `profitReceiver` — a drain of held non-`asset` tokens by a
+        // compromised EXECUTOR, reachable with plain typed dexes and thus
+        // bypassing the GENERIC-router allowlist entirely. Contiguity confines
+        // the route to the borrowed asset and its forward-swapped proceeds.
+        for (uint256 i = 1; i < nSteps;) {
+            if (p.steps[i].tokenIn != p.steps[i - 1].tokenOut) revert RouteNotContiguous(i);
+            unchecked {
+                ++i;
+            }
         }
 
         // Snapshot pre-loan balance so idle/parked `asset` is never counted as
