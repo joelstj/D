@@ -31,6 +31,11 @@ use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime};
 use tokio::sync::watch;
 
+/// A chain ingestor run that stayed connected at least this long before dropping
+/// is treated as a genuinely-established connection (not a connect→fail loop), so
+/// its reconnect backoff is reset to retry promptly. See the supervisor loop.
+const STABLE_CONNECTION_RESET: Duration = Duration::from_secs(60);
+
 /// A supervised chain the aggregator reads from. The mirror + context channel are
 /// shared with the background supervisor task.
 struct ChainHandle {
@@ -189,6 +194,7 @@ async fn supervise_chain(
         if *shutdown_rx.borrow() {
             break;
         }
+        let run_started = Instant::now();
         match connect_seed_run(&cfg, &mirror, &ctx_tx, &generation, shutdown_rx.clone()).await {
             Ok(()) => break, // clean shutdown
             Err(e) => {
@@ -196,6 +202,16 @@ async fn supervise_chain(
                 // Stop stale emission: nothing is trustworthy until we re-derive.
                 mirror.mark_all_unverified();
                 metrics::counter!(names::INGESTOR_RECONNECTS).increment(1);
+                // Reset the backoff when the connection was actually established
+                // and ran healthily for a while before dropping (e.g. a managed
+                // endpoint recycling the socket). Otherwise a weeks-long daemon,
+                // where every reconnect is an Err that advances the counter, would
+                // pin at the ceiling and wait ~30s before even the *first* retry of
+                // an instantly-reachable endpoint. A rapid connect->fail loop
+                // (short-lived run) keeps backing off as before.
+                if run_started.elapsed() >= STABLE_CONNECTION_RESET {
+                    backoff.reset();
+                }
                 let delay = backoff.next_delay();
                 tokio::select! {
                     _ = tokio::time::sleep(delay) => {}

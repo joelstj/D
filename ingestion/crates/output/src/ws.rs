@@ -36,8 +36,16 @@ impl WsServerSink {
                         tokio::spawn(handle_conn(stream, rx));
                     }
                     Err(e) => {
-                        tracing::warn!(error = %e, "ws accept failed");
-                        break;
+                        // Transient accept errors (ECONNABORTED, EMFILE/ENFILE
+                        // under fd pressure, ENOBUFS) are normal on a long-running
+                        // daemon and must NOT kill the accept loop — breaking here
+                        // stops :9001 accepting forever, so the dashboard's
+                        // ExternalProvider could never reconnect without a full
+                        // process restart. Log and keep serving; a short sleep
+                        // avoids busy-spinning while a persistent condition (e.g.
+                        // fd exhaustion) clears.
+                        tracing::warn!(error = %e, "ws accept failed; continuing");
+                        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
                     }
                 }
             }
