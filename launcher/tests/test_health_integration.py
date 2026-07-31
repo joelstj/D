@@ -131,5 +131,26 @@ class SelfHealIntegrationTest(unittest.TestCase):
         self.assertTrue(self.svc.log_path.exists())
 
 
+class FailedStartTest(unittest.TestCase):
+    def test_failed_spawn_does_not_leak_the_log_handle(self) -> None:
+        # Regression: start() opens the log file handle before Popen. A failed
+        # spawn (missing binary → OSError) must close it — stop() early-returns
+        # while self.proc is None and would otherwise never close it.
+        with tempfile.TemporaryDirectory() as d:
+            tmp = Path(d)
+            svc = Service(
+                "missing",
+                [str(tmp / "does-not-exist-xyz")],
+                cwd=tmp,
+                env={},
+                log_path=tmp / "svc.log",
+            )
+            with self.assertRaises(OSError):
+                svc.start()
+            self.assertIsNone(svc._log_fh)  # handle was closed, not leaked
+            # stop() is safe to call after a failed start (no process, no handle).
+            svc.stop()
+
+
 if __name__ == "__main__":
     unittest.main()

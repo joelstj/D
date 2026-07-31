@@ -39,11 +39,12 @@ def _setup(
     spread_num: int = 1_100_000,
     weth_on_base: bool = True,
     gas_price_wei: int = 10**6,
+    num_y_decimals: int = 18,
 ) -> Env:
     num_x = gk.token(1, chain=ARB)  # USDC on Arbitrum
     weth_x = gk.token(2, chain=ARB)  # WETH on Arbitrum
     weth_y = gk.token(3, chain=BASE)  # WETH on Base
-    num_y = gk.token(4, chain=BASE)  # USDC on Base
+    num_y = gk.token(4, decimals=num_y_decimals, chain=BASE)  # USDC on Base
 
     buy_pool = gk.v2(10, num_x, weth_x, 1_000_000 * 10**18, 1000 * 10**18)  # cheap WETH
     sell_pool = gk.v2(11, weth_y, num_y, 1000 * 10**18, spread_num * 10**18)  # dearer WETH
@@ -115,6 +116,19 @@ def test_non_bridgeable_asset_blocks_detection(gk: type[GraphKit]) -> None:
 def test_asset_absent_on_a_chain_returns_none(gk: type[GraphKit]) -> None:
     # WETH registered only on the buy chain -> no sell-side representation.
     assert _run(_setup(gk, weth_on_base=False)) is None
+
+
+def test_mismatched_numeraire_decimals_across_chains_is_rejected_not_phantom(
+    gk: type[GraphKit],
+) -> None:
+    # Regression: the cross-chain profit math (net = num_out - size) mixes the two
+    # chains' numeraire base units. If the numeraire has different decimals across
+    # chains (num_y here = 6-dp vs num_x = 18-dp), that unit mismatch used to
+    # fabricate an enormous phantom profit stamped verified:true. It must now be
+    # excluded before any pricing, never emitted.
+    assert _run(_setup(gk, num_y_decimals=6)) is None
+    # Sanity: with matching decimals the same setup detects a real spread.
+    assert isinstance(_run(_setup(gk, num_y_decimals=18)), Opportunity)
 
 
 def test_unknown_symbols_return_none(gk: type[GraphKit]) -> None:

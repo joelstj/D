@@ -274,3 +274,66 @@ with the boot-time exceptions that are deliberate safety invariants
 (`EXECUTION_MODE`, `L2ARB__*` env vars — process-level, not hot-reloaded
 without a restart, same as before). Full research notes:
 `docs/notes-prod-debug-enhancements.md`.
+
+---
+
+## 9. Granular stress-test + enhancement audit (2026-07-31)
+
+A second, deeper full-stack audit (`claude/stress-test-audit-pm9eya`) re-verified
+the baseline **green across every runnable gate** (engine 440, ingestion 185,
+dashboard 76+28, contracts-Hardhat 37, launcher 76 — the Foundry suite is BLOCKED
+here, `forge` not installed, recorded not faked) and then hunted, with five parallel
+per-component auditors, for defects between documented and actual behaviour. Every
+finding was independently re-verified before any change. **18 confirmed defects
+fixed, each with a regression test where testable; all gates re-run green.** The
+lower-severity remainder is recorded (not faked) as a triaged, reproducible backlog
+in `docs/notes-stress-test-audit.md`.
+
+The fixes, most-severe first:
+
+1. **Dashboard — the entire live data path was dark (CRITICAL).**
+   `ArbitrageEngine.qualifies()` filtered each route leg's `dex` against the
+   venue-key chip set, but `ExternalProvider` (the real `DATA_SOURCE=external` feed
+   that `l2arb run --live` uses) labels a leg with its *pool address* — engine data
+   carries no venue brand. So **every** external opportunity was silently dropped and
+   the live dashboard was permanently empty. No test composed `engineMap → qualifies()`,
+   which is why it hid. The venue chip now applies only to legs labelled with a venue
+   key we model (`KNOWN_VENUE_KEYS`); an unlabelled pool-address leg keeps its
+   network/token/profit filters but is not venue-filtered (fabricating a venue would
+   break invariant 2.1). Also: USD-magnitude gates apply only to USD-denominated opps
+   (`numeraireIsUsd !== false`); `maxDailyLossUsd=0` no longer halts at t0 (strict `<`).
+2. **Contracts — held-token drain via a discontinuous route (fund-safety).**
+   `_runRoute`'s "spend up to the live balance" cap, combined with no step-to-step
+   continuity check, let a compromised `EXECUTOR` name an intermediate `tokenIn` the
+   previous hop didn't produce but the contract holds (a parked/airdropped token),
+   vacuuming it into the trade and paying it out as "profit" — with plain typed dexes,
+   bypassing the GENERIC allowlist. `executeArbitrage` now requires
+   `steps[i].tokenIn == steps[i-1].tokenOut` (new `RouteNotContiguous`).
+3. **Engine — a degenerate StableSwap crashed the whole `/detect` batch (HIGH).**
+   `-math.log(0.0)` on an imbalanced-but-valid StableSwap pool's 0.0 marginal rate
+   raised `ValueError` with no downstream `try/except`, losing every opportunity in
+   the batch. Such an edge is now skipped like an untradable one. Plus: a cross-chain
+   phantom-profit guard when a numeraire/asset has different decimals across chains,
+   and the cross-chain verified/freshness gate now runs *before* pricing (matching the
+   `DATA_INTEGRITY.md` guarantee).
+4. **Launcher — the Windows live path was broken + process-lifecycle leaks (HIGH).**
+   `setup` wrote the pool path into a TOML *basic* string, so a Windows backslash path
+   became invalid escapes and the whole `config.toml` failed to parse (flagship `.exe`,
+   masked by a POSIX-only test) — now TOML-escaped. Plus: SIGKILL-path zombie reaping,
+   a SIGTERM handler (so `kill`/`docker stop` doesn't orphan children), restored
+   startup-grace on restart, a closed browser-open/monitor-construction orphan window,
+   and a Popen-failure fd leak.
+5. **Ingestion — L1-fee under-cost + a permanently-dead WS accept loop (HIGH/MED).**
+   The L1 data fee was sampled with an *empty* tx (zero calldata → phantom profit on
+   OP-Stack); it now samples a real recorded tx (arb-sized/config-driven sample is a
+   recorded follow-up). The WS accept loop no longer dies permanently on a transient
+   `accept()` error, and the reconnect backoff resets after a stable connection.
+
+**Recorded (not fixed) — see `docs/notes-stress-test-audit.md`:** the standout is an
+ingestion bug where `retain_valid` validates the engine response against the
+*incremental delta* only, dropping opportunities that route through unchanged pools
+(feed near-silent in steady state) — CONFIRMED by trace, but the fix touches a
+safety-critical validation path whose end-to-end correctness needs the real `l2arb`
+engine, which is BLOCKED in this environment; recorded with a precise recommended fix
+rather than shipped speculatively. Also recorded: cross-chain-executor GENERIC
+hardening, in-range V3/V4 liquidity events, and assorted lower-severity items.

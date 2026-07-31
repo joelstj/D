@@ -7,9 +7,26 @@ import type { OpportunityProvider } from "./providers/provider";
 import type { Executor } from "./executor";
 import type { LatencyMonitor } from "./latency";
 import type { ArbitrageOpportunity, EngineStats, ExecutionResult } from "./types";
+import { NETWORKS } from "./networks";
 
 const log = createLogger("engine");
 const MAX_ACTIVE = 250;
+
+/**
+ * Every DEX **venue key** the dashboard models, across all networks (e.g.
+ * `"uniswap-v3"`, `"aerodrome"`). The `dexes` Settings chips are venue keys, so
+ * the venue filter in {@link ArbitrageEngine.qualifies} can only apply to a
+ * route leg that is *labelled with a venue key we recognise*.
+ *
+ * The SimulatedProvider labels legs with venue keys. The real production feed
+ * (ExternalProvider → the l2arb detection engine) does not: the engine prices by
+ * pool address and never surfaces a venue brand, so `engineMap` labels a leg
+ * with its (shortened) pool address. Fabricating a venue for such a leg would
+ * violate the data-integrity invariant (root CLAUDE.md §2.1), so a venue-unlabelled
+ * leg is simply not subject to the venue chip — the network/token/profit filters,
+ * which are all derivable from real engine data, still apply to it.
+ */
+const KNOWN_VENUE_KEYS = new Set<string>(NETWORKS.flatMap((n) => n.dexes.map((d) => d.key)));
 
 export interface EngineEvents {
   opportunity: (opp: ArbitrageOpportunity) => void;
@@ -128,6 +145,22 @@ export class ArbitrageEngine extends EventEmitter {
    * it from qualifying, not just for providers that happen to consult it
    * themselves (previously only SimulatedProvider did; ExternalProvider, the
    * real production data source, silently ignored these controls entirely).
+   *
+   * Two honesty caveats, both grounded in what real engine data actually carries:
+   *  - **Venue chip:** only legs labelled with a venue key we model (see
+   *    {@link KNOWN_VENUE_KEYS}) are filtered by `s.dexes`. The engine prices by
+   *    pool address and surfaces no venue brand, so an ExternalProvider leg is
+   *    labelled with its pool address and is not subject to the venue chip —
+   *    inventing a venue for it would be fabricated data. The network/token/profit
+   *    filters, all derivable from real engine data, still apply. (Previously this
+   *    line compared a pool address against venue keys, so *every* external
+   *    opportunity was silently dropped — the whole live feed went dark.)
+   *  - **USD thresholds:** `minProfitUsd`/`maxPositionUsd` are dollar limits, so
+   *    they apply only when the opportunity is USD-denominated. An opp is treated
+   *    as USD unless it is *explicitly* flagged non-USD (`numeraireIsUsd === false`,
+   *    which `engineMap` sets for a non-stablecoin numeraire whose `…Usd` fields are
+   *    really numeraire base units). For a non-USD numeraire the unit-agnostic
+   *    `minProfitBps` remains the gate; we never compare base units to dollars.
    */
   private qualifies(opp: ArbitrageOpportunity, s: Settings): boolean {
     if (!s.networks.includes(opp.network)) return false;
@@ -135,14 +168,20 @@ export class ArbitrageEngine extends EventEmitter {
     const allowedTokens = new Set(s.tokens);
     allowedTokens.add(s.baseToken);
     for (const leg of opp.route) {
-      if (!s.dexes.includes(leg.dex)) return false;
+      // Venue chip applies only to legs carrying a venue key we recognise; an
+      // unlabelled (pool-address) leg from the real engine feed is not filtered
+      // here — see the KNOWN_VENUE_KEYS docstring.
+      if (KNOWN_VENUE_KEYS.has(leg.dex) && !s.dexes.includes(leg.dex)) return false;
       if (!allowedTokens.has(leg.tokenIn) || !allowedTokens.has(leg.tokenOut)) return false;
     }
-    return (
-      opp.netProfitUsd >= s.minProfitUsd &&
-      opp.profitBps >= s.minProfitBps &&
-      opp.amountInUsd <= s.maxPositionUsd
-    );
+    if (opp.profitBps < s.minProfitBps) return false;
+    // USD-magnitude gates: honest only when the figures are actually dollars.
+    const usdDenominated = opp.numeraireIsUsd !== false;
+    if (usdDenominated) {
+      if (opp.netProfitUsd < s.minProfitUsd) return false;
+      if (opp.amountInUsd > s.maxPositionUsd) return false;
+    }
+    return true;
   }
 
   /**
@@ -153,15 +192,20 @@ export class ArbitrageEngine extends EventEmitter {
    * as the auto-execute loop, not just whatever the loop happened to pre-filter.
    */
   private riskLimitBlock(opp: ArbitrageOpportunity, s: Settings): string | null {
-    if (this.stats.dailyPnlUsd <= -s.maxDailyLossUsd) {
+    // Strict `<`: the limit means "halt once the day's loss *exceeds* this", so
+    // `maxDailyLossUsd=0` (halt on the first real loss) does not trip at t0 when
+    // `dailyPnlUsd` is still exactly 0 — a `<=` here blocked all execution from
+    // the very first tick.
+    if (this.stats.dailyPnlUsd < -s.maxDailyLossUsd) {
       return `daily loss limit reached ($${s.maxDailyLossUsd})`;
     }
     if (this.inFlight >= s.maxConcurrentTrades) {
       return `max concurrent trades reached (${s.maxConcurrentTrades})`;
     }
     const last = this.lastExecByNetwork.get(opp.network) ?? 0;
-    if (Date.now() - last < s.cooldownMs) {
-      return `cooldown active for ${opp.network} (${s.cooldownMs}ms remaining budget)`;
+    const sinceLast = Date.now() - last;
+    if (sinceLast < s.cooldownMs) {
+      return `cooldown active for ${opp.network} (${s.cooldownMs - sinceLast}ms remaining)`;
     }
     return null;
   }
@@ -192,7 +236,7 @@ export class ArbitrageEngine extends EventEmitter {
   }
 
   private async autoExecute(settings: Settings) {
-    if (this.stats.dailyPnlUsd <= -settings.maxDailyLossUsd) {
+    if (this.stats.dailyPnlUsd < -settings.maxDailyLossUsd) {
       this.emit("alert", {
         level: "warn",
         message: `daily loss limit reached ($${settings.maxDailyLossUsd}); auto-execution paused`,

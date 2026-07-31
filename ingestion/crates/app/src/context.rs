@@ -179,7 +179,10 @@ pub async fn build_chain_context<P: ChainProvider + ?Sized>(
             provider,
             model,
             l2i_chains::OP_GAS_PRICE_ORACLE,
-            alloy_primitives::Bytes::new(),
+            // A representative serialized tx, NOT empty bytes: getL1Fee charges by
+            // calldata size, so sampling with an empty tx systematically
+            // under-costs the L1 data fee on OP-Stack chains (phantom profit).
+            l2i_gas::representative_sample_tx(),
             BlockId::latest(),
         )
         .await,

@@ -86,6 +86,17 @@ def _quote(addr: str) -> str:
     return f'"{addr}"'
 
 
+def _toml_str(value: str) -> str:
+    """Render ``value`` as a TOML **basic** (double-quoted) string, escaping the
+    characters TOML treats specially. Critically this escapes backslashes, so a
+    Windows absolute path (``C:\\Users\\...\\arbitrum.toml``) is not read as a run
+    of invalid TOML escape sequences (``\\U``, ``\\A``, ...) that make the entire
+    generated ``config.toml`` unparseable — silently breaking the live path on the
+    flagship ``.exe`` distribution."""
+    escaped = value.replace("\\", "\\\\").replace('"', '\\"')
+    return f'"{escaped}"'
+
+
 def arbitrum_quickstart_config(ws_url: str, http_url: str, pool_registry: str) -> str:
     """A complete, valid, live-ready ingestion config for **Arbitrum One only**.
 
@@ -153,7 +164,7 @@ reconcile_interval_ms = 2000
 hubs        = [{_quote(weth)}, {_quote(usdc)}]
 numeraires  = [{_quote(weth)}, {_quote(usdc)}]
 weth        = {_quote(weth)}
-pool_registry = "{pool_registry}"
+pool_registry = {_toml_str(pool_registry)}
 [chains.native_price_pools]
 {_quote(usdc)} = {_quote(pool)}
 

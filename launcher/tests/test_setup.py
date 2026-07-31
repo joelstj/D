@@ -102,6 +102,27 @@ class ArbitrumQuickstartTest(unittest.TestCase):
         self.assertEqual(parsed["chains"][0]["weth"], setup.ARBITRUM_WETH)
         self.assertFalse(parsed["cross_chain"]["enabled"])
 
+    @unittest.skipUnless(sys.version_info >= (3, 11), "tomllib needs 3.11+")
+    def test_windows_pool_path_produces_parseable_toml(self):
+        # Regression: on Windows the materialised pool path is an absolute path
+        # with backslashes (C:\Users\...). Interpolated raw into a TOML *basic*
+        # string it became invalid escape sequences (\U, \A, \L, ...) and the
+        # whole config failed to parse, silently breaking the live path on the
+        # flagship .exe. The path must survive as-is.
+        import tomllib
+
+        win_path = r"C:\Users\Alice\AppData\Local\L2ArbBot\.l2arb\pools\arbitrum.toml"
+        cfg = setup.arbitrum_quickstart_config(
+            ws_url="wss://arb/ws", http_url="https://arb/http", pool_registry=win_path
+        )
+        parsed = tomllib.loads(cfg)  # must not raise TOMLDecodeError
+        self.assertEqual(parsed["chains"][0]["pool_registry"], win_path)
+
+    def test_toml_str_escapes_backslashes_and_quotes(self):
+        self.assertEqual(setup._toml_str(r"C:\a\b"), '"C:\\\\a\\\\b"')
+        self.assertEqual(setup._toml_str('a"b'), '"a\\"b"')
+        self.assertEqual(setup._toml_str("/posix/path"), '"/posix/path"')
+
 
 class FillEndpointsTest(unittest.TestCase):
     def test_replaces_named_chain_endpoints_only(self):

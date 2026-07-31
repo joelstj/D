@@ -118,7 +118,14 @@ class Service:
             kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP  # type: ignore[attr-defined]
         else:
             kwargs["start_new_session"] = True
-        self.proc = subprocess.Popen(_resolve(self.cmd, full_env), **kwargs)
+        try:
+            self.proc = subprocess.Popen(_resolve(self.cmd, full_env), **kwargs)
+        except BaseException:
+            # A failed spawn (e.g. missing binary → OSError) must not leak the log
+            # file handle we just opened; nothing else will close it since
+            # `stop()` early-returns while `self.proc` is None.
+            self._close_log()
+            raise
         self._started_once = True
 
     def restart(self) -> None:
@@ -168,6 +175,14 @@ class Service:
                 else:
                     os.killpg(os.getpgid(self.proc.pid), signal.SIGKILL)
             except (ProcessLookupError, OSError):
+                pass
+            # Reap the killed child so it does not linger as a <defunct> zombie.
+            # The SIGTERM wait-loop above reaps via poll() on a clean exit; the
+            # SIGKILL escalation path must reap explicitly (SIGKILL can't be
+            # caught, so the process is already dead — wait() returns promptly).
+            try:
+                self.proc.wait(timeout=grace)
+            except (subprocess.TimeoutExpired, ValueError, OSError):
                 pass
         self._close_log()
 

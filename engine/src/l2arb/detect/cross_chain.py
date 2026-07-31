@@ -80,6 +80,17 @@ def _token_of(pool: PoolState, key: TokenKey) -> Token:
     return pool.token0 if key == pool.token0.key else pool.token1
 
 
+def _gate_fails(pool: PoolState, ctx: ProfitContext) -> bool:
+    """Whether ``pool`` must not be priced: unverified, or (when ``ctx`` opts in)
+    stale. Shared by the pre-sizing gate in :func:`cross_chain_two_hop` and the
+    defence-in-depth check in :func:`_build_opportunity` so both stay in lock-step
+    with the same-chain gate in ``detect/profit.py`` (CLAUDE.md §3)."""
+    if not pool.verified:
+        return True
+    now_ts, max_age = ctx.now_ts, ctx.max_pool_age_seconds
+    return now_ts is not None and max_age is not None and pool.blockstamp.is_stale(now_ts, max_age)
+
+
 def cross_chain_two_hop(
     buy_graph: RateGraph,
     sell_graph: RateGraph,
@@ -109,10 +120,30 @@ def cross_chain_two_hop(
         return None
     if not registry.are_fungible(asset_x.key, asset_y.key):
         return None  # the asset is not bridge-fungible across these chains
+    # The profit math below subtracts the sell-chain numeraire output from the
+    # buy-chain size, and feeds the bridged asset amount straight into the
+    # sell-side swap — both assume a shared base-unit scale. That only holds when
+    # the numeraire AND the bridged asset carry the *same decimals* on both
+    # chains. If they differ (a real possibility — e.g. USDT is 18-dp on BNB Chain
+    # but 6-dp elsewhere), the unmatched scale would fabricate an enormous phantom
+    # profit stamped verified:true. There is no rescaling here, so exclude the
+    # pair loudly rather than misprice it (CLAUDE.md §3 — "reject or flag", never
+    # emit a phantom). The five shipped chains all use consistent decimals, so
+    # this never fires there; it guards a new/misconfigured chain.
+    if (
+        num_x.token.decimals != num_y.token.decimals
+        or asset_x.token.decimals != asset_y.token.decimals
+    ):
+        return None
 
     buy_pool = _direct_pool(buy_graph, num_x.key, asset_x.key)
     sell_pool = _direct_pool(sell_graph, asset_y.key, num_y.key)
     if buy_pool is None or sell_pool is None:
+        return None
+    # Gate BEFORE the size search prices anything — matching detect/profit.py and
+    # the guarantee in docs/DATA_INTEGRITY.md that an unverified or stale pool is
+    # rejected before any AMM/sizing math, not merely before emission.
+    if _gate_fails(buy_pool, buy_ctx) or _gate_fails(sell_pool, sell_ctx):
         return None
     bquote = bridge.quote(asset_symbol, buy_chain, sell_chain, 1)
     if bquote is None:
@@ -153,25 +184,12 @@ def _build_opportunity(
     sell_ctx: ProfitContext,
     min_profit_bps: float,
 ) -> Opportunity | None:
-    # Checked first, before any AMM math: never report a spread resting on an
-    # unverified or (when the context opts in) stale pool on either leg
-    # (CLAUDE.md §3) — mirrors the same-chain gate in detect/profit.py.
+    # Defence in depth: cross_chain_two_hop already gates both pools *before* the
+    # size search, so this never rejects in practice — it keeps _build_opportunity
+    # safe to call standalone and never reports a spread resting on an unverified
+    # or (when the context opts in) stale pool (CLAUDE.md §3).
     verified = buy_pool.verified and sell_pool.verified
-    if not verified:
-        return None
-    buy_now, buy_age = buy_ctx.now_ts, buy_ctx.max_pool_age_seconds
-    if (
-        buy_now is not None
-        and buy_age is not None
-        and buy_pool.blockstamp.is_stale(buy_now, buy_age)
-    ):
-        return None
-    sell_now, sell_age = sell_ctx.now_ts, sell_ctx.max_pool_age_seconds
-    if (
-        sell_now is not None
-        and sell_age is not None
-        and sell_pool.blockstamp.is_stale(sell_now, sell_age)
-    ):
+    if _gate_fails(buy_pool, buy_ctx) or _gate_fails(sell_pool, sell_ctx):
         return None
     bought = quote.amount_out(buy_pool, num_x_key, size)
     bridged = bquote.net_after(bought)

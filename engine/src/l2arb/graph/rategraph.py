@@ -81,8 +81,9 @@ class RateGraph:
         self._pools[pool.address] = pool
         if self._priceable(pool):
             t0, t1 = pool.token0.key, pool.token1.key
-            self._add_edge(self._make_edge(pool, t0, t1))
-            self._add_edge(self._make_edge(pool, t1, t0))
+            for edge in (self._make_edge(pool, t0, t1), self._make_edge(pool, t1, t0)):
+                if edge is not None:
+                    self._add_edge(edge)
         touched = {pool.token0.key, pool.token1.key}
         self._dirty |= touched
         return touched
@@ -114,11 +115,21 @@ class RateGraph:
         self._dirty |= touched
         return touched
 
-    def _make_edge(self, pool: PoolState, src: TokenKey, dst: TokenKey) -> RateEdge:
+    def _make_edge(self, pool: PoolState, src: TokenKey, dst: TokenKey) -> RateEdge | None:
         base_rate = quote.marginal_rate(pool, src)
         dec_in = pool.token0.decimals if src == pool.token0.key else pool.token1.decimals
         dec_out = pool.token1.decimals if src == pool.token0.key else pool.token0.decimals
         human_rate = base_rate * (10.0 ** (dec_in - dec_out))
+        # A non-positive or non-finite marginal rate has no defined -log weight
+        # (`-math.log(0.0)` raises ValueError). This is reachable from a *valid*,
+        # verified pool: an extremely imbalanced StableSwap whose marginal probe
+        # swap floors to zero output returns a 0.0 rate (`amm/stableswap.py`).
+        # Treat such a pool like an untradable one — stored for provenance but
+        # contributing no edge, so no cycle routes through it — rather than
+        # crashing the whole /detect batch and losing every other opportunity in
+        # it ("fail loud on bad data, degrade gracefully"; CLAUDE.md §5).
+        if not math.isfinite(human_rate) or human_rate <= 0.0:
+            return None
         return RateEdge(src, dst, pool.address, human_rate, -math.log(human_rate))
 
     def _add_edge(self, edge: RateEdge) -> None:

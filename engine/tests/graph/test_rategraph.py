@@ -15,7 +15,7 @@ from hypothesis import strategies as st
 
 from l2arb.graph.rategraph import RateGraph
 from l2arb.model.blockstamp import Blockstamp
-from l2arb.model.pool import PoolKind, PoolState, V2Reserves
+from l2arb.model.pool import PoolKind, PoolState, StableSwapState, V2Reserves
 from l2arb.model.token import Token
 
 pytestmark = pytest.mark.unit
@@ -39,6 +39,20 @@ def v2_pool(addr: str, t0: Token, t1: Token, r0: int, r1: int, fee: int = 3000) 
     )
 
 
+def stable_pool(
+    addr: str, t0: Token, t1: Token, bal0: int, bal1: int, amp: int = 100, fee: int = 1000
+) -> PoolState:
+    return PoolState(
+        address=addr,
+        kind=PoolKind.STABLESWAP,
+        token0=t0,
+        token1=t1,
+        fee_pips=fee,
+        blockstamp=BS,
+        stable=StableSwapState(balance0=bal0, balance1=bal1, amp=amp),
+    )
+
+
 # ------------------------------- mechanics -------------------------------- #
 def test_upsert_adds_two_directed_edges_and_marks_dirty() -> None:
     g = RateGraph(CHAIN)
@@ -49,6 +63,24 @@ def test_upsert_adds_two_directed_edges_and_marks_dirty() -> None:
     assert {e.dst for e in g.out_edges(B.key)} == {A.key}
     assert g.pop_dirty() == {A.key, B.key}
     assert g.pop_dirty() == set()  # cleared
+
+
+def test_degenerate_stableswap_zero_rate_edge_is_skipped_not_crashed() -> None:
+    # Regression: an extremely imbalanced — but valid, tradable, verified —
+    # StableSwap pool returns a 0.0 marginal rate in one direction. `_make_edge`
+    # used to compute `-math.log(0.0)`, raising ValueError and taking down the
+    # entire /detect batch (no try/except downstream). The degenerate edge must
+    # be skipped like an untradable one, never crash.
+    g = RateGraph(CHAIN)
+    # A->C floors to 0.0; C->A is a huge-but-finite rate.
+    touched = g.upsert_pool(stable_pool("0x" + "cc" * 20, A, C, 10**24, 5))
+    assert touched == {A.key, C.key}
+    assert g.edges_between(A.key, C.key) == []  # the 0.0-rate direction: no edge
+    assert len(g.edges_between(C.key, A.key)) == 1  # finite direction survives
+    # A healthy pool in the same graph is entirely unaffected — the batch that
+    # contains the degenerate pool is not lost.
+    g.upsert_pool(v2_pool("0x" + "aa" * 20, A, B, 10**18, 3000 * 10**6))
+    assert len(g.edges_between(A.key, B.key)) == 1
 
 
 def test_edge_rate_is_decimal_adjusted_human_price() -> None:
