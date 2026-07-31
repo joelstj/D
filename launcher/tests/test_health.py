@@ -190,6 +190,21 @@ class EvaluateTest(unittest.TestCase):
         a = sh.evaluate(Probe(alive=True, responsive=False), 1016, POLICY)  # 16s >= 15s
         self.assertEqual(a, Action.RESTART)
 
+    def test_restart_restores_startup_grace(self):
+        # Regression: mark_started must re-arm the startup grace (reset
+        # ever_healthy). A service that was healthy, then restarted, then boots
+        # slowly must get the full startup_grace again — not the much shorter
+        # degraded window — or it can be re-restarted mid-boot into a crash-loop.
+        sh = started(now=1000)
+        sh.evaluate(Probe(alive=True, responsive=True), 1000, POLICY)  # becomes healthy
+        self.assertTrue(sh.ever_healthy)
+        sh.mark_started(now=2000)  # a restart
+        self.assertFalse(sh.ever_healthy)  # grace re-armed for the new instance
+        # Unresponsive 10s into the reboot (< 30s grace) is patient, not degraded.
+        a = sh.evaluate(Probe(alive=True, responsive=False), 2010, POLICY)
+        self.assertEqual(a, Action.NONE)
+        self.assertEqual(sh.phase, Phase.STARTING)
+
     def test_restart_budget_exhausted_gives_up_and_is_sticky(self):
         sh = started(now=1000)
         sh.restarts = POLICY.max_restarts  # already spent the budget

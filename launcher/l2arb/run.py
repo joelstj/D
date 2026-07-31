@@ -13,6 +13,7 @@ initiated here.
 
 from __future__ import annotations
 
+import signal
 import time
 import urllib.error
 import urllib.request
@@ -22,6 +23,25 @@ from . import config, console, state
 from .health import HealthMonitor
 from .paths import Layout
 from .proc import Service
+
+
+def _on_sigterm(_signum: int, _frame: object) -> None:  # pragma: no cover - signal path
+    """Turn SIGTERM into the same graceful KeyboardInterrupt path as Ctrl-C."""
+    raise KeyboardInterrupt
+
+
+def _install_sigterm_handler() -> None:
+    """Map SIGTERM (``kill``/``docker stop``) onto the graceful shutdown path.
+
+    Python installs a raising handler only for SIGINT (Ctrl-C); SIGTERM keeps the
+    OS default (immediate terminate), so none of run()'s cleanup would run and the
+    child services — which live in their own process group (``start_new_session``)
+    and thus don't receive the launcher's SIGTERM — would be orphaned, holding
+    their ports for the next run. Best-effort: only valid in the main thread."""
+    try:
+        signal.signal(signal.SIGTERM, _on_sigterm)
+    except (ValueError, OSError):  # pragma: no cover - non-main-thread / unsupported
+        pass
 
 
 def wait_http(url: str, timeout: float = 30.0) -> bool:
@@ -77,6 +97,7 @@ def run(lo: Layout, *, live: bool, port: int, open_browser: bool = True) -> int:
             live = False
 
     lo.ensure_state_dirs()
+    _install_sigterm_handler()
     services: list[Service] = []
 
     try:
@@ -109,28 +130,33 @@ def run(lo: Layout, *, live: bool, port: int, open_browser: bool = True) -> int:
             console.warn(
                 f"dashboard health check timed out; try {url} manually (see .l2arb/logs/dashboard.log)"
             )
+
+        if open_browser:
+            try:
+                webbrowser.open(url)
+            except Exception:  # noqa: BLE001 - a flaky BROWSER env must never kill the run
+                # webbrowser can raise webbrowser.Error (not an OSError) on a
+                # misconfigured/headless host; opening a browser is best-effort.
+                pass
+
+        # Construct the monitor inside the guard too: if this (or the browser
+        # open above) raises, the started services must still be stopped.
+        monitor = HealthMonitor(services)
     except BaseException:
-        # A crash anywhere in the startup sequence above, or Ctrl-C while
-        # wait_http was polling (KeyboardInterrupt — a BaseException, not an
-        # Exception, so it must be caught here too) must not leave an
-        # already-started engine/ingestion/dashboard process orphaned, holding
-        # its port for the *next* `l2arb run`. The HealthMonitor's own cleanup
-        # (below) only covers services it was actually handed; nothing runs it
-        # if we never get that far, so this is the only place that can stop
-        # them. Reverse order mirrors HealthMonitor.run()'s own shutdown.
+        # A crash anywhere in the startup/handoff above, or Ctrl-C / SIGTERM while
+        # wait_http was polling (a BaseException, not an Exception, so it must be
+        # caught here too) must not leave an already-started engine/ingestion/
+        # dashboard process orphaned, holding its port for the *next* `l2arb run`.
+        # Once inside HealthMonitor.run() its own finally handles cleanup; this is
+        # the only place that can stop them before that. Reverse order mirrors
+        # HealthMonitor.run()'s own shutdown.
         for svc in reversed(services):
             svc.stop()
         raise
-
-    if open_browser:
-        try:
-            webbrowser.open(url)
-        except OSError:
-            pass
 
     # Hand off to the continuous health monitor: a live HUD that probes each
     # service, self-diagnoses faults, and self-heals by restarting a crashed or
     # wedged process (with backoff + a bounded budget). Recovery restarts infra
     # only — it never signs, submits, or re-broadcasts anything; execution stays
     # paper-by-default and human-gated.
-    return HealthMonitor(services).run()
+    return monitor.run()

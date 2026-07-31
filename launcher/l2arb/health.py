@@ -124,9 +124,20 @@ class ServiceHealth:
     latency_ms: float | None = None
 
     def mark_started(self, now: float, pid: int | None = None) -> None:
-        """Record a (re)start: reset per-instance timers; keep the restart budget."""
+        """Record a (re)start: reset per-instance timers; keep the restart budget.
+
+        ``ever_healthy`` is reset too, deliberately: the startup-grace patience in
+        :meth:`evaluate` keys off it ("be patient while a never-yet-healthy
+        *process* is still booting"), and a freshly restarted instance is booting
+        again. Without this reset a restarted service that boots slowly (e.g. the
+        engine warming numba in its lifespan before /health answers) would be
+        governed by the much shorter ``degraded_restart_after`` instead of
+        ``startup_grace`` and could be re-restarted mid-boot into a crash-loop
+        until the budget is spent. The restart budget itself (``restarts``) is
+        intentionally NOT reset here."""
         self.started_at = now
         self.phase = Phase.STARTING
+        self.ever_healthy = False
         self.healthy_since = None
         self.unresponsive_since = None
         self.last_probe = None

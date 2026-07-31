@@ -22,7 +22,9 @@ ENGINE_PORT = 8080
 INGEST_WS_PORT = 9001
 # The ingestion observability router (GET /health + /metrics) is bound to
 # `metrics_bind` in app/pipeline.rs, i.e. :9100 in config.example.toml — so the
-# health probe targets 9100, not the (currently unserved) health_bind :9090.
+# health probe targets 9100. (`health_bind` :9090 is now also served as a
+# dedicated /health listener, but 9100 remains the probe target for both
+# /health and /metrics.)
 INGEST_METRICS_PORT = 9100
 DASHBOARD_PORT = 8787
 
