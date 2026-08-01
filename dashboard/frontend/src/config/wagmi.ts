@@ -1,15 +1,21 @@
 import { http, createConfig } from "wagmi";
 import { arbitrum, base, ink, optimism, polygon, unichain } from "wagmi/chains";
-import { coinbaseWallet, injected } from "wagmi/connectors";
+import { coinbaseWallet, injected, metaMask } from "wagmi/connectors";
 
 /**
- * wagmi v2 configuration. `injected()` covers MetaMask (and any EIP-1193
- * browser wallet) with no project id required; Coinbase Wallet is offered as a
- * second option. Chains match the L2s the engine scans.
+ * wagmi v2 configuration. The first-class `metaMask()` connector uses the
+ * **MetaMask SDK** (extension + mobile deep-link/QR), giving full wallet
+ * connect/switch/sign operation; `injected()` is kept as a generic EIP-1193
+ * fallback for any other browser wallet, and Coinbase Wallet as a third option.
+ * Chains match the L2s the engine scans.
  */
 export const wagmiConfig = createConfig({
   chains: [base, arbitrum, optimism, polygon, unichain, ink],
-  connectors: [injected(), coinbaseWallet({ appName: "L2 Arbitrage GUI" })],
+  connectors: [
+    metaMask({ dappMetadata: { name: "L2 Arbitrage Dashboard" } }),
+    injected(),
+    coinbaseWallet({ appName: "L2 Arbitrage GUI" }),
+  ],
   transports: {
     [base.id]: http(),
     [arbitrum.id]: http(),

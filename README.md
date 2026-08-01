@@ -46,6 +46,16 @@ bottlenecks are visible in the dashboard's *Pipeline Latency* HUD
 execution readiness (`GET /api/health/execution`) without ever broadcasting. See
 **[`docs/LATENCY.md`](docs/LATENCY.md)**.
 
+The dashboard also has a **Contracts** panel (`/api/contracts/*`): a per-chain
+*compile → deploy → monitor* status board, one-click **compile** (server-side
+Hardhat) and **deploy** (the unsigned deployment is **signed in your MetaMask** —
+the backend holds no key and never broadcasts), automatic recording of the
+deployed address into `.env` + `contracts/deployments/`, and a strictly read-only
+multi-chain **readiness sweep** (`getCode` + an `aavePremiumBps()` staticCall) —
+also runnable headless via `node scripts/contract_stress_test.mjs`. Profit from
+every successful trade is forwarded straight to the executing wallet; the contract
+retains no funds.
+
 ## Quick start
 
 ### Option A — the launcher (recommended, cross-platform)

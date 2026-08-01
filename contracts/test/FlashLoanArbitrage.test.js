@@ -130,6 +130,37 @@ describe("FlashLoanArbitrage (offline mechanics)", () => {
     expect(await f.usdc.balanceOf(f.arb.target)).to.equal(0n);
   });
 
+  // Regression for the dashboard "profit straight to the connected wallet" path:
+  // when profitReceiver is left as address(0) (the dashboard's default when the
+  // operator has not named a different recipient), the contract must pay the
+  // whole profit to msg.sender — the wallet that SIGNED the tx (the connected
+  // MetaMask account, which carries EXECUTOR_ROLE) — and retain nothing itself.
+  it("profitReceiver=0 deposits profit into the tx signer's wallet (connected-wallet default), zero residual", async () => {
+    const f = await deploy();
+    const amount = e(10000, 6n);
+
+    const out1 = getAmountOut(amount, e(180000, 6n), e(100), FEE_BPS);
+    const generated = getAmountOut(out1, e(100), e(220000, 6n), FEE_BPS);
+    const owed = amount + (amount * AAVE_PREMIUM_BPS) / 10000n;
+    const expectedProfit = generated - owed;
+    expect(expectedProfit).to.be.gt(0n);
+
+    const params = {
+      ...twoHopParams(f, Provider.AAVE_V3, amount),
+      profitReceiver: ethers.ZeroAddress, // unset => pay the signer
+    };
+
+    const signerBefore = await f.usdc.balanceOf(f.bot.address);
+    const receiverBefore = await f.usdc.balanceOf(f.receiver.address);
+    await f.arb.connect(f.bot).executeArbitrage(params);
+
+    // Signer (connected wallet) got the exact profit; the unrelated fixture
+    // receiver got nothing; the contract kept nothing.
+    expect((await f.usdc.balanceOf(f.bot.address)) - signerBefore).to.equal(expectedProfit);
+    expect(await f.usdc.balanceOf(f.receiver.address)).to.equal(receiverBefore);
+    expect(await f.usdc.balanceOf(f.arb.target)).to.equal(0n);
+  });
+
   it("executes a profitable 2-hop arb via Balancer V2 (0 fee)", async () => {
     const f = await deploy();
     const amount = e(10000, 6n);

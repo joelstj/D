@@ -337,3 +337,68 @@ safety-critical validation path whose end-to-end correctness needs the real `l2a
 engine, which is BLOCKED in this environment; recorded with a precise recommended fix
 rather than shipped speculatively. Also recorded: cross-chain-executor GENERIC
 hardening, in-range V3/V4 liquidity events, and assorted lower-severity items.
+
+---
+
+## 10. Dashboard contract deploy/monitor + MetaMask + live stress test (2026-08-01)
+
+Branch `claude/flash-contract-stress-test-l5smfa`. Added an operator-facing
+**Contracts** capability to the dashboard — compile, deploy, monitor, and a
+read-only live readiness sweep — plus first-class MetaMask SDK wallet operation,
+all built to the binding safety model (root §2/§3, contracts golden rule 5):
+**the backend never holds a key and never broadcasts; every on-chain write is
+signed by the operator's MetaMask.** Every gate re-run green (contracts 40
+offline, dashboard `pnpm verify` = typecheck + 102 backend + 34 frontend +
+build). Foundry Solidity suite remains BLOCKED (`forge` not installed — recorded,
+not faked).
+
+What was built, and the safety reasoning:
+
+1. **Compile / deploy buttons + status monitor (`dashboard/backend/src/contracts/*`,
+   `frontend/src/components/ContractsPanel.tsx`).** New `/api/contracts/*` surface:
+   `status` (per-chain *verify-provider → compile → deploy → ready* monitor),
+   `compile` (server-side Hardhat — no chain, no key), `artifact/:name` (serves the
+   compiled ABI+bytecode), `deploy-params/:network` (constructor args from the
+   **verified** `config/addresses.js` only — an unverified chain 400s, never
+   inventing an address per golden rule 7), `deployment` (records a deploy),
+   `readiness` (the sweep). The **deploy** flow is the sanctioned pattern: the
+   browser fetches the artifact and **`useDeployContract` signs it in MetaMask**;
+   the backend only *records the resulting public address* into
+   `contracts/deployments/<net>.json` **and** the master `.env`
+   (`FLASH_LOAN_EXECUTOR_ADDRESS_<NET>`, filling the singular probe var/chain only
+   if empty). The `.env` writer (`envFile.ts`) refuses any non-address key, so a
+   secret can never be written.
+
+2. **Full MetaMask SDK integration (`frontend/src/config/wagmi.ts`,
+   `WalletButton.tsx`).** Added the first-class wagmi `metaMask()` connector
+   (wraps `@metamask/sdk`; extension + mobile deep-link/QR) alongside the existing
+   injected/Coinbase fallbacks; the connect button prefers it. MetaMask *is* the
+   "human-authorised signer" the whole product is architected around — this is the
+   piece that makes gated live deploy/execute possible without a server-side key.
+
+3. **Profit → connected wallet.** The atomic executor **already** forwards 100% of
+   profit to `profitReceiver` (or `msg.sender` when unset) and retains nothing
+   (`FlashLoanArbitrage._settle`); added the missing-coverage regression test for
+   the `profitReceiver = 0` → tx-signer fallback (the "profit straight to your
+   connected wallet by default" path) and surfaced the guarantee in the UI. So #5
+   was a *wiring/verification* task, not a contract rewrite.
+
+4. **Live stress test — honestly shaped.** A real profitable arb can't be forced on
+   mainnet (profit-or-revert ⇒ a blind fire just reverts), and unattended
+   broadcast is the forbidden line. So the "stress test across every chain +
+   cross-chain" is delivered as: deploy the real contracts per chain via MetaMask,
+   then a **strictly read-only** readiness sweep (`getCode` + `aavePremiumBps()`
+   staticCall) over every recorded deployment — exposed both in the UI ("Run
+   readiness sweep") and headless (`scripts/contract_stress_test.mjs`, raw
+   JSON-RPC, offline-safe/exit-0 like `e2e_smoke.py`). Real execution stays a
+   human-signed MetaMask action.
+
+**Deliberately NOT built (crosses binding invariants):** a backend-held hot key,
+any server-side broadcast, or an unattended auto-fire loop. **Honest limitation
+recorded:** the dashboard's engine-fed opportunities carry detection data (pool
+addresses + token symbols), *not* an executable `ArbParams` route (router
+addresses, DexType, calldata) — see `engineMap.ts` — so a one-click *live execute*
+of an arbitrary opportunity is not constructible without fabricating route data
+(invariant 1). Live execution therefore requires the real route params; the panel
+delivers deploy + read-only simulation and leaves execution to the human-signed
+path. Full notes: `docs/notes-flash-contract-stress-test.md`.

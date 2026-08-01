@@ -21,6 +21,9 @@ import { LatencyMonitor } from "./arbitrage/latency";
 import { ExecutionLatencyProbe } from "./arbitrage/executionLatency";
 import { WsHub } from "./ws/hub";
 import { createApiRouter } from "./routes/api";
+import { createContractsRouter } from "./routes/contracts";
+import { ContractService } from "./contracts/service";
+import { ViemChainProbe } from "./contracts/chainProbe";
 import { NETWORKS } from "./arbitrage/networks";
 import { createLogger } from "./util/logger";
 
@@ -51,6 +54,8 @@ export interface BuildOptions {
    *  `<backend>/.data/settings.json`. Tests should pass an isolated path so a
    *  stray real file from local dev never leaks into a test run. */
   settingsFile?: string;
+  /** Injected contracts service (tests supply an isolated-paths / stubbed one). */
+  contractService?: ContractService;
 }
 
 /**
@@ -138,6 +143,18 @@ export function buildServer(opts: BuildOptions = {}): AppHandles {
       executionProbe,
     }),
   );
+
+  // Contracts panel surface: compile / deploy-record / status monitor / read-only
+  // multi-chain readiness. Deploys are signed by the operator's browser wallet;
+  // this service holds no key and never broadcasts (invariant 3).
+  const contractService =
+    opts.contractService ??
+    new ContractService({
+      rpcUrls: env.rpcUrls,
+      envExecutors: env.executorAddresses,
+      chainProbe: new ViemChainProbe(env.rpcUrls),
+    });
+  app.use("/api/contracts", createContractsRouter(contractService));
 
   // Optional single-origin mode: serve the built frontend (frontend/dist) on the
   // same server as the API + WebSocket. The launcher / .exe sets SERVE_STATIC_DIR

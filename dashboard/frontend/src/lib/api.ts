@@ -1,10 +1,16 @@
 import type {
   ArbitrageOpportunity,
+  CompileStatus,
+  ContractArtifact,
+  ContractsStatus,
+  DeployParams,
+  DeploymentRecord,
   EngineStats,
   ExecutionLatencySample,
   ExecutionResult,
   LatencySnapshot,
   NetworkInfo,
+  ReadinessResult,
   Settings,
 } from "./types";
 
@@ -64,4 +70,39 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ enabled }),
     }),
+
+  /**
+   * Contracts surface (compile / deploy-record / status monitor / readiness).
+   * The deploy transaction itself is signed by the operator's MetaMask in the
+   * browser — these calls only compile, read status, resolve deploy arguments,
+   * and record the *public result*. No key ever reaches the backend.
+   */
+  contracts: {
+    status: () => request<ContractsStatus>("/api/contracts/status"),
+    compile: () =>
+      request<{ ok: boolean; output: string; artifacts: CompileStatus[] }>(
+        "/api/contracts/compile",
+        { method: "POST" },
+      ),
+    artifact: (name: string) => request<ContractArtifact>(`/api/contracts/artifact/${name}`),
+    deployParams: (network: string, admin: string) =>
+      request<DeployParams>(
+        `/api/contracts/deploy-params/${network}?admin=${encodeURIComponent(admin)}`,
+      ),
+    recordDeployment: (body: {
+      network: string;
+      chainId: number;
+      address: string;
+      crossChainAddress?: string | null;
+      deployer?: string;
+      txHash?: string;
+      deployedAt?: string;
+    }) =>
+      request<{ record: DeploymentRecord; env: { file: string; created: boolean; updatedKeys: string[] } }>(
+        "/api/contracts/deployment",
+        { method: "POST", body: JSON.stringify(body) },
+      ),
+    readiness: () =>
+      request<{ results: ReadinessResult[]; probed: boolean }>("/api/contracts/readiness"),
+  },
 };
