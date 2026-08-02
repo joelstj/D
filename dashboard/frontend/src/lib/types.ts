@@ -164,6 +164,79 @@ export interface Snapshot {
   latency?: LatencySnapshot;
 }
 
+/* ------------------------------------------------------------ Contracts --- */
+
+export type ContractAction = "verify-provider" | "compile" | "deploy" | "ready";
+
+export interface DeploymentRecord {
+  network: string;
+  chainId: number;
+  address: string;
+  crossChainAddress: string | null;
+  deployer?: string;
+  txHash?: string;
+  deployedAt: string;
+}
+
+export interface CompileStatus {
+  name: string;
+  role: "atomic" | "crosschain";
+  compiled: boolean;
+  bytecodeHash: string | null;
+  bytecodeSize: number | null;
+}
+
+export interface NetworkContractStatus {
+  key: string;
+  name: string;
+  chainId: number;
+  explorer: string;
+  providerVerified: boolean;
+  aavePool: string | null;
+  balancerVault: string | null;
+  deployment: DeploymentRecord | null;
+  envWired: boolean;
+  action: ContractAction;
+}
+
+export interface ContractsStatus {
+  available: boolean;
+  contractsDir: string;
+  compiled: boolean;
+  artifacts: CompileStatus[];
+  networks: NetworkContractStatus[];
+  generatedAt: number;
+}
+
+export interface ContractArtifact {
+  contractName: string;
+  abi: unknown[];
+  bytecode: `0x${string}`;
+}
+
+export interface DeployParams {
+  network: string;
+  chainId: number;
+  contract: string;
+  providerVerified: boolean;
+  aavePool: string;
+  balancerVault: string;
+  args: string[];
+}
+
+export interface ReadinessResult {
+  network: string;
+  chainId: number;
+  address: string | null;
+  crossChainAddress: string | null;
+  configured: boolean;
+  hasCode: boolean;
+  premiumBps: number | null;
+  crossChainHasCode: boolean | null;
+  healthy: boolean;
+  error: string | null;
+}
+
 /** Envelope for every WebSocket message. */
 export interface WsEnvelope<T = unknown> {
   type:
