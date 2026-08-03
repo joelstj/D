@@ -322,7 +322,13 @@ def main() -> int:
             bad(f"paper execute unexpected: {st} {ex}")
 
         # 9. LiveExecutor MUST refuse to broadcast
-        http_json(f"{api}/settings", "PATCH", {"executionMode": "live"})
+        # cooldownMs=0 so step 8's paper execute (same "arbitrum" network,
+        # moments ago) can't shadow this check behind an unrelated
+        # riskLimitBlock() cooldown rejection — executeOpportunity() checks
+        # riskLimitBlock() before it ever selects an executor, so without this
+        # the assertion below can fail on "cooldown active" instead of
+        # genuinely exercising (or failing to exercise) LiveExecutor at all.
+        http_json(f"{api}/settings", "PATCH", {"executionMode": "live", "cooldownMs": 0})
         lid = ""
         for _ in range(15):
             _, opps = http_json(f"{api}/opportunities")

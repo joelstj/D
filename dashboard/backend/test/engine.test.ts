@@ -35,6 +35,38 @@ describe("ArbitrageEngine", () => {
     expect(engine.getStats().scans).toBe(0);
   });
 
+  it("still pushes a stats event on a disabled tick, so connected clients see running:false", async () => {
+    // Regression: tick() used to `return` on the disabled path before ever
+    // reaching emitStats() — the header's Play/Pause button then kept showing
+    // "Running" indefinitely after a pause, since getStats() was only ever
+    // correct on demand, not pushed to already-connected WS clients.
+    const store = new SettingsStore({ engineEnabled: false });
+    const provider = new StubProvider([makeOpportunity()]);
+    const engine = new ArbitrageEngine(store, provider, pairExecutors());
+
+    const stats = await new Promise((resolve) => {
+      engine.once("stats", resolve);
+      void engine.tick();
+    });
+    expect(stats).toMatchObject({ running: false });
+  });
+
+  it("pushes a stats event immediately when engineEnabled is toggled, without waiting for a tick", async () => {
+    const store = new SettingsStore();
+    const provider = new StubProvider([makeOpportunity()]);
+    const engine = new ArbitrageEngine(store, provider, pairExecutors());
+    await engine.start();
+    try {
+      const stats = await new Promise((resolve) => {
+        engine.once("stats", resolve);
+        store.patch({ engineEnabled: false });
+      });
+      expect(stats).toMatchObject({ running: false });
+    } finally {
+      await engine.stop();
+    }
+  });
+
   it("executes an opportunity and records the result in stats", async () => {
     const store = new SettingsStore({ minProfitUsd: 0, minProfitBps: 0 });
     const provider = new StubProvider([makeOpportunity({ netProfitUsd: 175 })]);
@@ -113,6 +145,21 @@ describe("ArbitrageEngine", () => {
     expect(engine.getOpportunities().find((o) => o.id === opp.id)).toBeUndefined();
   });
 
+  it("alerts (not just throws) when executing an expired/already-gone opportunity", async () => {
+    // Regression: this was the only rejection branch in executeOpportunity that
+    // threw without emitting an alert first — a click on a row that expired or
+    // was executed a moment earlier (rows live only 6-12s by design) failed
+    // completely silently in the UI: no toast, no error, the spinner just
+    // stopped with no explanation.
+    const store = new SettingsStore();
+    const engine = new ArbitrageEngine(store, new StubProvider([]), pairExecutors());
+    const alerts: string[] = [];
+    engine.on("alert", (a) => alerts.push(a.message));
+
+    await expect(engine.executeOpportunity("does-not-exist")).rejects.toThrow(/not found|expired/i);
+    expect(alerts.some((m) => /not found|expired/i.test(m))).toBe(true);
+  });
+
   it("rejects an opportunity on a network the user hasn't enabled, on every provider", async () => {
     // Regression: previously only SimulatedProvider itself respected `networks` —
     // the engine-level filter must reject it too, so ExternalProvider (the real
@@ -152,7 +199,38 @@ describe("ArbitrageEngine", () => {
     expect(engine.getOpportunities()).toHaveLength(0);
   });
 
-  it("rejects an opportunity denominated in a different asset than baseToken", async () => {
+  it("rejects an opportunity whose route touches a token outside the token universe", async () => {
+    const store = new SettingsStore({
+      baseToken: "USDC",
+      tokens: ["USDC", "WETH"],
+      minProfitUsd: 0,
+      minProfitBps: 0,
+    });
+    const provider = new StubProvider([
+      makeOpportunity({
+        tokenIn: "SHIB",
+        route: [
+          { dex: "uniswap-v3", tokenIn: "SHIB", tokenOut: "WETH", price: 1, poolFeeBps: 5 },
+          { dex: "aerodrome", tokenIn: "WETH", tokenOut: "SHIB", price: 1, poolFeeBps: 5 },
+        ],
+      }),
+    ]);
+    const engine = new ArbitrageEngine(store, provider, pairExecutors());
+
+    await engine.tick();
+    expect(engine.getOpportunities()).toHaveLength(0);
+  });
+
+  it("accepts an opportunity denominated in an asset that differs from baseToken but is in the token universe", async () => {
+    // baseToken is the operator's default/preferred asset (it anchors
+    // SimulatedProvider's synthetic routes); it does not restrict which
+    // numeraire a REAL detected opportunity may start/end in — the engine
+    // closes each cycle in whichever configured hub token actually produced
+    // the edge (ingestion `[[chains]].hubs`), not one the operator pre-picks.
+    // Only membership in `tokens ∪ {baseToken}` is enforced (see qualifies()).
+    // Was: an exact `opp.tokenIn === s.baseToken` check silently dropped every
+    // real opportunity not denominated in baseToken — found live via
+    // scripts/e2e_smoke.py against a real Arbitrum block, not simulated data.
     const store = new SettingsStore({
       baseToken: "USDC",
       tokens: ["USDC", "WETH"],
@@ -163,7 +241,7 @@ describe("ArbitrageEngine", () => {
     const engine = new ArbitrageEngine(store, provider, pairExecutors());
 
     await engine.tick();
-    expect(engine.getOpportunities()).toHaveLength(0);
+    expect(engine.getOpportunities()).toHaveLength(1);
   });
 
   it("accepts an opportunity that matches every enabled network/DEX/token control", async () => {

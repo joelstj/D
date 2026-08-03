@@ -68,6 +68,45 @@ describe("ExternalProvider opportunities survive qualifies() (regression)", () =
     expect(engine.getOpportunities()).toHaveLength(1);
   });
 
+  it("surfaces a real opportunity whose numeraire differs from the configured baseToken", async () => {
+    // The engine closes a detected cycle in whichever configured hub token
+    // (ingestion `[[chains]].hubs`, typically WETH *and* USDC *and* USDT)
+    // actually produced the edge — that choice is the engine's, not the
+    // operator's. Before the fix, `qualifies()` required an exact
+    // `opp.tokenIn === s.baseToken` match, so a real, verified, profitable
+    // WETH-numeraire opportunity was silently dropped under the shipped
+    // default settings (baseToken "USDC") even though WETH is in the default
+    // `tokens` allowlist. Reproduced live via scripts/e2e_smoke.py against a
+    // real Arbitrum block before this fix landed.
+    const usdc = { chain_id: 8453, address: "0xUSDC", decimals: 6, symbol: "USDC" };
+    const weth = { chain_id: 8453, address: "0xWETH", decimals: 18, symbol: "WETH" };
+    const store = new SettingsStore(); // defaults: baseToken "USDC", tokens include "WETH"
+    const wethOpp = engineOpp({
+      numeraire: weth,
+      legs: [
+        {
+          pool: "0x3333333333333333333333333333333333333333",
+          token_in: weth,
+          token_out: usdc,
+          amount_in: "3000000000000000000",
+          amount_out: "10050000000",
+        },
+        {
+          pool: "0x4444444444444444444444444444444444444444",
+          token_in: usdc,
+          token_out: weth,
+          amount_in: "10050000000",
+          amount_out: "3010000000000000000",
+        },
+      ],
+    });
+    const mapped = mapEngineOpportunity(wethOpp);
+    const engine = new ArbitrageEngine(store, new StubProvider([mapped]), pairExecutors());
+
+    await engine.tick();
+    expect(engine.getOpportunities()).toHaveLength(1);
+  });
+
   it("a pool-address (unlabelled) leg is not subject to the venue chip, even when chips are narrowed", async () => {
     // Only uniswap-v3 enabled, yet the engine leg carries a pool address, not a
     // venue — the venue chip cannot honestly filter it, so it still qualifies.

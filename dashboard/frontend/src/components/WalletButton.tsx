@@ -10,13 +10,21 @@ import { networkColor } from "../lib/networkMeta";
  * connect button when disconnected, and the address, native balance, and a
  * network switcher when connected.
  */
+/** Strips wagmi/viem's verbose wrapper text down to the part worth showing. */
+function walletErrorMessage(e: unknown): string {
+  const msg = String((e as Error)?.message ?? e);
+  if (/user rejected|denied|user disapproved/i.test(msg)) return "Rejected in wallet";
+  return msg.split("\n")[0] ?? msg;
+}
+
 export function WalletButton() {
   const { address, isConnected, chain } = useAccount();
-  const { connectors, connect, isPending } = useConnect();
+  const { connectors, connectAsync, isPending } = useConnect();
   const { disconnect } = useDisconnect();
-  const { chains, switchChain } = useSwitchChain();
+  const { chains, switchChainAsync } = useSwitchChain();
   const { data: balance } = useBalance({ address });
   const [open, setOpen] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   if (!isConnected) {
     // Prefer the first-class MetaMask SDK connector; fall back to any injected
@@ -26,15 +34,29 @@ export function WalletButton() {
       connectors.find((c) => c.type === "injected") ??
       connectors[0];
     return (
-      <button
-        type="button"
-        onClick={() => preferred && connect({ connector: preferred })}
-        disabled={isPending}
-        className="focusable inline-flex items-center gap-2 rounded-xl bg-accent px-4 py-2 text-sm font-semibold text-white transition-opacity hover:opacity-90 disabled:opacity-50"
-      >
-        <Wallet size={16} />
-        {isPending ? "Connecting…" : "Connect Wallet"}
-      </button>
+      <div className="flex flex-col items-end gap-1">
+        <button
+          type="button"
+          onClick={async () => {
+            if (!preferred) return;
+            setError(null);
+            try {
+              await connectAsync({ connector: preferred });
+            } catch (e) {
+              // Previously silent: a rejected MetaMask prompt just reverted the
+              // button back to "Connect Wallet" with no indication anything
+              // happened.
+              setError(walletErrorMessage(e));
+            }
+          }}
+          disabled={isPending}
+          className="focusable inline-flex items-center gap-2 rounded-xl bg-accent px-4 py-2 text-sm font-semibold text-white transition-opacity hover:opacity-90 disabled:opacity-50"
+        >
+          <Wallet size={16} />
+          {isPending ? "Connecting…" : "Connect Wallet"}
+        </button>
+        {error && <span className="text-xs text-neg">{error}</span>}
+      </div>
     );
   }
 
@@ -60,6 +82,8 @@ export function WalletButton() {
         <ChevronDown size={14} className="text-ink-faint" />
       </button>
 
+      {error && <div className="absolute right-0 mt-1 text-xs text-neg">{error}</div>}
+
       {open && (
         <>
           <div className="fixed inset-0 z-10" onClick={() => setOpen(false)} />
@@ -73,9 +97,17 @@ export function WalletButton() {
                   <button
                     key={c.id}
                     type="button"
-                    onClick={() => {
-                      switchChain({ chainId: c.id });
-                      setOpen(false);
+                    onClick={async () => {
+                      setError(null);
+                      // Close only on success — a rejected/failed switch used to
+                      // close the menu immediately, before the wallet even
+                      // responded, leaving no way to tell the switch didn't happen.
+                      try {
+                        await switchChainAsync({ chainId: c.id });
+                        setOpen(false);
+                      } catch (e) {
+                        setError(walletErrorMessage(e));
+                      }
                     }}
                     className={`flex items-center gap-2 rounded-lg px-2 py-1.5 text-sm hover:bg-surface-3 ${
                       active ? "text-ink" : "text-ink-muted"

@@ -81,6 +81,11 @@ export class ArbitrageEngine extends EventEmitter {
     // Re-arm the timer whenever the scan cadence changes.
     this.unsubSettings = this.store.onChange(({ changed }) => {
       if (changed.includes("scanIntervalMs")) this.schedule();
+      // Push corrected stats immediately on a pause/resume rather than waiting
+      // for the next scheduled tick — tick() itself also emits on the disabled
+      // path (below) as a fallback, but a client shouldn't see a stale
+      // "Running" state for up to a full scanIntervalMs after clicking pause.
+      if (changed.includes("engineEnabled")) this.emitStats();
     });
     log.info(`engine started (provider=${this.provider.kind})`);
   }
@@ -110,7 +115,16 @@ export class ArbitrageEngine extends EventEmitter {
       this.rolloverDayIfNeeded();
       this.prune();
 
-      if (!settings.engineEnabled) return;
+      if (!settings.engineEnabled) {
+        // Without this, a client connected before the pause never receives a
+        // corrected `running:false` — emitStats() is otherwise only reached
+        // past this point, so the header's Play/Pause button kept showing
+        // "Running" indefinitely after a pause (getStats() itself was always
+        // correct on demand; nothing pushed the correction to existing
+        // WS clients).
+        this.emitStats();
+        return;
+      }
 
       // Time the dashboard scan stage: drain the provider's freshest batch and
       // apply the live profit/position filters. The per-opportunity fan-out to
@@ -146,7 +160,7 @@ export class ArbitrageEngine extends EventEmitter {
    * themselves (previously only SimulatedProvider did; ExternalProvider, the
    * real production data source, silently ignored these controls entirely).
    *
-   * Two honesty caveats, both grounded in what real engine data actually carries:
+   * Three honesty caveats, all grounded in what real engine data actually carries:
    *  - **Venue chip:** only legs labelled with a venue key we model (see
    *    {@link KNOWN_VENUE_KEYS}) are filtered by `s.dexes`. The engine prices by
    *    pool address and surfaces no venue brand, so an ExternalProvider leg is
@@ -155,6 +169,15 @@ export class ArbitrageEngine extends EventEmitter {
    *    filters, all derivable from real engine data, still apply. (Previously this
    *    line compared a pool address against venue keys, so *every* external
    *    opportunity was silently dropped — the whole live feed went dark.)
+   *  - **Numeraire/base-token:** `opp.tokenIn` (the route's start/end token) is
+   *    validated only via membership in `allowedTokens` (`s.tokens ∪
+   *    {s.baseToken}`) below, not an exact match to `s.baseToken`. The engine
+   *    closes each detected cycle in whichever configured hub token
+   *    (`ingestion` `[[chains]].hubs`, typically WETH *and* USDC *and* USDT)
+   *    actually produced the edge — that choice is the engine's, not the
+   *    operator's. An exact-match check here silently dropped every real
+   *    opportunity whose numeraire wasn't the one "Base asset" chip selected,
+   *    even though the operator's own `tokens` list already allowed it.
    *  - **USD thresholds:** `minProfitUsd`/`maxPositionUsd` are dollar limits, so
    *    they apply only when the opportunity is USD-denominated. An opp is treated
    *    as USD unless it is *explicitly* flagged non-USD (`numeraireIsUsd === false`,
@@ -164,7 +187,6 @@ export class ArbitrageEngine extends EventEmitter {
    */
   private qualifies(opp: ArbitrageOpportunity, s: Settings): boolean {
     if (!s.networks.includes(opp.network)) return false;
-    if (opp.tokenIn !== s.baseToken) return false;
     const allowedTokens = new Set(s.tokens);
     allowedTokens.add(s.baseToken);
     for (const leg of opp.route) {
@@ -268,7 +290,16 @@ export class ArbitrageEngine extends EventEmitter {
     settings: Settings = this.store.get(),
   ): Promise<ExecutionResult> {
     const opp = typeof oppOrId === "string" ? this.active.get(oppOrId) : oppOrId;
-    if (!opp) throw new Error("opportunity not found or expired");
+    if (!opp) {
+      // Every other rejection in this function alerts before throwing (see
+      // riskLimitBlock below and the catch block further down); this one
+      // didn't, so clicking Execute on a row that expired or was already
+      // executed a moment earlier (rows live only 6-12s by design) failed with
+      // no toast, no error, nothing — the spinner just stopped.
+      const message = "execution failed: opportunity not found or expired";
+      this.emit("alert", { level: "warn", message });
+      throw new Error(message);
+    }
 
     const block = this.riskLimitBlock(opp, settings);
     if (block) {
