@@ -402,3 +402,112 @@ of an arbitrary opportunity is not constructible without fabricating route data
 (invariant 1). Live execution therefore requires the real route params; the panel
 delivers deploy + read-only simulation and leaves execution to the human-signed
 path. Full notes: `docs/notes-flash-contract-stress-test.md`.
+
+---
+
+## 11. Ingestion production audit + stress test (2026-08-03)
+
+A 4th full audit pass (`claude/ingestion-audit-stress-test-wgbo9y`), focused on
+the **ingestion** component per the task brief, plus a full-stack live-readiness
+verification. Two environment blockers every prior session recorded as BLOCKED
+are **lifted here**: outbound Arbitrum RPC works, and the real `l2arb` engine
+stands up locally (`cd engine && uv sync --all-extras && uv run uvicorn
+l2arb.api.http:app --port 8080`). That unblocked `scripts/e2e_smoke.py` to run
+to completion against real chain state for the first time, and closed out
+`crates/engine-client/tests/live_engine.rs` — a test written for exactly this
+scenario that had never been able to run before. `forge`/Foundry remains not
+installed (BLOCKED, not faked); Hardhat's 40-test suite still covers the
+contracts.
+
+Baseline reconfirmed green (engine 442/99.87% cov, ingestion 186, contracts
+Hardhat 40, dashboard 102+34, launcher 80 — 884 tests). Audit method: 4 parallel
+subagents split the ingestion codebase by crate group, 1 audited every
+interactive dashboard control against its backend wiring, 1 re-verified the
+contracts profit-to-wallet path and that detected opportunities are real. Every
+finding independently re-verified by direct code reading (and a regression test,
+for anything fixed) before being recorded. Full ledger:
+`docs/notes-ingestion-audit-stress-test.md`.
+
+**7 confirmed defects fixed**, most-severe first:
+
+1. **Ingestion, HIGH — the `retain_valid` root cause, corrected.** Three prior
+   sessions recorded a "feed goes near-silent in steady state" issue and
+   attributed it to `retain_valid`'s validation logic. With the real engine now
+   reachable, the true cause is different and worse: `pipeline.rs` truncated
+   `req.pools` to the incremental delta, but the real `l2arb` engine builds a
+   **fresh, fully stateless graph on every `/detect` call** — an omitted pool
+   isn't "safely already known" to it, it's absent from the search entirely.
+   Proven with a live A/B test (partial pool set → 0 opportunities; full set →
+   2, correct profit). This made the ordinary case — one leg's pool moves, its
+   cycle partner doesn't, same tick — undetectable after a session's first
+   tick. Fixed: ingestion now always sends each chain's full current verified
+   snapshot; `incremental` stays a wire signal only.
+2. **Ingestion, CRITICAL — V3 Mint/Burn and V4 ModifyLiquidity were never
+   dispatched.** Fully decoded, fully applied to the mirror, directly
+   unit-tested at the decode/mirror layer — but the live log dispatcher
+   (`apply_log`) had no branch for either, so both were silently dropped on the
+   live path while `re_stamp` kept re-labelling the resulting stale liquidity
+   `verified:true` every tick. Reconcile can't catch it (checks each pool at
+   its own already-stale block). Fixed: both branches wired; `apply_log`
+   refactored to a free function so it's directly unit-testable; 5 new tests.
+3. **Dashboard, HIGH (same severity class as #1) — found live, not by static
+   analysis.** Running the real `e2e_smoke.py` end-to-end surfaced a genuine
+   engine-detected opportunity that never reached `/api/opportunities`.
+   `qualifies()` required an exact `opp.tokenIn === s.baseToken` match; the
+   engine closes a cycle in whichever hub token actually produced the edge
+   (every shipped chain's `hubs` list WETH *and* USDC, several also USDT), not
+   the one the operator picked as "Base asset" — so any real opportunity in a
+   non-default numeraire was silently dropped, exactly the §9 "entire live
+   data path was dark" bug's shape recurring on a different field. A
+   *pre-existing test* had encoded the bug as correct behavior; corrected, not
+   deleted. Verified live twice: manual repro, then a clean 12/12
+   `e2e_smoke.py` run.
+4. **Ingestion, HIGH — config validation didn't require any chain be
+   enabled.** A config with every `[[chains]]` block present but all disabled
+   passed `--check-config` and ran forever idling, `/health` reporting healthy
+   throughout. Fixed.
+5. Two more small fixes: a purpose-built engine-integration test had a
+   hardcoded blockstamp that had drifted ~385 days stale relative to a later
+   session's freshness gate — fixed to use real wall-clock time, now passes
+   against the real engine for the first time. `e2e_smoke.py`'s own final
+   safety-check gave a false-positive "SAFETY REGRESSION" alarm due to a test
+   sequencing bug (an unrelated cooldown gate firing before `LiveExecutor` got
+   a chance to run) — fixed; confirmed `LiveExecutor` itself was never actually
+   broken.
+6. **Dashboard, HIGH — the header Play/Pause button showed a stale "Running"
+   state indefinitely after a pause** (the one code path that skipped the stats
+   push to connected clients). Plus two MEDIUM UX-honesty fixes: executing an
+   expired opportunity failed completely silently (now alerts, like every
+   other rejection path), and MetaMask connect/network-switch rejections were
+   silently swallowed (now surfaced, matching the pattern the Contracts panel
+   already used correctly). Plus two LOW one-line fixes (a missing input clamp
+   matching the backend schema; `resetSettings()` had no error handling at
+   all).
+
+**14 further findings recorded** (not fixed this session) with precise
+reproduction steps and recommended fixes — most notably: no liveness/staleness
+watchdog on a chain's WS subscription (CRITICAL — `verified:true` can mean
+"frozen," live-reproduced, but the correct fix restructures the
+supervisor/health startup order across several files, which isn't something to
+rush against a safety-relevant path); HTTP endpoint failover never actually
+triggers for a genuinely dead endpoint, its primary use case (HIGH,
+empirically proven); the L1 data-fee sample is undersized 20–63× for a real
+multi-hop route's calldata (HIGH, precisely quantified). Two findings from the
+initial audit passes (a reseed/generation-bump race; an `IncrementalTracker`
+cache-key collision risk) turned out to be **substantially defused as a side
+effect of fix #1** — noted explicitly in the notes file rather than left at
+their original severity.
+
+**Contracts + opportunity-detection re-verification: both hold, nothing to
+fix.** Re-checked against current HEAD rather than trusting the changelog:
+profit routing to the connected wallet, route-contiguity, and the GENERIC
+router allowlist are all still enforced and test-covered; an exhaustive grep of
+the whole `dashboard/` tree found zero signer construction and zero
+autonomous-broadcast path anywhere — deployment remains the only
+browser-signed chain-write in the product. The honest limitation from §10 is
+unchanged: detected opportunities still can't be turned into a one-click live
+execution without fabricating route data the engine doesn't emit.
+
+**Net result:** ingestion 186→194 tests, dashboard 102+34→107+37 tests, both
+gates green; `e2e_smoke.py` and `live_engine.rs`'s real-engine test both pass
+for the first time in this repo's history.
