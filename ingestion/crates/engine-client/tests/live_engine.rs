@@ -36,7 +36,7 @@ use l2i_engine_client::{
     validate_response, EngineClient, HttpConfig, HttpEngineClient, SubprocessEngineClient,
 };
 use std::collections::BTreeMap;
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 // Real Arbitrum One token addresses (identity only; reserves below are constructed).
 const WETH: Address = address!("82aF49447D8a07e3bd95BD0d56f35241523fBab1");
@@ -57,7 +57,16 @@ fn stamp() -> Blockstamp {
         chain_id: 42161,
         number: NUMBER,
         block_hash: HASH,
-        timestamp: 1_752_460_000,
+        // Real wall-clock "now", not a hardcoded constant: the engine's
+        // freshness gate (root CLAUDE.md §8 finding #1, `L2ARB__MAX_POOL_AGE_SECONDS`,
+        // default 120s) rejects a stale-timestamped pool before pricing it — that
+        // gate postdates this test, and a fixed constant drifts stale relative to
+        // the real clock on every future run, silently zeroing `count` regardless
+        // of whether the client/wiring under test is actually correct.
+        timestamp: SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system clock is after the Unix epoch")
+            .as_secs(),
     }
 }
 

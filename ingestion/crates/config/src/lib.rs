@@ -379,6 +379,16 @@ impl Config {
         if self.chains.is_empty() {
             return invalid("no [[chains]] configured".into());
         }
+        if self.enabled_chains().next().is_none() {
+            // Distinct from the empty-array case above: every [[chains]] block is
+            // present but `enabled = false` on all of them. Without this, the
+            // process starts, binds /health (always "ok" regardless), and idles
+            // forever supervising zero chains — a silent total outage that looks
+            // healthy from the outside.
+            return invalid(
+                "no chain is enabled (every [[chains]] entry has enabled = false)".into(),
+            );
+        }
         if !(2..=8).contains(&self.engine.max_hops) {
             return invalid(format!(
                 "engine.max_hops {} out of range 2..=8",
@@ -576,6 +586,29 @@ mod tests {
         let base = cfg.chains.iter_mut().find(|c| c.chain_id == 8453).unwrap();
         base.gas_model = "arbitrum".into();
         assert!(cfg.validate().is_err());
+    }
+
+    #[test]
+    fn rejects_a_config_where_every_chain_is_disabled() {
+        // Distinct from `self.chains.is_empty()`: every [[chains]] block is
+        // present (a config that "looks" fully configured) but each carries
+        // `enabled = false`. Before this check, `--check-config` printed "OK"
+        // and the live process started, bound /health (which always reports
+        // "ok" regardless), and idled forever supervising zero chains — a
+        // silent total outage indistinguishable from a healthy boot.
+        let mut cfg = example();
+        for c in &mut cfg.chains {
+            c.enabled = false;
+        }
+        assert!(cfg.validate().is_err());
+    }
+
+    #[test]
+    fn accepts_a_config_where_only_some_chains_are_disabled() {
+        let mut cfg = example();
+        cfg.chains[0].enabled = false;
+        assert!(cfg.validate().is_ok());
+        assert_eq!(cfg.enabled_chains().count(), cfg.chains.len() - 1);
     }
 
     #[test]
