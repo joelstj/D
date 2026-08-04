@@ -93,6 +93,7 @@ def test_opportunity_to_dict_shape() -> None:
     assert data["is_cross_chain"] is True
     assert data["settle_seconds"] == 600
     assert data["bridge_cost"] == "200"
+    assert data["price_drift_cost"] == "0"  # not passed to Opportunity() above -> default
     assert data["chain_ids"] == [8453, 42161]
     assert data["block"]["number"] == 100
     assert data["risk"]["success_probability"] == 0.7

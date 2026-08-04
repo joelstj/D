@@ -10,6 +10,7 @@ mod crosschain;
 mod ingestor;
 mod pipeline;
 
+use crosschain::build_cross_chain;
 use l2i_config::Config;
 use std::process::ExitCode;
 
@@ -109,13 +110,41 @@ fn print_summary(cfg: &Config) {
             c.name, c.chain_id, c.gas_model, c.enabled, c.pool_registry
         );
     }
-    if let Some(cc) = &cfg.cross_chain {
-        println!(
-            "  cross_chain: enabled={} assets={} bridges={} pairs={}",
-            cc.enabled,
-            cc.assets.len(),
-            cc.bridges.len(),
-            cc.pairs.len()
-        );
+    print_cross_chain_summary(cfg);
+}
+
+/// The `cross_chain:` line(s) of `--check-config`'s summary. Runs the *real*
+/// build+filter path (`crosschain::build_cross_chain` — the exact function the
+/// live pipeline calls) instead of printing raw config counts, so "not
+/// configured", "disabled", and "enabled but 0 usable after parsing+filtering"
+/// are all distinguishable. Previously this printed unfiltered `[cross_chain]`
+/// counts straight from the file, so a config full of placeholder addresses
+/// looked identically "fully wired" to a genuinely usable one.
+fn print_cross_chain_summary(cfg: &Config) {
+    if cfg.cross_chain.is_none() {
+        println!("  cross_chain: not configured");
+        return;
     }
+    let build = build_cross_chain(cfg);
+    if !build.configured_enabled {
+        println!(
+            "  cross_chain: enabled=false (configured: assets={} bridges={} pairs={} — not built)",
+            build.configured_assets, build.configured_bridges, build.configured_pairs
+        );
+        return;
+    }
+    let status = if build.cross_chain.is_some() {
+        "usable"
+    } else {
+        "UNUSABLE (0 survived parsing+filtering — check addresses, bridges, enabled chains)"
+    };
+    println!("  cross_chain: enabled=true status={status}");
+    println!(
+        "    configured (raw):     assets={} bridges={} pairs={}",
+        build.configured_assets, build.configured_bridges, build.configured_pairs
+    );
+    println!(
+        "    usable (post-filter): assets={} bridges={} pairs={}",
+        build.usable.assets_out, build.usable.bridges_out, build.usable.pairs_out
+    );
 }

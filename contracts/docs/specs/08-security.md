@@ -20,6 +20,7 @@ invariants, not a large surface patched after the fact.
 | Sequencer / ordering | Reorder or exclude | Atomic revert makes reordering non-lossy; private submission (`docs/specs/06`) |
 | Price manipulation | Move a pool to fake an opportunity | We never settle on a manipulable spot; realized output is checked vs `minOut`; sizing bounds impact |
 | Operator key theft | Submit trades / drain rescue | KMS/hardware signer; least-privilege operator; owner-only rescue; pausable |
+| Malicious/unauthorized bridge adapter | `CrossChainArbitrageExecutor.executeSourceLeg`'s caller-supplied `bridgeAdapter` is `forceApprove`d for the entire held balance of `bridgeToken` and called with `msg.value` — an attacker-controlled adapter could drain the full inventory | `allowedBridgeAdapters` guardian-gated allowlist, deny-all by default (mirrors `FlashLoanArbitrage.allowedGenericRouters`); see `docs/specs/10-cross-chain.md` |
 
 ## Core invariants (must be proven, not assumed)
 1. **Profit invariant.** For every successful `execute`, the executor/recipient ends with ≥ its

@@ -511,3 +511,130 @@ execution without fabricating route data the engine doesn't emit.
 **Net result:** ingestion 186→194 tests, dashboard 102+34→107+37 tests, both
 gates green; `e2e_smoke.py` and `live_engine.rs`'s real-engine test both pass
 for the first time in this repo's history.
+
+---
+
+## 12. Cross-chain flash-loan arbitrage gap audit (2026-08-04)
+
+A 5th audit pass (`claude/cross-chain-flash-loan-gaps-v2fki8`), this time scoped
+specifically to **cross-chain** execution: what's actually blocking a successful
+cross-chain arbitrage trade, as opposed to the same-chain path prior sessions
+already hardened. Framing, confirmed before auditing anything, not assumed:
+cross-chain arbitrage in this repo is — correctly, by design —
+**non-atomic**. `contracts/contracts/crosschain/CrossChainArbitrageExecutor.sol`
+implements the honest, real-world model: two separate transactions
+(`executeSourceLeg` on chain A, a bridge, `executeDestinationLeg` on chain B),
+never a fictitious "atomic cross-chain flash loan" (a transaction cannot span
+two chains). This audit measured the system against that honest premise, not
+against a stricter atomicity guarantee that was never claimed.
+
+Five parallel read-only audits (contracts, engine, ingestion, dashboard, and a
+repo-wide sweep for the spec-mandated off-chain orchestrator) confirmed the
+on-chain leg-execution primitive is real and individually tested, but was
+entirely unreachable end-to-end: no real bridge adapter existed (only a test
+mock), nothing anywhere called `executeSourceLeg`/`executeDestinationLeg`
+outside the contract's own tests, and the engine's profit/risk math hadn't yet
+accounted for the two-transaction reality. Full findings, severity, and the
+fix/record reasoning for every item: `docs/notes-cross-chain-flash-loan-gaps.md`.
+Baseline reconfirmed green across every runnable gate before any change
+(contracts 48 prior to this session's additions, engine 460, ingestion full
+workspace, dashboard 171 — Foundry remains BLOCKED, `forge` still not
+installed in this environment, consistent with every prior session).
+
+**13 confirmed defects fixed**, each with a regression test, all gates re-run
+green after every commit (not just at the end):
+
+1. **Contracts — a bridge-adapter drain vector, and no sibling-address
+   guardrail.** `executeSourceLeg` `forceApprove`d a caller-supplied
+   `bridgeAdapter` for the *entire* held balance with no allowlist — the exact
+   same shape of risk as the `DexType.GENERIC` router issue §8 item 7 already
+   fixed on `FlashLoanArbitrage.sol`, just never applied here. Added
+   `allowedBridgeAdapters` (deny-by-default, `GUARDIAN_ROLE`-gated), mirroring
+   that fix precisely. Also added a `siblingExecutor` registry
+   (chainId → known-good address) so a registered chain enforces
+   `dstRecipient` matches it — additive/backward-compatible, chains with no
+   registered sibling behave exactly as before.
+2. **Engine — the cross-chain profit gate had zero allowance for price
+   movement during settlement.** Both legs were priced off the same instant
+   snapshot with no discount for the real wait (`settle_seconds`, often 600s+
+   — 5x past the engine's own 120s same-chain freshness bar), and the
+   cross-chain risk penalty was a flat constant regardless of that wait, so a
+   30-second fast-bridge opportunity and a 60-minute canonical-bridge
+   opportunity got an identical confidence score. Added a settle-time-scaled
+   `price_drift_cost` (opt-in/`None` at the pure-compute layer, a real
+   operator default via `L2ARB__CROSS_CHAIN_PRICE_DRIFT_BPS_PER_MINUTE` at the
+   API boundary — same threading pattern as the existing freshness gate) and
+   split `MevModel`'s cross-chain penalty into a base risk plus a per-minute
+   component, calibrated to reproduce the old flat value exactly at the 600s
+   reference wait this codebase's own fixtures already used, so it's a
+   refinement, not a re-guess. Also closed a numeraire-fungibility gap: only
+   the bridged *asset* was checked via `registry.are_fungible()`; the
+   numeraire got a strictly weaker decimals-only check 20 lines away — now
+   checks both.
+3. **Ingestion — cross-chain could silently resolve to fully inert.**
+   `config.example.toml` ships `[cross_chain] enabled = true` with placeholder
+   addresses; `--check-config` printed the raw unfiltered config (looking
+   fully wired) without ever running the real parse/filter path, and the live
+   process would silently send `cross_chain: None` forever with zero log
+   signal — the same "healthy-looking total outage" shape §9/§11 already rated
+   CRITICAL/HIGH elsewhere in this repo. Now warns when configured-enabled
+   cross-chain detection ends up with zero usable assets, and `--check-config`
+   reports genuine post-filter counts. Also fixed `validate_response`'s
+   `verified_pools` set being keyed on bare address with no `chain_id` (several
+   configured L2s are OP-Stack siblings sharing identical predeploy addresses,
+   so a pool verified on chain A could rubber-stamp an unverified same-address
+   leg on chain B — closed with an adversarial regression test proving the
+   collision is actually dropped), and `filter_cross_chain` not enforcing its
+   own documented "must have a real bridge" invariant.
+4. **Dashboard — cross-chain opportunities couldn't be represented, were
+   executed dishonestly, and could bypass network filters.**
+   `ArbitrageOpportunity` had exactly one chain field, and the mapper always
+   resolved it to the source chain — the destination chain was discarded
+   unconditionally, every time. Added `isCrossChain`/`destChainId`/
+   `destNetwork`/`settleSeconds`, resolved defensively (never guessed when
+   ambiguous). Built on that: `PaperExecutor` had been modelling every revert
+   as "atomic, lose only gas," which is false for a contract whose own NatSpec
+   says capital sits in flight between two separate transactions — a
+   cross-chain opportunity is now never run through the atomic model, coming
+   back `status:"skipped"` with an honest reason instead (and excluded from
+   executed/reverted stats, so a modelling refusal can't misread as a real
+   failed trade). `qualifies()` now also checks the destination network, not
+   just the source — previously an operator who explicitly disabled a chain
+   had no way to keep a cross-chain trade routed through it from qualifying.
+   Finally, the Contracts panel's deploy flow — hardcoded to
+   `FlashLoanArbitrage` despite `CrossChainArbitrageExecutor` already being
+   scaffolded in the backend — now supports deploying and recording both
+   contracts through the same MetaMask-signed flow.
+
+**15 further findings recorded, not fixed this session** — see the notes file
+for full per-item reasoning, but the throughline is the same one root
+`CLAUDE.md` §2 already states as a binding invariant: a real bridge-protocol
+integration, and the off-chain orchestrator the spec (`contracts/docs/specs/
+10-cross-chain.md`) assigns exposure caps, hedging, inventory accounting, and
+deadline/refund handling to, are Phase-9-scoped and explicitly gated on
+human-set risk parameters ("NEEDS HUMAN" in the spec's own words). Building
+any of that speculatively this session — guessing at exposure-cap dollar
+values or a hedging strategy — would be exactly the kind of thing to stop and
+record rather than fake. Most notable recorded items: no real `IBridgeAdapter`
+implementation exists anywhere (only a test mock — this is the single biggest
+remaining blocker to any live cross-chain trade); no on-chain or off-chain
+exposure cap; no deadline/refund path if a bridge stalls after the source leg
+fires (recovery is manual, privileged `rescueTokens`, not a protocol
+guarantee); the engine's emitted `Opportunity` still carries zero fields an
+executor would need to construct a real route (same category as the
+already-accepted same-chain limitation from §10, but total rather than
+partial for cross-chain); and no unified kill switch pauses both contracts
+together (a MetaMask-signed "Pause/Unpause" panel mirroring the existing
+deploy-signing pattern is the recommended shape for a future session).
+
+**Net result:** contracts 48 tests (+12), engine 460 tests (full suite,
+99.87% coverage), ingestion full workspace green (fmt+clippy clean), dashboard
+171 tests (126 backend + 45 frontend) + both builds — all four gates verified
+green by this session directly (not just trusted from a sub-agent's report)
+before each component's commit. The on-chain execution primitive, the
+detection math, the data model, and the execution/filtering wiring are now
+individually correct and honest about the non-atomic reality; what remains
+before a live cross-chain trade is possible is the real bridge integration and
+the off-chain orchestrator — both correctly out of scope for a same-session
+fix, both precisely specified in `docs/notes-cross-chain-flash-loan-gaps.md`
+for whichever session picks them up.

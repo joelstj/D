@@ -132,6 +132,49 @@ describe("ContractService.deployParams", () => {
     const svc = new ContractService({ paths: makeFixture().paths });
     expect(() => svc.deployParams("arbitrum", "not-an-address")).toThrow(/valid 0x address/);
   });
+
+  describe("contract parameter (D4)", () => {
+    const admin = "0x2222222222222222222222222222222222222222";
+
+    it("defaults to FlashLoanArbitrage when the contract param is omitted (backward compat)", () => {
+      const svc = new ContractService({ paths: makeFixture().paths });
+      const p = svc.deployParams("arbitrum", admin);
+      expect(p.contract).toBe("FlashLoanArbitrage");
+      expect(p.args).toHaveLength(3);
+    });
+
+    it("returns the 1-arg constructor(address admin) shape for CrossChainArbitrageExecutor", () => {
+      const svc = new ContractService({ paths: makeFixture().paths });
+      const p = svc.deployParams("arbitrum", admin, "CrossChainArbitrageExecutor");
+      expect(p.contract).toBe("CrossChainArbitrageExecutor");
+      expect(p.args).toEqual([admin]);
+      expect(p.providerVerified).toBe(true);
+    });
+
+    it("does NOT require a verified flash-loan provider for the cross-chain contract", () => {
+      // "unichain" has no verified Aave/Balancer addresses in the fixture — the
+      // atomic contract refuses to deploy there (see the test above), but the
+      // cross-chain executor has no provider dependency at all and must not be
+      // blocked by that unrelated check.
+      const svc = new ContractService({ paths: makeFixture().paths });
+      const p = svc.deployParams("unichain", admin, "CrossChainArbitrageExecutor");
+      expect(p.args).toEqual([admin]);
+      expect(p.chainId).toBe(130);
+    });
+
+    it("still validates the admin address and network for the cross-chain contract", () => {
+      const svc = new ContractService({ paths: makeFixture().paths });
+      expect(() => svc.deployParams("arbitrum", "not-an-address", "CrossChainArbitrageExecutor")).toThrow(
+        /valid 0x address/,
+      );
+      expect(() => svc.deployParams("nope", admin, "CrossChainArbitrageExecutor")).toThrow(/unknown network/);
+    });
+
+    it("rejects an unknown contract name", () => {
+      const svc = new ContractService({ paths: makeFixture().paths });
+      expect(() => svc.deployParams("arbitrum", admin, "NotAContract")).toThrow(/unknown contract/);
+    });
+  });
 });
 
 describe("ContractService.getArtifact", () => {
@@ -271,6 +314,16 @@ describe("Contracts REST routes", () => {
     const res = await request(handles.app).get(`/api/contracts/deploy-params/arbitrum?admin=${admin}`);
     expect(res.status).toBe(200);
     expect(res.body.args[2]).toBe(admin);
+  });
+
+  it("GET /api/contracts/deploy-params/:network?contract=CrossChainArbitrageExecutor resolves the 1-arg ctor (D4)", async () => {
+    const admin = "0x2222222222222222222222222222222222222222";
+    const res = await request(handles.app).get(
+      `/api/contracts/deploy-params/arbitrum?admin=${admin}&contract=CrossChainArbitrageExecutor`,
+    );
+    expect(res.status).toBe(200);
+    expect(res.body.contract).toBe("CrossChainArbitrageExecutor");
+    expect(res.body.args).toEqual([admin]);
   });
 
   it("POST /api/contracts/deployment records a deployment", async () => {

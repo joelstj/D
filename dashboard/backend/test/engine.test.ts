@@ -83,6 +83,34 @@ describe("ArbitrageEngine", () => {
     expect(engine.getOpportunities().find((o) => o.id === opp.id)).toBeUndefined();
   });
 
+  it("a cross-chain opportunity resolves to 'skipped' end-to-end, without corrupting executed/filled/reverted stats (D2)", async () => {
+    // Regression: PaperExecutor now returns status:"skipped" for a cross-chain
+    // opportunity instead of fabricating an atomic fill/revert (D2). Proves the
+    // full executeOpportunity() path surfaces that honestly: the opportunity
+    // resolves (doesn't wedge in "executing"), is removed from the active set
+    // like any other resolved opportunity, but — unlike a real attempt — does
+    // NOT inflate `executed`/`reverted`, since nothing was actually tried.
+    const store = new SettingsStore({ minProfitUsd: 0, minProfitBps: 0 });
+    const provider = new StubProvider([
+      makeOpportunity({ netProfitUsd: 175, isCrossChain: true, destNetwork: "arbitrum" }),
+    ]);
+    const engine = new ArbitrageEngine(store, provider, pairExecutors());
+
+    await engine.tick();
+    const opp = engine.getOpportunities()[0]!;
+    const result = await engine.executeOpportunity(opp.id);
+
+    expect(result.status).toBe("skipped");
+    expect(result.notes).toMatch(/cross-chain execution requires/i);
+    // Not counted as a real execution attempt.
+    expect(engine.getStats().executed).toBe(0);
+    expect(engine.getStats().filled).toBe(0);
+    expect(engine.getStats().reverted).toBe(0);
+    expect(engine.getStats().realizedPnlUsd).toBe(0);
+    // Still resolved out of the active set, same as filled/reverted.
+    expect(engine.getOpportunities().find((o) => o.id === opp.id)).toBeUndefined();
+  });
+
   it("prunes expired opportunities on the next tick", async () => {
     const store = new SettingsStore({ minProfitUsd: 0, minProfitBps: 0 });
     const provider = new StubProvider([makeOpportunity({ expiresAt: Date.now() + 10_000 })]);
@@ -171,6 +199,70 @@ describe("ArbitrageEngine", () => {
 
     await engine.tick();
     expect(engine.getOpportunities()).toHaveLength(0);
+  });
+
+  describe("cross-chain destination network is also checked (D3)", () => {
+    // Holds every other filter constant (source network enabled, profit/token
+    // thresholds open) so only the destination-network check under test can be
+    // responsible for the pass/fail.
+    function crossChainOpp(destNetwork: string | undefined) {
+      return makeOpportunity({
+        network: "base",
+        chainId: 8453,
+        isCrossChain: true,
+        destChainId: destNetwork ? 42161 : undefined,
+        destNetwork,
+        settleSeconds: 30,
+      });
+    }
+
+    it("does not qualify when the source network is enabled but the destination network is not", async () => {
+      const store = new SettingsStore({
+        networks: ["base"], // source enabled; "arbitrum" (destination) is NOT
+        minProfitUsd: 0,
+        minProfitBps: 0,
+      });
+      const provider = new StubProvider([crossChainOpp("arbitrum")]);
+      const engine = new ArbitrageEngine(store, provider, pairExecutors());
+
+      await engine.tick();
+      expect(engine.getOpportunities()).toHaveLength(0);
+    });
+
+    it("qualifies once both the source AND destination networks are enabled", async () => {
+      const store = new SettingsStore({
+        networks: ["base", "arbitrum"],
+        minProfitUsd: 0,
+        minProfitBps: 0,
+      });
+      const provider = new StubProvider([crossChainOpp("arbitrum")]);
+      const engine = new ArbitrageEngine(store, provider, pairExecutors());
+
+      await engine.tick();
+      expect(engine.getOpportunities()).toHaveLength(1);
+    });
+
+    it("a same-chain opportunity is unaffected (destNetwork is never set)", async () => {
+      const store = new SettingsStore({ networks: ["base"], minProfitUsd: 0, minProfitBps: 0 });
+      const provider = new StubProvider([makeOpportunity({ network: "base", chainId: 8453 })]);
+      const engine = new ArbitrageEngine(store, provider, pairExecutors());
+
+      await engine.tick();
+      expect(engine.getOpportunities()).toHaveLength(1);
+    });
+
+    it("does not block on an unresolved destination (engineMap left destNetwork undefined) — source check still applies", async () => {
+      // Mirrors engineMap's own "don't guess" defensiveness: when the
+      // destination couldn't be unambiguously resolved, qualifies() must not
+      // invent a check against `undefined` — it simply skips the extra gate
+      // and falls back to the source-network check alone.
+      const store = new SettingsStore({ networks: ["base"], minProfitUsd: 0, minProfitBps: 0 });
+      const provider = new StubProvider([crossChainOpp(undefined)]);
+      const engine = new ArbitrageEngine(store, provider, pairExecutors());
+
+      await engine.tick();
+      expect(engine.getOpportunities()).toHaveLength(1);
+    });
   });
 
   it("rejects an opportunity routed through a DEX the user hasn't enabled", async () => {

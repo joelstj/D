@@ -8,6 +8,7 @@ import {
   CheckCircle2,
   ExternalLink,
   Hammer,
+  Link2,
   Loader2,
   Rocket,
   ShieldCheck,
@@ -45,7 +46,15 @@ export interface ContractsPanelViewProps {
   notice: { kind: "ok" | "err"; text: string } | null;
   onCompile: () => void;
   onDeploy: (network: NetworkContractStatus) => void;
+  /** Deploy `CrossChainArbitrageExecutor` on `network` (D4). */
+  onDeployCrossChain: (network: NetworkContractStatus) => void;
   onRunReadiness: () => void;
+}
+
+/** `busy.deploying` sentinel for the cross-chain deploy action on a network,
+ *  distinct from the plain `network.key` used for the atomic deploy button. */
+function crossChainBusyKey(networkKey: string): string {
+  return `${networkKey}:crosschain`;
 }
 
 /**
@@ -56,6 +65,8 @@ export function ContractsPanelView(props: ContractsPanelViewProps) {
   const { status, wallet, busy } = props;
   const atomic = status?.artifacts.find((a) => a.role === "atomic");
   const compiled = status?.compiled ?? false;
+  const crosschain = status?.artifacts.find((a) => a.role === "crosschain");
+  const crossChainCompiled = crosschain?.compiled ?? false;
 
   return (
     <Card
@@ -86,13 +97,26 @@ export function ContractsPanelView(props: ContractsPanelViewProps) {
 
       {status?.available && (
         <>
-          {/* Compile status line */}
-          <div className="mb-3 flex items-center justify-between rounded-lg border border-border-soft bg-surface/40 px-3 py-2 text-xs">
+          {/* Compile status lines */}
+          <div className="mb-1.5 flex items-center justify-between rounded-lg border border-border-soft bg-surface/40 px-3 py-2 text-xs">
             <span className="text-ink-muted">FlashLoanArbitrage bytecode</span>
             {compiled ? (
               <span className="tabular flex items-center gap-1.5 text-pos">
                 <CheckCircle2 size={13} /> {atomic?.bytecodeSize?.toLocaleString()} bytes ·{" "}
                 {atomic?.bytecodeHash}
+              </span>
+            ) : (
+              <span className="flex items-center gap-1.5 text-warn">
+                <AlertTriangle size={13} /> not compiled
+              </span>
+            )}
+          </div>
+          <div className="mb-3 flex items-center justify-between rounded-lg border border-border-soft bg-surface/40 px-3 py-2 text-xs">
+            <span className="text-ink-muted">CrossChainArbitrageExecutor bytecode</span>
+            {crossChainCompiled ? (
+              <span className="tabular flex items-center gap-1.5 text-pos">
+                <CheckCircle2 size={13} /> {crosschain?.bytecodeSize?.toLocaleString()} bytes ·{" "}
+                {crosschain?.bytecodeHash}
               </span>
             ) : (
               <span className="flex items-center gap-1.5 text-warn">
@@ -108,9 +132,12 @@ export function ContractsPanelView(props: ContractsPanelViewProps) {
                 key={n.key}
                 n={n}
                 compiled={compiled}
+                crossChainCompiled={crossChainCompiled}
                 wallet={wallet}
                 deploying={busy.deploying === n.key}
+                deployingCrossChain={busy.deploying === crossChainBusyKey(n.key)}
                 onDeploy={() => props.onDeploy(n)}
+                onDeployCrossChain={() => props.onDeployCrossChain(n)}
               />
             ))}
           </div>
@@ -153,18 +180,40 @@ export function ContractsPanelView(props: ContractsPanelViewProps) {
             {props.readiness && props.readiness.length > 0 && (
               <div className="space-y-1">
                 {props.readiness.map((r) => (
-                  <div key={r.network} className="flex items-center justify-between text-[11px]">
-                    <span className="text-ink-muted">{r.network}</span>
-                    {!r.configured ? (
-                      <span className="text-ink-faint">no RPC configured</span>
-                    ) : r.healthy ? (
-                      <span className="tabular flex items-center gap-1 text-pos">
-                        <CheckCircle2 size={12} /> code + premium {r.premiumBps} bps
-                      </span>
-                    ) : (
-                      <span className="tabular flex items-center gap-1 text-neg">
-                        <AlertTriangle size={12} /> {r.hasCode ? "view failed" : "no code"}
-                      </span>
+                  <div key={r.network}>
+                    <div className="flex items-center justify-between text-[11px]">
+                      <span className="text-ink-muted">{r.network}</span>
+                      {!r.configured ? (
+                        <span className="text-ink-faint">no RPC configured</span>
+                      ) : r.healthy ? (
+                        <span className="tabular flex items-center gap-1 text-pos">
+                          <CheckCircle2 size={12} /> code + premium {r.premiumBps} bps
+                        </span>
+                      ) : (
+                        <span className="tabular flex items-center gap-1 text-neg">
+                          <AlertTriangle size={12} /> {r.hasCode ? "view failed" : "no code"}
+                        </span>
+                      )}
+                    </div>
+                    {/* Cross-chain executor readiness — plumbed by the backend
+                        (ReadinessResult.crossChainHasCode) but previously never
+                        rendered anywhere (D4). Only shown once a cross-chain
+                        address is on record for this network. */}
+                    {r.crossChainAddress && (
+                      <div className="flex items-center justify-between pl-3 text-[11px]">
+                        <span className="text-ink-faint">↳ cross-chain</span>
+                        {!r.configured ? (
+                          <span className="text-ink-faint">no RPC configured</span>
+                        ) : r.crossChainHasCode ? (
+                          <span className="tabular flex items-center gap-1 text-pos">
+                            <CheckCircle2 size={11} /> code present
+                          </span>
+                        ) : (
+                          <span className="tabular flex items-center gap-1 text-neg">
+                            <AlertTriangle size={11} /> no code
+                          </span>
+                        )}
+                      </div>
                     )}
                   </div>
                 ))}
@@ -190,18 +239,33 @@ export function ContractsPanelView(props: ContractsPanelViewProps) {
 function NetworkRow({
   n,
   compiled,
+  crossChainCompiled,
   wallet,
   deploying,
+  deployingCrossChain,
   onDeploy,
+  onDeployCrossChain,
 }: {
   n: NetworkContractStatus;
   compiled: boolean;
+  crossChainCompiled: boolean;
   wallet: { address?: string; connected: boolean };
   deploying: boolean;
+  deployingCrossChain: boolean;
   onDeploy: () => void;
+  onDeployCrossChain: () => void;
 }) {
   const meta = ACTION_META[n.action];
   const canDeploy = compiled && n.providerVerified && wallet.connected && !deploying;
+  // The cross-chain executor's constructor is `constructor(address admin)`
+  // only — no flash-loan-provider dependency, so it is never gated on
+  // `providerVerified`. It IS gated on the atomic contract already being
+  // deployed here: recordDeployment's per-network record needs an atomic
+  // `address` to attach `crossChainAddress` to (see ContractsPanel's
+  // onDeployCrossChain), matching how `contracts/scripts/deploy.js` deploys
+  // both together.
+  const canDeployCrossChain =
+    crossChainCompiled && !!n.deployment && wallet.connected && !deployingCrossChain;
   return (
     <div className="flex items-center justify-between gap-3 rounded-lg border border-border-soft bg-surface/30 px-3 py-2">
       <div className="min-w-0">
@@ -224,25 +288,71 @@ function NetworkRow({
             {n.providerVerified ? "not deployed" : "provider unverified — cannot deploy"}
           </div>
         )}
+        {/* Cross-chain executor deployment status (D4) — the same per-network
+            deployment record's `crossChainAddress` field, rendered here so
+            it's actually visible rather than only plumbed through the API. */}
+        <div className="mt-0.5 flex items-center gap-1 text-[11px] text-ink-faint">
+          <span>cross-chain:</span>
+          {n.deployment?.crossChainAddress ? (
+            <a
+              href={`${n.explorer}/address/${n.deployment.crossChainAddress}`}
+              target="_blank"
+              rel="noreferrer"
+              className="tabular inline-flex items-center gap-1 hover:text-accent-2"
+            >
+              {shortAddress(n.deployment.crossChainAddress)} <ExternalLink size={10} />
+            </a>
+          ) : (
+            <span>{n.deployment ? "not deployed" : "deploy FlashLoanArbitrage first"}</span>
+          )}
+        </div>
       </div>
-      <button
-        type="button"
-        onClick={onDeploy}
-        disabled={!canDeploy}
-        title={
-          !wallet.connected
-            ? "Connect your wallet to deploy"
-            : !n.providerVerified
-              ? "Flash-loan provider address needs verifying for this chain"
-              : !compiled
-                ? "Compile the contracts first"
-                : `Deploy to ${n.name} (signs in your wallet)`
-        }
-        className="focusable inline-flex shrink-0 items-center gap-1.5 rounded-lg bg-accent px-3 py-1.5 text-xs font-semibold text-white transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-30"
-      >
-        {deploying ? <Loader2 size={13} className="animate-spin" /> : <Rocket size={13} />}
-        {deploying ? "Deploying…" : n.action === "ready" ? "Redeploy" : "Deploy"}
-      </button>
+      <div className="flex shrink-0 flex-col items-end gap-1.5">
+        <button
+          type="button"
+          onClick={onDeploy}
+          disabled={!canDeploy}
+          title={
+            !wallet.connected
+              ? "Connect your wallet to deploy"
+              : !n.providerVerified
+                ? "Flash-loan provider address needs verifying for this chain"
+                : !compiled
+                  ? "Compile the contracts first"
+                  : `Deploy to ${n.name} (signs in your wallet)`
+          }
+          className="focusable inline-flex items-center gap-1.5 rounded-lg bg-accent px-3 py-1.5 text-xs font-semibold text-white transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-30"
+        >
+          {deploying ? <Loader2 size={13} className="animate-spin" /> : <Rocket size={13} />}
+          {deploying ? "Deploying…" : n.action === "ready" ? "Redeploy" : "Deploy"}
+        </button>
+        <button
+          type="button"
+          onClick={onDeployCrossChain}
+          disabled={!canDeployCrossChain}
+          title={
+            !wallet.connected
+              ? "Connect your wallet to deploy"
+              : !n.deployment
+                ? "Deploy FlashLoanArbitrage on this network first"
+                : !crossChainCompiled
+                  ? "Compile the contracts first"
+                  : `Deploy CrossChainArbitrageExecutor to ${n.name} (signs in your wallet)`
+          }
+          className="focusable inline-flex items-center gap-1.5 rounded-lg border border-accent/40 bg-accent-soft px-2.5 py-1 text-[11px] font-medium text-accent-2 transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-30"
+        >
+          {deployingCrossChain ? (
+            <Loader2 size={12} className="animate-spin" />
+          ) : (
+            <Link2 size={12} />
+          )}
+          {deployingCrossChain
+            ? "Deploying…"
+            : n.deployment?.crossChainAddress
+              ? "Redeploy cross-chain"
+              : "Deploy cross-chain"}
+        </button>
+      </div>
     </div>
   );
 }
@@ -348,6 +458,67 @@ export function ContractsPanel() {
     }
   };
 
+  /**
+   * Deploy `CrossChainArbitrageExecutor` on `n` (D4). Same sanctioned
+   * MetaMask-signed pattern as `onDeploy`: the backend only resolves the
+   * constructor args (`deployParams(..., "CrossChainArbitrageExecutor")` —
+   * just `[admin]`, no flash-loan-provider address book involved) and later
+   * records the *public result*. Requires the atomic contract to already be
+   * deployed on this network — `recordDeployment` attaches `crossChainAddress`
+   * onto that same per-network record, so the existing atomic `address` is
+   * carried forward unchanged (never overwritten with the cross-chain address).
+   */
+  const onDeployCrossChain = async (n: NetworkContractStatus) => {
+    if (!address) {
+      setNotice({ kind: "err", text: "Connect your wallet first" });
+      return;
+    }
+    if (!n.deployment) {
+      setNotice({ kind: "err", text: `Deploy FlashLoanArbitrage on ${n.name} first` });
+      return;
+    }
+    const atomicAddress = n.deployment.address;
+    setBusy((b) => ({ ...b, deploying: crossChainBusyKey(n.key) }));
+    setNotice(null);
+    try {
+      if (chainId !== n.chainId) {
+        await switchChainAsync({ chainId: n.chainId as ConfiguredChainId });
+      }
+
+      const params = await api.contracts.deployParams(n.key, address, "CrossChainArbitrageExecutor");
+      const artifact = await api.contracts.artifact("CrossChainArbitrageExecutor");
+
+      // Signed + broadcast entirely in MetaMask — the backend never sees a key.
+      const hash = await deployContractAsync({
+        abi: artifact.abi as Abi,
+        bytecode: artifact.bytecode,
+        args: params.args,
+      });
+      const receipt = await waitForTransactionReceipt(wagmiConfig, { hash });
+      const deployed = receipt.contractAddress;
+      if (!deployed) throw new Error("deployment produced no contract address");
+
+      await api.contracts.recordDeployment({
+        network: n.key,
+        chainId: n.chainId,
+        address: atomicAddress, // unchanged — this call only sets crossChainAddress
+        crossChainAddress: deployed,
+        deployer: address,
+        txHash: hash,
+        deployedAt: new Date().toISOString(),
+      });
+      setNotice({
+        kind: "ok",
+        text: `Deployed CrossChainArbitrageExecutor on ${n.name}: ${deployed} — recorded to .env`,
+      });
+      await refresh();
+    } catch (e) {
+      setNotice({ kind: "err", text: deployErrorMessage(e) });
+    } finally {
+      setBusy((b) => ({ ...b, deploying: null }));
+    }
+  };
+
   const onRunReadiness = async () => {
     setBusy((b) => ({ ...b, readiness: true }));
     try {
@@ -374,6 +545,7 @@ export function ContractsPanel() {
       notice={notice}
       onCompile={onCompile}
       onDeploy={onDeploy}
+      onDeployCrossChain={onDeployCrossChain}
       onRunReadiness={onRunReadiness}
     />
   );

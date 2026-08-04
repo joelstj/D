@@ -255,12 +255,28 @@ export class ContractService {
   }
 
   /**
-   * Constructor arguments for a browser-wallet deploy of the atomic executor on
-   * `networkKey`. The caller supplies `admin` (their connected wallet); provider
-   * addresses come from the verified address book. Never invents an address:
-   * an unverified chain returns `providerVerified:false` so the UI blocks deploy.
+   * Constructor arguments for a browser-wallet deploy of `contract` on
+   * `networkKey` (default `"FlashLoanArbitrage"`, the atomic executor, for
+   * backward compatibility). The caller supplies `admin` (their connected
+   * wallet).
+   *
+   * - `FlashLoanArbitrage` — `constructor(address aavePool, address
+   *   balancerVault, address admin)`. Provider addresses come from the
+   *   verified address book; never invents an address — an unverified chain
+   *   throws (`providerVerified:false` is never returned, only ever thrown)
+   *   so the UI blocks deploy.
+   * - `CrossChainArbitrageExecutor` — `constructor(address admin)` only (see
+   *   `contracts/contracts/crosschain/CrossChainArbitrageExecutor.sol`). It
+   *   has no flash-loan-provider dependency at all, so there is no address
+   *   to verify; `providerVerified` is trivially `true` and `aavePool`/
+   *   `balancerVault` are unused zero-address placeholders kept only for a
+   *   uniform return shape.
    */
-  deployParams(networkKey: string, admin: string): {
+  deployParams(
+    networkKey: string,
+    admin: string,
+    contract: string = "FlashLoanArbitrage",
+  ): {
     network: string;
     chainId: number;
     contract: string;
@@ -272,6 +288,21 @@ export class ContractService {
     const net = NETWORKS_BY_KEY[networkKey];
     if (!net) throw new Error(`unknown network "${networkKey}"`);
     if (!isAddress(admin)) throw new Error("admin must be a valid 0x address (connect your wallet)");
+    const entry = CONTRACTS.find((c) => c.name === contract);
+    if (!entry) throw new Error(`unknown contract "${contract}"`);
+
+    if (entry.role === "crosschain") {
+      return {
+        network: networkKey,
+        chainId: net.chainId,
+        contract: entry.name,
+        providerVerified: true,
+        aavePool: ZERO,
+        balancerVault: ZERO,
+        args: [admin],
+      };
+    }
+
     const book = loadAddressBook(this.paths)[networkKey];
     const aavePool = book?.aavePool ?? null;
     const balancerVault = book?.balancerVault ?? null;
@@ -285,7 +316,7 @@ export class ContractService {
     return {
       network: networkKey,
       chainId: net.chainId,
-      contract: "FlashLoanArbitrage",
+      contract: entry.name,
       providerVerified,
       aavePool: aavePool ?? ZERO,
       balancerVault: balancerVault ?? ZERO,

@@ -233,6 +233,63 @@ def test_cross_chain_penalised_and_big_edges_more_competed() -> None:
     assert big_edge.capture_ratio < small_edge.capture_ratio  # obvious edges competed away
 
 
+# --------------------------- E4: settle-time risk -------------------------- #
+# The old cross_chain_success_penalty was a flat constant, blind to
+# settle_seconds even though it's already computed and carried on Opportunity —
+# a 30s fast-bridge opp and a 60-minute canonical-bridge opp got an identical
+# confidence haircut. These pin the settle-time-scaled replacement.
+def test_cross_chain_penalty_scales_with_settle_seconds() -> None:
+    mev = MevModel()
+    fast = mev.assess(hops=2, profit_bps=20.0, is_cross_chain=True, settle_seconds=30)
+    slow = mev.assess(hops=2, profit_bps=20.0, is_cross_chain=True, settle_seconds=3600)
+    assert fast.success_probability > slow.success_probability
+    # And the fast bridge is now measurably closer to (though still below) the
+    # same-chain baseline than the flat old constant would have allowed.
+    same_chain = mev.assess(hops=2, profit_bps=20.0, is_cross_chain=False)
+    assert same_chain.success_probability - fast.success_probability < 0.1
+
+
+def test_cross_chain_penalty_settle_seconds_defaults_to_zero() -> None:
+    # Backward-compat call sites (same-chain evaluate() always passes 0 too, via
+    # the parameter default) must be unaffected: omitting settle_seconds is
+    # identical to passing 0 explicitly.
+    mev = MevModel()
+    omitted = mev.assess(hops=2, profit_bps=20.0, is_cross_chain=True)
+    explicit_zero = mev.assess(hops=2, profit_bps=20.0, is_cross_chain=True, settle_seconds=0)
+    assert omitted.success_probability == explicit_zero.success_probability
+    assert omitted.notes == explicit_zero.notes
+
+
+def test_cross_chain_penalty_formula_is_pinned() -> None:
+    mev = MevModel()
+    r = mev.assess(hops=2, profit_bps=20.0, is_cross_chain=True, settle_seconds=600)
+    # 600s = 10 minutes; well within the [0.05, 0.99] clamp, so no floor/ceiling
+    # interference — this pins the raw formula, not just its clamped shape.
+    expected_penalty = mev.cross_chain_base_penalty + mev.cross_chain_penalty_per_minute * 10.0
+    expected_success = mev.base_success_probability - expected_penalty
+    assert 0.05 < expected_success < 0.99  # sanity: this case doesn't hit the clamp
+    assert r.success_probability == pytest.approx(expected_success)
+    assert any(n.startswith("price_drift_risk_penalty=") for n in r.notes)
+    assert "settle_seconds=600" in r.notes
+
+
+def test_cross_chain_penalty_note_absent_for_same_chain() -> None:
+    # The price-drift risk note (docs/ARBITRAGE_THEORY.md §5) is a cross-chain-only
+    # concept; a same-chain assessment must not carry a meaningless drift note.
+    mev = MevModel()
+    r = mev.assess(hops=2, profit_bps=20.0, is_cross_chain=False)
+    assert not any(n.startswith("price_drift_risk_penalty=") for n in r.notes)
+    assert not any(n.startswith("settle_seconds=") for n in r.notes)
+
+
+def test_cross_chain_penalty_floor_stays_sane_for_a_very_long_wait() -> None:
+    # A pathologically long settle time must clamp to the existing sane floor
+    # (0.05), never go negative or otherwise nonsensical.
+    mev = MevModel()
+    r = mev.assess(hops=2, profit_bps=20.0, is_cross_chain=True, settle_seconds=24 * 3600)
+    assert 0.05 <= r.success_probability <= 0.99
+
+
 # ----------------------------- property (T-0409) -------------------------- #
 @settings(max_examples=200, deadline=None, suppress_health_check=[HealthCheck.filter_too_much])
 @given(

@@ -40,6 +40,7 @@ def _setup(
     weth_on_base: bool = True,
     gas_price_wei: int = 10**6,
     num_y_decimals: int = 18,
+    num_bridgeable: bool = True,
 ) -> Env:
     num_x = gk.token(1, chain=ARB)  # USDC on Arbitrum
     weth_x = gk.token(2, chain=ARB)  # WETH on Arbitrum
@@ -55,7 +56,13 @@ def _setup(
         weth_reps.append(AssetRepresentation(weth_y, bridgeable=weth_bridgeable))
     registry.register(CanonicalAsset("WETH", tuple(weth_reps)))
     registry.register(
-        CanonicalAsset("USDC", (AssetRepresentation(num_x), AssetRepresentation(num_y)))
+        CanonicalAsset(
+            "USDC",
+            (
+                AssetRepresentation(num_x, bridgeable=num_bridgeable),
+                AssetRepresentation(num_y, bridgeable=num_bridgeable),
+            ),
+        )
     )
     bridge = StaticBridgeModel(
         {("WETH", ARB, BASE): BridgeQuote(fee_bps=10.0, fixed_fee=0, settle_seconds=600)}
@@ -71,7 +78,13 @@ def _setup(
     )
 
 
-def _run(env: Env, *, min_profit_bps: float = 1.0, **over: str) -> Opportunity | None:
+def _run(
+    env: Env,
+    *,
+    min_profit_bps: float = 1.0,
+    price_drift_bps_per_minute: float | None = None,
+    **over: str,
+) -> Opportunity | None:
     return cross_chain_two_hop(
         env.buy_graph,
         env.sell_graph,
@@ -82,6 +95,7 @@ def _run(env: Env, *, min_profit_bps: float = 1.0, **over: str) -> Opportunity |
         buy_ctx=env.buy_ctx,
         sell_ctx=env.sell_ctx,
         min_profit_bps=min_profit_bps,
+        price_drift_bps_per_minute=price_drift_bps_per_minute,
     )
 
 
@@ -105,6 +119,103 @@ def test_cross_chain_risk_is_penalised(gk: type[GraphKit]) -> None:
     assert opp.risk.success_probability < 0.9  # below the single-chain base
 
 
+# ------------------------------- E4 regression ----------------------------- #
+# The flat cross_chain_success_penalty was blind to settle_seconds. Pin that the
+# real call site (_build_opportunity) now passes the bridge's actual
+# settle_seconds through, so two spreads that are identical except for their
+# bridge's settlement time get different (not identical) confidence haircuts.
+def test_cross_chain_risk_penalty_scales_with_the_real_bridge_settle_seconds(
+    gk: type[GraphKit],
+) -> None:
+    fast_bridge = StaticBridgeModel(
+        {("WETH", ARB, BASE): BridgeQuote(fee_bps=10.0, fixed_fee=0, settle_seconds=30)}
+    )
+    slow_bridge = StaticBridgeModel(
+        {("WETH", ARB, BASE): BridgeQuote(fee_bps=10.0, fixed_fee=0, settle_seconds=3600)}
+    )
+    env = _setup(gk)
+    fast_opp = _run(env._replace(bridge=fast_bridge))
+    slow_opp = _run(env._replace(bridge=slow_bridge))
+    assert fast_opp is not None
+    assert slow_opp is not None
+    assert fast_opp.settle_seconds == 30
+    assert slow_opp.settle_seconds == 3600
+    assert slow_opp.risk.success_probability < fast_opp.risk.success_probability
+    assert any(n.startswith("price_drift_risk_penalty=") for n in slow_opp.risk.notes)
+    assert "settle_seconds=3600" in slow_opp.risk.notes
+    assert "settle_seconds=30" in fast_opp.risk.notes
+
+
+# ------------------------------- E1 regression ----------------------------- #
+# The profit gate priced both legs off the same instant snapshot and subtracted
+# only bridge + gas — nothing accounted for real price movement during the
+# (non-atomic) settlement wait. These pin the new settle-time-scaled price-drift
+# haircut: opt-in/None at this pure-compute layer (existing tests above that never
+# pass price_drift_bps_per_minute must be completely unaffected), a real gate
+# once configured.
+def test_price_drift_cost_defaults_to_zero(gk: type[GraphKit]) -> None:
+    opp = _run(_setup(gk))
+    assert opp is not None
+    assert opp.price_drift_cost == 0
+    assert opp.net_profit == opp.output_amount - opp.input_amount - opp.gas_cost
+
+
+def test_price_drift_cost_matches_formula(gk: type[GraphKit]) -> None:
+    env = _setup(gk)
+    rate = 3.0  # bps per minute
+    opp = _run(env, price_drift_bps_per_minute=rate)
+    assert opp is not None
+    expected = int(opp.output_amount * rate * (opp.settle_seconds / 60.0) / 10_000.0)
+    assert opp.price_drift_cost == expected
+    assert opp.price_drift_cost > 0
+    assert (
+        opp.net_profit == opp.output_amount - opp.input_amount - opp.gas_cost - opp.price_drift_cost
+    )
+    assert (
+        opp.gross_profit - opp.bridge_cost - opp.gas_cost - opp.price_drift_cost == opp.net_profit
+    )
+
+
+def test_price_drift_haircut_reduces_net_profit(gk: type[GraphKit]) -> None:
+    env = _setup(gk)
+    baseline = _run(env)
+    drifted = _run(env, price_drift_bps_per_minute=5.0)
+    assert baseline is not None
+    assert drifted is not None
+    # Sizing/AMM math is unaffected by the drift haircut (it is charged strictly
+    # after sizing, like gas_cost) — only the profit/risk accounting differs.
+    assert drifted.input_amount == baseline.input_amount
+    assert drifted.output_amount == baseline.output_amount
+    assert drifted.net_profit < baseline.net_profit
+    assert drifted.profit_bps < baseline.profit_bps
+
+
+def test_large_price_drift_can_reject_an_otherwise_profitable_spread(gk: type[GraphKit]) -> None:
+    env = _setup(gk)
+    assert _run(env) is not None  # sanity: profitable with the haircut off
+    assert _run(env, price_drift_bps_per_minute=10_000.0) is None
+
+
+def test_price_drift_cost_scales_with_settle_seconds(gk: type[GraphKit]) -> None:
+    short_bridge = StaticBridgeModel(
+        {("WETH", ARB, BASE): BridgeQuote(fee_bps=10.0, fixed_fee=0, settle_seconds=60)}
+    )
+    long_bridge = StaticBridgeModel(
+        {("WETH", ARB, BASE): BridgeQuote(fee_bps=10.0, fixed_fee=0, settle_seconds=600)}
+    )
+    env = _setup(gk)
+    rate = 2.0
+    short_opp = _run(env._replace(bridge=short_bridge), price_drift_bps_per_minute=rate)
+    long_opp = _run(env._replace(bridge=long_bridge), price_drift_bps_per_minute=rate)
+    assert short_opp is not None
+    assert long_opp is not None
+    # settle_seconds is bridge-quote metadata only -> AMM sizing/output is
+    # identical; only the haircut (and thus net_profit) should move.
+    assert long_opp.output_amount == short_opp.output_amount
+    assert long_opp.price_drift_cost > short_opp.price_drift_cost
+    assert long_opp.net_profit < short_opp.net_profit
+
+
 def test_no_spread_no_opportunity(gk: type[GraphKit]) -> None:
     assert _run(_setup(gk, spread_num=1_000_000)) is None
 
@@ -116,6 +227,62 @@ def test_non_bridgeable_asset_blocks_detection(gk: type[GraphKit]) -> None:
 def test_asset_absent_on_a_chain_returns_none(gk: type[GraphKit]) -> None:
     # WETH registered only on the buy chain -> no sell-side representation.
     assert _run(_setup(gk, weth_on_base=False)) is None
+
+
+# ------------------------------- E5 regression ----------------------------- #
+# registry.are_fungible() gated the bridged asset but not the numeraire, which
+# only got a strictly-weaker decimals-equality check (same decimals != same/
+# fungible asset). These pin the fix: a numeraire pair that is decimals-equal
+# but NOT registered as fungible must be rejected, mirroring the asset-side
+# check immediately above.
+def test_non_bridgeable_numeraire_blocks_detection(gk: type[GraphKit]) -> None:
+    # Sanity baseline (bridgeable, matching decimals) detects; flipping only the
+    # numeraire's bridgeable flag must now block it even though decimals still
+    # match on both chains — before the fix, only decimals were checked, so this
+    # spread would have been reported.
+    assert _run(_setup(gk)) is not None
+    assert _run(_setup(gk, num_bridgeable=False)) is None
+
+
+def test_numeraire_with_only_one_side_bridgeable_is_rejected(gk: type[GraphKit]) -> None:
+    # Asymmetric case: are_fungible() requires BOTH representations bridgeable
+    # (AND semantics, model/canonical_asset.py::AssetRegistry.are_fungible). Pin
+    # that the new check honours that — one bridgeable side is not enough, even
+    # though decimals still match on both chains (18-dp default on both).
+    num_x = gk.token(1, chain=ARB)
+    weth_x = gk.token(2, chain=ARB)
+    weth_y = gk.token(3, chain=BASE)
+    num_y = gk.token(4, chain=BASE)
+
+    buy_pool = gk.v2(10, num_x, weth_x, 1_000_000 * 10**18, 1000 * 10**18)
+    sell_pool = gk.v2(11, weth_y, num_y, 1000 * 10**18, 1_100_000 * 10**18)
+
+    registry = AssetRegistry()
+    registry.register(
+        CanonicalAsset("WETH", (AssetRepresentation(weth_x), AssetRepresentation(weth_y)))
+    )
+    registry.register(
+        CanonicalAsset(
+            "USDC",
+            (
+                AssetRepresentation(num_x, bridgeable=True),
+                AssetRepresentation(num_y, bridgeable=False),
+            ),
+        )
+    )
+    bridge = StaticBridgeModel(
+        {("WETH", ARB, BASE): BridgeQuote(fee_bps=10.0, fixed_fee=0, settle_seconds=600)}
+    )
+    ctx = gk.profit_ctx()
+    env = Env(
+        gk.graph([buy_pool], chain=ARB),
+        gk.graph([sell_pool], chain=BASE),
+        registry,
+        bridge,
+        ctx,
+        ctx,
+    )
+    assert _run(env) is None
 
 
 def test_mismatched_numeraire_decimals_across_chains_is_rejected_not_phantom(

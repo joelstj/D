@@ -88,6 +88,19 @@ def test_max_pool_age_seconds_env_override(monkeypatch: pytest.MonkeyPatch) -> N
     assert Settings().max_pool_age_seconds == 300
 
 
+def test_cross_chain_price_drift_default_and_validation() -> None:
+    # E1: a real, non-zero, clearly-documented-as-conservative default (never 0 —
+    # the live /detect path must always have the haircut active).
+    assert Settings().cross_chain_price_drift_bps_per_minute == pytest.approx(2.0)
+    with pytest.raises(ValidationError):
+        Settings(cross_chain_price_drift_bps_per_minute=-1.0)
+
+
+def test_cross_chain_price_drift_env_override(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("L2ARB__CROSS_CHAIN_PRICE_DRIFT_BPS_PER_MINUTE", "5.0")
+    assert Settings().cross_chain_price_drift_bps_per_minute == pytest.approx(5.0)
+
+
 def test_log_level_is_normalised_case_insensitively() -> None:
     assert Settings(log_level="debug").log_level == "DEBUG"
 

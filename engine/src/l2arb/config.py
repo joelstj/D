@@ -175,6 +175,23 @@ class Settings(BaseSettings):
     # is the operator-wide default when it doesn't. See docs/DATA_INTEGRITY.md.
     max_pool_age_seconds: int = Field(default=120, gt=0)
 
+    # Cross-chain risk model: settlement is not atomic (root CLAUDE.md §2 item 3
+    # framing — this is a *detected spread*, not a guaranteed capture), so capital
+    # sits in flight for the bridge's ``settle_seconds`` with zero on-chain price
+    # certainty. This haircuts the cross-chain profit gate proportionally to time
+    # in flight (``price_drift_bps_per_minute * settle_seconds/60``, see
+    # detect/cross_chain.py and docs/ARBITRAGE_THEORY.md §5). Like
+    # :class:`~l2arb.detect.profit.GasModel`, this is a **configurable, conservative
+    # estimate** — not a live volatility oracle, which this engine has no feed for
+    # — so treat the default as a deliberately cautious risk-model knob, not a
+    # measured statistic. Default derivation: ~2bps/minute is the right order of
+    # magnitude for a major asset's realistic short-window volatility, so a
+    # 10-minute fast-bridge wait costs ~20bps and a 60-minute canonical-bridge
+    # wait costs ~120bps of the sell-leg output — enough to meaningfully haircut
+    # typical single-digit-to-low-double-digit-bps edges without blanket-killing
+    # every cross-chain opportunity outright.
+    cross_chain_price_drift_bps_per_minute: float = Field(default=2.0, ge=0)
+
     # Infra (read side only).
     redis_url: str = "redis://localhost:6379/0"
 

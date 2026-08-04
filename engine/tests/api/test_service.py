@@ -85,13 +85,13 @@ def test_response_carries_engine_stage_timing(gk: type[GraphKit]) -> None:
     assert resp["count"] >= 1
 
 
-def test_cross_chain_via_service(gk: type[GraphKit]) -> None:
+def _cross_chain_request(gk: type[GraphKit]) -> dict[str, Any]:
     arb, base = 42161, 8453
     num_x, weth_x = gk.token(1, chain=arb), gk.token(2, chain=arb)
     weth_y, num_y = gk.token(3, chain=base), gk.token(4, chain=base)
     buy = gk.v2(10, num_x, weth_x, 1_000_000 * 10**18, 1000 * 10**18)
     sell = gk.v2(11, weth_y, num_y, 1000 * 10**18, 1_100_000 * 10**18)
-    req = {
+    return {
         "top_n": 10,
         "now_ts": gk.BS.timestamp,
         "chains": [
@@ -139,8 +139,46 @@ def test_cross_chain_via_service(gk: type[GraphKit]) -> None:
             "pairs": [["WETH", "USDC"]],
         },
     }
-    resp = run_detection(req)
+
+
+def test_cross_chain_via_service(gk: type[GraphKit]) -> None:
+    resp = run_detection(_cross_chain_request(gk))
     assert any(o["strategy"] == "cross_chain_two_hop" for o in resp["opportunities"])
+
+
+def test_cross_chain_price_drift_is_active_by_default_via_service(gk: type[GraphKit]) -> None:
+    # E1: the API boundary must always resolve a real, non-zero price-drift
+    # default (root CLAUDE.md §8 item 1's pattern) so the live /detect path has
+    # the haircut active even though the pure compute layer defaults it off.
+    resp = run_detection(_cross_chain_request(gk))
+    opps = [o for o in resp["opportunities"] if o["strategy"] == "cross_chain_two_hop"]
+    assert opps
+    assert int(opps[0]["price_drift_cost"]) > 0
+
+
+def test_cross_chain_price_drift_operator_setting_is_honoured(
+    gk: type[GraphKit], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from l2arb.config import get_settings
+
+    # A higher configured drift rate must produce a strictly larger haircut for
+    # the identical request, proving the env var actually reaches the gate (not
+    # just that *some* default is active, which the test above already covers).
+    baseline = run_detection(_cross_chain_request(gk))
+    baseline_cost = int(
+        next(o for o in baseline["opportunities"] if o["strategy"] == "cross_chain_two_hop")[
+            "price_drift_cost"
+        ]
+    )
+    monkeypatch.setenv("L2ARB__CROSS_CHAIN_PRICE_DRIFT_BPS_PER_MINUTE", "20.0")
+    get_settings.cache_clear()
+    try:
+        resp = run_detection(_cross_chain_request(gk))
+        opps = [o for o in resp["opportunities"] if o["strategy"] == "cross_chain_two_hop"]
+        assert opps
+        assert int(opps[0]["price_drift_cost"]) > baseline_cost
+    finally:
+        get_settings.cache_clear()
 
 
 def test_stale_request_is_rejected_by_the_default_freshness_gate(gk: type[GraphKit]) -> None:

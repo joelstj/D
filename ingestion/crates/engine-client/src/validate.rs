@@ -54,11 +54,16 @@ pub fn validate_response(req: &DetectRequest, resp: &DetectResponse) -> Vec<Resp
         });
     }
 
-    let verified_pools: HashSet<PoolAddress> = req
+    // Keyed on (chain_id, address), not bare address: ingestion now sends one
+    // combined multi-chain request per tick, and several configured L2s are
+    // OP-Stack siblings that can share an identical predeploy/pool address. A
+    // bare-address key would let a pool verified on chain A rubber-stamp a
+    // same-address leg the engine attributes to a different chain B.
+    let verified_pools: HashSet<(u64, PoolAddress)> = req
         .pools
         .iter()
         .filter(|p| p.verified)
-        .map(|p| p.address)
+        .map(|p| (p.blockstamp.chain_id, p.address))
         .collect();
     let sent_stamps: HashSet<(u64, u64, B256)> = req
         .pools
@@ -80,7 +85,11 @@ pub fn validate_response(req: &DetectRequest, resp: &DetectResponse) -> Vec<Resp
             issues.push(ResponseIssue::UnverifiedOpportunity { index });
         }
         for leg in &opp.legs {
-            if !verified_pools.contains(&leg.pool) {
+            // A leg's authoritative chain is its own token's chain, not the
+            // opportunity's (possibly multi-chain) `block` — the pool
+            // `leg.pool` refers to lives wherever `leg.token_in` does.
+            let key = (leg.token_in.chain_id, leg.pool);
+            if !verified_pools.contains(&key) {
                 issues.push(ResponseIssue::LegPoolNotVerified {
                     index,
                     pool: leg.pool,
@@ -223,6 +232,79 @@ mod tests {
         }
     }
 
+    /// Like [`pool`] but on an explicit chain (chain-scoped verification tests).
+    fn pool_on_chain(chain_id: u64, addr: u8, number: u64, hash: B256, verified: bool) -> Pool {
+        Pool {
+            address: PoolAddress::Contract(Address::from([addr; 20])),
+            kind: PoolKind::V2,
+            fee_pips: 3000,
+            verified,
+            token0: Token::with_symbol(chain_id, Address::from([1; 20]), 18, "A"),
+            token1: Token::with_symbol(chain_id, Address::from([2; 20]), 18, "B"),
+            blockstamp: Blockstamp {
+                chain_id,
+                number,
+                block_hash: hash,
+                timestamp: number,
+            },
+            v2: Some(V2State {
+                reserve0: DecU256(U256::from(1_000u64)),
+                reserve1: DecU256(U256::from(2_000u64)),
+            }),
+            v3: None,
+        }
+    }
+
+    /// Like [`opp`] but the leg's tokens — and therefore its authoritative chain
+    /// — live on an explicit chain, independent of any other pool/chain that
+    /// might appear in the same request (chain-scoped verification tests).
+    fn opp_on_chain(
+        chain_id: u64,
+        leg_pool: u8,
+        net_profit: u64,
+        verified: bool,
+        block_number: u64,
+        hash: B256,
+    ) -> Opportunity {
+        Opportunity {
+            strategy: "two_hop".into(),
+            numeraire: Token::with_symbol(chain_id, Address::from([1; 20]), 18, "A"),
+            input_amount: DecU256(U256::from(100u64)),
+            output_amount: DecU256(U256::from(110u64)),
+            gross_profit: DecU256(U256::from(net_profit + 5)),
+            gas_cost: DecU256(U256::from(3u64)),
+            bridge_cost: DecU256(U256::ZERO),
+            net_profit: DecU256(U256::from(net_profit)),
+            profit_bps: 10.0,
+            expected_net: DecU256(U256::from(net_profit)),
+            score: 1.0,
+            hops: 2,
+            chain_ids: vec![chain_id],
+            is_cross_chain: false,
+            settle_seconds: 0,
+            verified,
+            block: Block {
+                chain_id,
+                number: block_number,
+                hash,
+                timestamp: block_number,
+            },
+            risk: Risk {
+                success_probability: 0.9,
+                capture_ratio: 0.8,
+                frontrun_risk: 0.1,
+                notes: vec![],
+            },
+            legs: vec![Leg {
+                pool: PoolAddress::Contract(Address::from([leg_pool; 20])),
+                token_in: Token::with_symbol(chain_id, Address::from([1; 20]), 18, "A"),
+                token_out: Token::with_symbol(chain_id, Address::from([2; 20]), 18, "B"),
+                amount_in: DecU256(U256::from(100u64)),
+                amount_out: DecU256(U256::from(110u64)),
+            }],
+        }
+    }
+
     #[test]
     fn retain_valid_drops_only_the_invalid_opportunity() {
         let hash = B256::from([7; 32]);
@@ -308,5 +390,102 @@ mod tests {
         let (clean, issues) = retain_valid(&req, &resp);
         assert!(issues.is_empty(), "a valid response has no issues");
         assert_eq!(clean, resp, "a valid response is passed through unchanged");
+    }
+
+    #[test]
+    fn leg_pool_verification_is_scoped_to_the_legs_own_chain() {
+        // Two chains can share an identical pool/predeploy address (several
+        // configured L2s are OP-Stack siblings). A pool verified on chain 8453
+        // must not rubber-stamp a same-address leg the engine attributes to a
+        // DIFFERENT chain (10), where that address was never verified.
+        let shared_addr = 0xAA;
+        let hash_base = B256::from([7; 32]);
+        let hash_op = B256::from([8; 32]);
+        let req = DetectRequest {
+            top_n: 10,
+            max_hops: 4,
+            incremental: false,
+            chains: vec![],
+            pools: vec![
+                pool_on_chain(8453, shared_addr, 500, hash_base, true), // verified, Base
+                pool_on_chain(10, shared_addr, 900, hash_op, false),    // NOT verified, Optimism
+            ],
+            cross_chain: None,
+        };
+        let bad = opp_on_chain(10, shared_addr, 42, true, 900, hash_op);
+        let resp = DetectResponse {
+            count: 1,
+            opportunities: vec![bad],
+            timing: None,
+        };
+
+        let issues = validate_response(&req, &resp);
+        assert_eq!(
+            issues,
+            vec![ResponseIssue::LegPoolNotVerified {
+                index: 0,
+                pool: PoolAddress::Contract(Address::from([shared_addr; 20])),
+            }],
+            "chain 8453's verification of this address must not leak into chain 10: {issues:?}"
+        );
+    }
+
+    #[test]
+    fn leg_pool_verification_still_passes_on_the_same_chain() {
+        // Control case: same address, same chain as the verified pool — must
+        // still validate normally (no false positive from the chain-scoping fix).
+        let addr = 0xAA;
+        let hash = B256::from([7; 32]);
+        let req = DetectRequest {
+            top_n: 10,
+            max_hops: 4,
+            incremental: false,
+            chains: vec![],
+            pools: vec![pool_on_chain(8453, addr, 500, hash, true)],
+            cross_chain: None,
+        };
+        let good = opp_on_chain(8453, addr, 42, true, 500, hash);
+        let resp = DetectResponse {
+            count: 1,
+            opportunities: vec![good],
+            timing: None,
+        };
+        assert!(validate_response(&req, &resp).is_empty());
+    }
+
+    #[test]
+    fn retain_valid_drops_a_cross_chain_address_collision_phantom() {
+        // End-to-end: retain_valid must actually drop (not just flag) an
+        // opportunity whose leg exploits a same-address pool verified on a
+        // different chain.
+        let shared_addr = 0xAA;
+        let hash_base = B256::from([7; 32]);
+        let hash_op = B256::from([8; 32]);
+        let req = DetectRequest {
+            top_n: 10,
+            max_hops: 4,
+            incremental: false,
+            chains: vec![],
+            pools: vec![
+                pool_on_chain(8453, shared_addr, 500, hash_base, true),
+                pool_on_chain(10, shared_addr, 900, hash_op, false),
+            ],
+            cross_chain: None,
+        };
+        let good = opp_on_chain(8453, shared_addr, 42, true, 500, hash_base);
+        let phantom = opp_on_chain(10, shared_addr, 42, true, 900, hash_op);
+        let resp = DetectResponse {
+            count: 2,
+            opportunities: vec![good.clone(), phantom],
+            timing: None,
+        };
+
+        let (clean, issues) = retain_valid(&req, &resp);
+        assert!(!issues.is_empty());
+        assert_eq!(
+            clean.opportunities,
+            vec![good],
+            "only the legitimately-verified opportunity survives"
+        );
     }
 }

@@ -441,10 +441,31 @@ async fn aggregator_loop(
         top_n: config.engine.top_n,
         max_hops: config.engine.max_hops,
     };
-    let cross_chain = build_cross_chain(&config);
-    if cross_chain.is_some() {
-        tracing::info!("cross-chain detection enabled");
+    let cc_build = build_cross_chain(&config);
+    if cc_build.cross_chain.is_some() {
+        tracing::info!(
+            assets = cc_build.usable.assets_out,
+            bridges = cc_build.usable.bridges_out,
+            pairs = cc_build.usable.pairs_out,
+            "cross-chain detection enabled"
+        );
+    } else if cc_build.is_inert_despite_enabled() {
+        // cross_chain is turned ON in config but nothing usable came out of
+        // parsing+filtering (bad/placeholder addresses, fewer than 2
+        // representations on enabled chains, or no matching bridge) — this is
+        // NOT the same as the operator intentionally leaving it off, and used to
+        // look identical to a fully-wired setup (a silent, healthy-looking
+        // total outage of the cross-chain feature). warn, not error: cross-chain
+        // is optional and same-chain detection must keep running fine either way.
+        tracing::warn!(
+            configured_assets = cc_build.configured_assets,
+            configured_bridges = cc_build.configured_bridges,
+            configured_pairs = cc_build.configured_pairs,
+            "cross_chain is enabled in config but 0 usable assets survived parsing+filtering — \
+             cross-chain detection is OFF this run; same-chain detection is unaffected"
+        );
     }
+    let cross_chain = cc_build.cross_chain;
 
     // The evaluation clock runs at the debounce floor; `cadence.should_send` gates
     // the actual send (on change past the floor, or on the heartbeat ceiling).

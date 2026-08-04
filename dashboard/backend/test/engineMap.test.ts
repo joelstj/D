@@ -130,6 +130,90 @@ describe("mapEngineOpportunity", () => {
   });
 });
 
+describe("mapEngineOpportunity cross-chain fields (D1)", () => {
+  it("a same-chain opportunity gets isCrossChain:false and no destination fields", () => {
+    const o = mapEngineOpportunity(sampleOpp(), 1_700_000_000_000);
+    expect(o.isCrossChain).toBe(false);
+    expect(o.destChainId).toBeUndefined();
+    expect(o.destNetwork).toBeUndefined();
+    expect(o.settleSeconds).toBeUndefined();
+    // Source chain is still resolved correctly.
+    expect(o.network).toBe("base");
+    expect(o.chainId).toBe(8453);
+  });
+
+  it("a genuine two-chain opportunity resolves the destination chain/network/settle time", () => {
+    // Source: Arbitrum (42161, the numeraire's chain). Destination: Base (8453).
+    const usdcArb = { chain_id: 42161, address: "0xUSDCarb", decimals: 6, symbol: "USDC" };
+    const wethArb = { chain_id: 42161, address: "0xWETHarb", decimals: 18, symbol: "WETH" };
+    const usdcBase = { chain_id: 8453, address: "0xUSDCbase", decimals: 6, symbol: "USDC" };
+    const o = mapEngineOpportunity(
+      sampleOpp({
+        numeraire: usdcArb,
+        chain_ids: [42161, 8453],
+        is_cross_chain: true,
+        settle_seconds: 45,
+        block: { chain_id: 42161, number: 1, hash: "0x1", timestamp: 1 },
+        legs: [
+          {
+            pool: "0xPool1000000000000000000000000000000000001",
+            token_in: usdcArb,
+            token_out: wethArb,
+            amount_in: "100000000",
+            amount_out: "31250000000000000",
+          },
+          {
+            pool: "0xPool2000000000000000000000000000000000002",
+            token_in: wethArb,
+            token_out: usdcBase,
+            amount_in: "31250000000000000",
+            amount_out: "100500000",
+          },
+        ],
+      }),
+      1_700_000_000_000,
+    );
+
+    expect(o.isCrossChain).toBe(true);
+    expect(o.destChainId).toBe(8453);
+    expect(o.destNetwork).toBe("base");
+    expect(o.settleSeconds).toBe(45);
+    // Source network/chainId are still correct — the destination didn't clobber them.
+    expect(o.network).toBe("arbitrum");
+    expect(o.chainId).toBe(42161);
+  });
+
+  it("leaves destChainId/destNetwork undefined (never guesses) when chain_ids is ambiguous", () => {
+    // Three chain_ids besides the source: no unambiguous single "other" chain.
+    const o1 = mapEngineOpportunity(
+      sampleOpp({ chain_ids: [8453, 42161, 10], is_cross_chain: true, settle_seconds: 30 }),
+      1_700_000_000_000,
+    );
+    expect(o1.isCrossChain).toBe(true);
+    expect(o1.destChainId).toBeUndefined();
+    expect(o1.destNetwork).toBeUndefined();
+    // settleSeconds is independent of destination resolution — still populated.
+    expect(o1.settleSeconds).toBe(30);
+
+    // chain_ids only contains the source chain itself: zero "other" chains.
+    const o2 = mapEngineOpportunity(
+      sampleOpp({ chain_ids: [8453], is_cross_chain: true, settle_seconds: 30 }),
+      1_700_000_000_000,
+    );
+    expect(o2.destChainId).toBeUndefined();
+    expect(o2.destNetwork).toBeUndefined();
+  });
+
+  it("falls back to chain-<id> for a destination chain outside the registry", () => {
+    const o = mapEngineOpportunity(
+      sampleOpp({ chain_ids: [8453, 999999], is_cross_chain: true, settle_seconds: 10 }),
+      1_700_000_000_000,
+    );
+    expect(o.destChainId).toBe(999999);
+    expect(o.destNetwork).toBe("chain-999999");
+  });
+});
+
 describe("isUsdStable", () => {
   it("recognizes common stablecoins case-insensitively", () => {
     expect(isUsdStable("USDC")).toBe(true);

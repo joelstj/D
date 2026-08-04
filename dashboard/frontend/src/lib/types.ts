@@ -65,6 +65,24 @@ export interface ArbitrageOpportunity {
   expiresAt: number;
   /** Ingestion tick-start wall clock (ms) for end-to-end latency; real feed only. */
   originWallMs?: number;
+  /**
+   * Whether this opportunity spans two chains (a source/buy chain and a
+   * different destination/sell chain). Always present — `false` for an
+   * ordinary same-chain opportunity. Cross-chain arbitrage is non-atomic:
+   * it executes as two separate transactions with capital exposed in flight
+   * between them.
+   */
+  isCrossChain: boolean;
+  /** Destination (sell) chain id for a cross-chain opportunity. Present only
+   *  when `isCrossChain` is true and the destination was unambiguous. */
+  destChainId?: number;
+  /** Dashboard network key for {@link destChainId} (e.g. `"arbitrum"`).
+   *  Present under the same conditions as `destChainId`. */
+  destNetwork?: string;
+  /** Expected wall-clock seconds between the source leg settling and the
+   *  destination leg becoming executable (bridge transit time). Present only
+   *  when `isCrossChain` is true. */
+  settleSeconds?: number;
 }
 
 /** Rolling statistics for one measured latency stage. */
@@ -111,7 +129,9 @@ export interface ExecutionResult {
   opportunityId: string;
   ts: number;
   mode: "paper" | "live";
-  status: "filled" | "reverted";
+  /** `"skipped"` means no fill/revert was attempted or modelled — used for a
+   *  cross-chain opportunity, never simulated as an atomic fill/revert. */
+  status: "filled" | "reverted" | "skipped";
   network: string;
   requestedProfitUsd: number;
   realizedProfitUsd: number;

@@ -23,13 +23,17 @@ export function createContractsRouter(service: ContractService): Router {
     guard(res, () => res.json(service.getArtifact(req.params.name))),
   );
 
-  // Deploy arguments for a browser-wallet deploy of the atomic executor. `admin`
-  // is the connected wallet (becomes admin/guardian/executor); providers come
-  // from the verified address book — an unverified chain 400s so the UI blocks.
+  // Deploy arguments for a browser-wallet deploy of an executor contract
+  // (`?contract=` — defaults to the atomic `FlashLoanArbitrage`; pass
+  // `CrossChainArbitrageExecutor` for the cross-chain executor's 1-arg
+  // constructor). `admin` is the connected wallet (becomes admin/guardian/
+  // executor); the atomic contract's provider addresses come from the
+  // verified address book — an unverified chain 400s so the UI blocks.
   router.get("/deploy-params/:network", (req, res) =>
     guard(res, () => {
       const admin = typeof req.query.admin === "string" ? req.query.admin : "";
-      res.json(service.deployParams(req.params.network, admin));
+      const contract = typeof req.query.contract === "string" ? req.query.contract : undefined;
+      res.json(service.deployParams(req.params.network, admin, contract));
     }),
   );
 

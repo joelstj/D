@@ -78,6 +78,11 @@ def build_engine(request: DetectRequest, *, now_ts: int) -> ArbitrageEngine:
     """
     engine = ArbitrageEngine(max_hops=request.max_hops)
     operator_max_age = get_settings().max_pool_age_seconds
+    # E1: resolved once, uniformly, for every chain — like operator_max_age above,
+    # this is a single operator-wide risk-model default (no per-request override
+    # surface today), so the live /detect path always has the cross-chain
+    # price-drift gate active (root CLAUDE.md §8 item 1's pattern).
+    operator_price_drift = get_settings().cross_chain_price_drift_bps_per_minute
     for cfg in request.chains:
         hubs = frozenset((cfg.chain_id, a.lower()) for a in cfg.hubs) or None
         max_age = (
@@ -88,6 +93,7 @@ def build_engine(request: DetectRequest, *, now_ts: int) -> ArbitrageEngine:
             cfg.min_profit_bps,
             now_ts=now_ts,
             max_pool_age_seconds=max_age,
+            price_drift_bps_per_minute=operator_price_drift,
         )
         engine.configure_chain(cfg.chain_id, ctx, hubs)
     for pool_dict in request.pools:
