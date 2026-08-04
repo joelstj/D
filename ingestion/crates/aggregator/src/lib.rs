@@ -14,6 +14,6 @@ pub mod request;
 pub mod snapshot;
 
 pub use cadence::{Cadence, CadenceMode};
-pub use crosschain::filter_cross_chain;
+pub use crosschain::{filter_cross_chain, CrossChainCounts};
 pub use request::{build_detect_request, ChainSnapshot, IncrementalPolicy, RequestConfig};
 pub use snapshot::{re_stamp, state_fingerprint, IncrementalTracker};
