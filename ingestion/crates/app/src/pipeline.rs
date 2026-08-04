@@ -10,8 +10,7 @@ use crate::crosschain::build_cross_chain;
 use crate::ingestor::{seed_all, ChainIngestor};
 use alloy_primitives::{Address, B256};
 use l2i_aggregator::{
-    build_detect_request, re_stamp, Cadence, ChainSnapshot, IncrementalPolicy, IncrementalTracker,
-    RequestConfig,
+    build_detect_request, re_stamp, Cadence, ChainSnapshot, IncrementalPolicy, RequestConfig,
 };
 use l2i_config::{CacheConfig, ChainConfig, Config};
 use l2i_core::{Blockstamp, ChainContext};
@@ -438,7 +437,6 @@ async fn aggregator_loop(
         max_interval_ms: config.cadence.max_interval_ms,
     };
     let mut policy = IncrementalPolicy::new(config.cadence.incremental);
-    let mut tracker = IncrementalTracker::new();
     let req_cfg = RequestConfig {
         top_n: config.engine.top_n,
         max_hops: config.engine.max_hops,
@@ -480,7 +478,6 @@ async fn aggregator_loop(
                     }
                 }
                 if reseeded {
-                    tracker.reset();
                     policy.reset();
                     tracing::debug!("reseed detected — incremental session reset");
                 }
@@ -530,16 +527,20 @@ async fn aggregator_loop(
                 }
                 if snaps.is_empty() { continue; }
 
+                // `incremental` is sent as a wire signal only — every request carries
+                // each chain's FULL current verified snapshot regardless of its value.
+                // The real l2arb engine builds a fresh, stateless graph on every
+                // `/detect` call (no cross-call cache), so a request that omitted
+                // unchanged-this-tick pools silently excluded them from the engine's
+                // search entirely — not "safely already known", genuinely absent from
+                // the graph. That made the single most common real arbitrage shape
+                // (one pool's price moves, a second untouched pool it cycles through
+                // doesn't) undetectable after a session's first tick. Sending the full
+                // set is a strict superset of what any engine needs: a future stateful
+                // engine can still diff it against its own memory using `incremental`
+                // as the hint; today's stateless one gets the complete state it
+                // actually requires to price every candidate route.
                 let incremental = policy.next_incremental();
-                for s in &mut snaps {
-                    // Always fold state into the tracker — even on a full request — so
-                    // the first incremental request after a full one sends only true
-                    // deltas instead of re-emitting every pool.
-                    let changed = tracker.changed(&s.pools);
-                    if incremental {
-                        s.pools = changed;
-                    }
-                }
                 let req = build_detect_request(snaps, incremental, cross_chain.clone(), req_cfg);
                 last_sent_ms = Some(now);
                 let build_ms = hot_timer.elapsed_secs() * 1000.0;

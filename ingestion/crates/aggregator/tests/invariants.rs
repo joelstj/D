@@ -1,6 +1,11 @@
-//! Snapshot invariants (M8 Tier-A, `docs/ARCHITECTURE.md §9` item 2):
-//! one block per chain per request; incremental sends only changed pools; the
-//! first request is `incremental:false`.
+//! Snapshot invariants (M8 Tier-A, `docs/ARCHITECTURE.md §8`):
+//! one block per chain per request; `build_detect_request` never narrows
+//! `pools` to a delta (see `docs/ARCHITECTURE.md §8` note 3 — the real engine
+//! is stateless per call, so a request must carry each chain's full current
+//! verified snapshot regardless of `incremental`); `IncrementalTracker` (a
+//! still-available, still-tested primitive, just not consulted by the
+//! pipeline to filter requests today) correctly computes a delta on its own
+//! terms; the first request of a session is `incremental:false`.
 
 use alloy_primitives::{Address, B256, U256};
 use l2i_aggregator::request::{
@@ -56,9 +61,11 @@ proptest! {
         }
     }
 
-    // Invariant 2: incremental resends only changed pools.
+    // IncrementalTracker (the primitive) correctly computes a delta on its own
+    // terms. This is NOT the pipeline's request-building behavior — see
+    // `full_snapshot_always_sent_regardless_of_incremental` below for that.
     #[test]
-    fn incremental_sends_only_changed(
+    fn incremental_tracker_computes_only_changed(
         reserves in proptest::collection::vec(1u128..1_000_000, 1..15),
         change_idx in 0usize..15,
         new_reserve in 1u128..1_000_000,
@@ -113,5 +120,46 @@ proptest! {
             // Always exactly one ChainContext per chain in the request.
             prop_assert_eq!(req.chains.len(), 1);
         }
+    }
+
+    // Invariant: `build_detect_request` never narrows `pools` to
+    // `IncrementalTracker`'s delta, regardless of `incremental`. Regression
+    // test for the bug where `crates/app/src/pipeline.rs` fed
+    // `IncrementalTracker::changed()`'s output back into the request — since
+    // the real l2arb engine builds a fresh, stateless graph per `/detect` call
+    // with no cross-call memory, that silently dropped every pool unchanged
+    // since the previous tick from the engine's search entirely (not "safely
+    // already known" — genuinely invisible to it), making the ordinary case of
+    // one leg's pool moving while its cycle-partner doesn't undetectable after
+    // a session's first tick. `pools` must always be the chain's full current
+    // verified snapshot; a *tracker* observing "nothing changed" is
+    // orthogonal to what a *request* is allowed to omit.
+    #[test]
+    fn full_snapshot_always_sent_regardless_of_incremental(
+        reserves in proptest::collection::vec(1u128..1_000_000, 1..15),
+        incremental in any::<bool>(),
+    ) {
+        let pools: Vec<Pool> = reserves.iter().enumerate().map(|(i, &r)| pool(1, i as u8, r, 1)).collect();
+
+        // Prime a tracker so every one of these pools is already "seen" —
+        // exactly the steady-state condition where the old bug dropped them.
+        let mut tracker = IncrementalTracker::new();
+        prop_assert_eq!(tracker.changed(&pools).len(), pools.len());
+        prop_assert!(tracker.changed(&pools).is_empty(), "sanity: tracker now sees these as unchanged");
+
+        let ctx = ChainContext {
+            chain_id: 1, gas_price_wei: 1, l1_data_fee_wei: 0, base_gas: 1, per_hop_gas: 1,
+            gas_safety_multiplier: 1.0, min_profit_bps: 1.0, native_price_in: BTreeMap::new(), hubs: vec![],
+        };
+        // The pipeline must hand build_detect_request the untouched snapshot —
+        // never something derived from `tracker`.
+        let req = build_detect_request(
+            vec![ChainSnapshot { context: ctx, pools: pools.clone() }],
+            incremental, None, RequestConfig::default(),
+        );
+        prop_assert_eq!(
+            req.pools.len(), pools.len(),
+            "the request must always carry every pool in the snapshot, not just what a tracker considers changed"
+        );
     }
 }

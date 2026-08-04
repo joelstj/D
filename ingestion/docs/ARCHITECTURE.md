@@ -251,7 +251,7 @@ locality for the rest.
 | Node → bot (WS push) | network-bound (~1–50 ms) | Persistent WS; **co-located / dedicated low-latency RPC** (or self-hosted node). This dominates — optimize endpoint locality. |
 | Decode event | < 100 µs | `alloy` typed decode, no allocation on hot path |
 | Update mirror | < 50 µs | sharded in-memory map, no lock contention |
-| Assemble snapshot + build `DetectRequest` | < 1 ms | pre-sized buffers, `incremental:true` sends only deltas |
+| Assemble snapshot + build `DetectRequest` | < 1 ms | pre-sized buffers; every chain's full current verified snapshot is sent every tick, not a delta (see note 3 below) |
 | Engine call (localhost, keep-alive) | ~0.2–2 ms + engine compute | persistent `reqwest` pool; engine is separate process |
 | Output emit | < 1 ms | non-blocking broadcast channel |
 | **Intra-process hot path (decode→emit, excl. node link & engine compute)** | **< 5 ms** | measured by `criterion` + a live harness; a CI-enforced budget |
@@ -259,7 +259,19 @@ locality for the rest.
 Latency enablers, in priority order:
 1. **Event-carried state** — no per-block RPC round-trip (the big win).
 2. **Persistent connections everywhere** — WS to nodes, keep-alive HTTP to engine.
-3. **Incremental requests** — after the first snapshot, send only changed pools.
+3. **`incremental` is a wire signal, not a payload trim.** Every request still
+   carries each chain's full current verified snapshot regardless of the flag's
+   value — `pools` is never narrowed to a delta. The real `l2arb` engine builds
+   a fresh, stateless graph on every `/detect` call with no cross-call cache, so
+   a request that omitted an unchanged-this-tick pool silently excluded it from
+   the engine's search entirely, not "safely already known" — undetectable the
+   moment the most common real arbitrage shape occurred (one pool's price
+   moves, a cycle-partner pool it routes through doesn't, in the same tick).
+   `IncrementalTracker` (`l2i_aggregator::snapshot`) still computes the delta
+   and is still exercised by its own tests; it's simply not used to filter the
+   request today. A future stateful engine could consume `incremental` +
+   `IncrementalTracker`'s diff as a genuine optimization; today's stateless one
+   needs the complete state it actually prices against.
 4. **In-memory mirror** — the current state of every pool is always resident.
 5. **(Advanced, chain-specific) Flashblocks pre-confirmations** — Base and
    Unichain expose ~200 ms sub-block pre-confirmations (Flashbots-built

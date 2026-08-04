@@ -13,13 +13,18 @@ use crate::context::build_chain_context;
 use alloy_primitives::{Address, B256};
 use l2i_config::ChainConfig;
 use l2i_core::{Blockstamp, ChainContext, PoolKind};
-use l2i_ingest::event::{decode_sync_reserves, sync_topic};
+use l2i_ingest::event::{
+    decode_sync_reserves, decode_v3_liquidity_change, sync_topic, v3_burn_topic, v3_mint_topic,
+};
 use l2i_ingest::mirror::Mirror;
 use l2i_ingest::reconcile::reconcile_batch;
 use l2i_ingest::reorg::{BlockRef, ReorgOutcome, ReorgTracker};
 use l2i_rpc::{BlockId, ChainProvider, Filter, RpcError};
+use l2i_v4::apply_v4_modify_liquidity;
 use l2i_v4::apply_v4_swap;
-use l2i_v4::event::{decode_v4_swap, v4_swap_topic};
+use l2i_v4::event::{
+    decode_v4_modify_liquidity, decode_v4_swap, v4_modify_liquidity_topic, v4_swap_topic,
+};
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
@@ -128,7 +133,7 @@ impl<P: ChainProvider + 'static> ChainIngestor<P> {
                     let Some(log) = log else {
                         return Err(RpcError::Transport("logs subscription ended".into()));
                     };
-                    self.apply_log(&log);
+                    apply_log(self.chain_id, &self.mirror, &self.v4_declared_fees, &log);
                 }
             }
         }
@@ -163,43 +168,73 @@ impl<P: ChainProvider + 'static> ChainIngestor<P> {
             ReorgOutcome::Extended | ReorgOutcome::Duplicate => {}
         }
     }
+}
 
-    /// Decode one log and update the mirror by pool type.
-    fn apply_log(&self, log: &l2i_rpc::Log) {
-        let Some(stamp) = blockstamp_from_log(self.chain_id, log) else {
-            return;
-        };
-        let Some(topic0) = log.topics().first().copied() else {
-            return;
-        };
-        // First hot-path stage: time the typed decode → mirror update. Records into
-        // the DECODE_SECONDS histogram on drop (stack-only guard, no allocation).
-        let _decode =
-            l2i_observability::LatencyTimer::start(l2i_observability::names::DECODE_SECONDS);
+/// Decode one log and update the mirror by pool type. A free function (rather than
+/// a `&self` method) because it only ever needs these three fields — never the
+/// provider, config, or anything else on [`ChainIngestor`] — which keeps it
+/// directly unit-testable without fabricating the rest of the struct.
+fn apply_log(
+    chain_id: u64,
+    mirror: &Mirror,
+    v4_declared_fees: &HashMap<B256, u32>,
+    log: &l2i_rpc::Log,
+) {
+    let Some(stamp) = blockstamp_from_log(chain_id, log) else {
+        return;
+    };
+    let Some(topic0) = log.topics().first().copied() else {
+        return;
+    };
+    // First hot-path stage: time the typed decode → mirror update. Records into
+    // the DECODE_SECONDS histogram on drop (stack-only guard, no allocation).
+    let _decode = l2i_observability::LatencyTimer::start(l2i_observability::names::DECODE_SECONDS);
 
-        if topic0 == sync_topic() {
-            if let Ok((r0, r1)) = decode_sync_reserves(&log.inner.data.data) {
-                let id = l2i_core::PoolAddress::Contract(log.address());
-                self.mirror.apply_v2_sync(&id, r0, r1, stamp);
-            }
-        } else if topic0 == l2i_ingest::event::v3_swap_topic() {
-            if let Ok((sqrt, liq, tick)) =
-                l2i_ingest::event::decode_v3_swap_data(&log.inner.data.data)
-            {
-                let id = l2i_core::PoolAddress::Contract(log.address());
-                self.mirror.apply_v3_swap(&id, sqrt, tick, liq, stamp);
-            }
-        } else if topic0 == v4_swap_topic() {
-            if let Ok(s) = decode_v4_swap(log) {
-                // V4 pools live in the same mirror, keyed by poolId. Route through the
-                // adapter so a dynamic-fee pool's effective fee (carried in the Swap
-                // event) actually lands via set_fee_pips instead of being discarded.
-                // `declared_fee` distinguishes a dynamic pool (0x800000) from a static
-                // one; an unknown poolId defaults to 0 (non-dynamic) and apply_v4_swap
-                // is then a no-op for it (the mirror holds no such pool).
-                let declared_fee = self.v4_declared_fees.get(&s.pool_id).copied().unwrap_or(0);
-                apply_v4_swap(&self.mirror, &s, declared_fee, stamp);
-            }
+    if topic0 == sync_topic() {
+        if let Ok((r0, r1)) = decode_sync_reserves(&log.inner.data.data) {
+            let id = l2i_core::PoolAddress::Contract(log.address());
+            mirror.apply_v2_sync(&id, r0, r1, stamp);
+        }
+    } else if topic0 == l2i_ingest::event::v3_swap_topic() {
+        if let Ok((sqrt, liq, tick)) = l2i_ingest::event::decode_v3_swap_data(&log.inner.data.data)
+        {
+            let id = l2i_core::PoolAddress::Contract(log.address());
+            mirror.apply_v3_swap(&id, sqrt, tick, liq, stamp);
+        }
+    } else if topic0 == v4_swap_topic() {
+        if let Ok(s) = decode_v4_swap(log) {
+            // V4 pools live in the same mirror, keyed by poolId. Route through the
+            // adapter so a dynamic-fee pool's effective fee (carried in the Swap
+            // event) actually lands via set_fee_pips instead of being discarded.
+            // `declared_fee` distinguishes a dynamic pool (0x800000) from a static
+            // one; an unknown poolId defaults to 0 (non-dynamic) and apply_v4_swap
+            // is then a no-op for it (the mirror holds no such pool).
+            let declared_fee = v4_declared_fees.get(&s.pool_id).copied().unwrap_or(0);
+            apply_v4_swap(mirror, &s, declared_fee, stamp);
+        }
+    } else if topic0 == v3_mint_topic() || topic0 == v3_burn_topic() {
+        // In-range Mint/Burn changes the pool's *active* liquidity (only when
+        // the modified range brackets the current tick — apply_v3_liquidity_change
+        // itself checks that). Without this, the mirror's `liquidity` figure
+        // silently drifts from chain truth between Swaps on the same pool, while
+        // `re_stamp` keeps re-labelling it `verified:true` at the live head every
+        // tick regardless (see docs/ARCHITECTURE.md §6 "never lie").
+        if let Ok(change) = decode_v3_liquidity_change(log) {
+            let id = l2i_core::PoolAddress::Contract(log.address());
+            mirror.apply_v3_liquidity_change(
+                &id,
+                change.tick_lower,
+                change.tick_upper,
+                change.amount,
+                change.add,
+                stamp,
+            );
+        }
+    } else if topic0 == v4_modify_liquidity_topic() {
+        // V4 analogue of the V3 Mint/Burn branch above — same staleness risk,
+        // same fix shape.
+        if let Ok(change) = decode_v4_modify_liquidity(log) {
+            apply_v4_modify_liquidity(mirror, &change, stamp);
         }
     }
 }
@@ -338,4 +373,230 @@ pub async fn seed_all<P: ChainProvider + ?Sized>(
     }
     let _ = PoolKind::V2; // keep the import meaningful across feature sets
     Ok(seeded)
+}
+
+#[cfg(test)]
+mod apply_log_tests {
+    use super::*;
+    use alloy_primitives::{Bytes, I256, U256};
+    use l2i_core::Token;
+    use l2i_ingest::mirror::{LiveState, PoolState};
+
+    /// Encode a non-negative `int24` (sign-extended into an i32) as the 32-byte
+    /// big-endian word `int24_from_word` expects — mirrors how a real V3/V4 log
+    /// packs an indexed/data `int24` tick.
+    fn word_i32(v: i32) -> B256 {
+        assert!(v >= 0, "test helper only covers non-negative ticks");
+        let mut w = [0u8; 32];
+        w[28..32].copy_from_slice(&v.to_be_bytes());
+        B256::from(w)
+    }
+
+    fn test_log(address: Address, topics: Vec<B256>, data: Vec<u8>) -> l2i_rpc::Log {
+        l2i_rpc::Log {
+            inner: alloy_primitives::Log::new(address, topics, Bytes::from(data)).unwrap(),
+            block_hash: Some(B256::from([7u8; 32])),
+            block_number: Some(100),
+            block_timestamp: Some(1_700_000_000),
+            ..Default::default()
+        }
+    }
+
+    fn v3_pool_state(identity: l2i_core::PoolAddress, tick: i32, liquidity: u64) -> PoolState {
+        PoolState {
+            identity,
+            kind: PoolKind::V3,
+            fee_pips: 3000,
+            token0: Token::with_symbol(1, Address::from([1u8; 20]), 18, "A"),
+            token1: Token::with_symbol(1, Address::from([2u8; 20]), 6, "B"),
+            state: LiveState::V3 {
+                sqrt_price_x96: U256::from(1u64) << 96,
+                tick,
+                liquidity: U256::from(liquidity),
+            },
+            blockstamp: Blockstamp {
+                chain_id: 1,
+                number: 99,
+                block_hash: B256::from([6u8; 32]),
+                timestamp: 1,
+            },
+            verified: true,
+        }
+    }
+
+    fn active_liquidity(mirror: &Mirror, id: &l2i_core::PoolAddress) -> U256 {
+        match mirror
+            .get(id)
+            .expect("pool must still be in the mirror")
+            .state
+        {
+            LiveState::V3 { liquidity, .. } => liquidity,
+            LiveState::V2 { .. } => panic!("expected V3-shaped state"),
+        }
+    }
+
+    // Regression coverage for the CRITICAL finding: V3 Mint/Burn and V4
+    // ModifyLiquidity were fully decoded, fully applied to the mirror, and
+    // directly unit-tested at the decode/mirror layer — but `apply_log` (the
+    // *only* place a live topic0 is ever dispatched) had no branch for either,
+    // so both were silently dropped on the live path while `re_stamp` kept
+    // re-labelling the resulting stale liquidity `verified:true` every tick.
+
+    #[test]
+    fn v3_mint_in_range_grows_active_liquidity() {
+        let mirror = Mirror::new();
+        let pool_addr = Address::from([9u8; 20]);
+        let id = l2i_core::PoolAddress::Contract(pool_addr);
+        mirror.insert(v3_pool_state(id, 100, 1000));
+
+        // event Mint(address sender, address indexed owner, int24 indexed
+        // tickLower, int24 indexed tickUpper, uint128 amount, uint256 amount0,
+        // uint256 amount1) — range [0, 200) brackets tick=100; amount=500 lives
+        // in data word 1 (data: [sender, amount, amount0, amount1]).
+        let mut data = vec![0u8; 128];
+        data[32..64].copy_from_slice(&U256::from(500u64).to_be_bytes::<32>());
+        let log = test_log(
+            pool_addr,
+            vec![
+                l2i_ingest::event::v3_mint_topic(),
+                B256::ZERO, // owner (unused by decode)
+                word_i32(0),
+                word_i32(200),
+            ],
+            data,
+        );
+
+        apply_log(1, &mirror, &HashMap::new(), &log);
+
+        assert_eq!(active_liquidity(&mirror, &id), U256::from(1500u64));
+    }
+
+    #[test]
+    fn v3_burn_in_range_shrinks_active_liquidity() {
+        let mirror = Mirror::new();
+        let pool_addr = Address::from([9u8; 20]);
+        let id = l2i_core::PoolAddress::Contract(pool_addr);
+        mirror.insert(v3_pool_state(id, 100, 1000));
+
+        // event Burn(address indexed owner, int24 indexed tickLower, int24
+        // indexed tickUpper, uint128 amount, uint256 amount0, uint256 amount1) —
+        // amount is data word 0.
+        let mut data = vec![0u8; 96];
+        data[0..32].copy_from_slice(&U256::from(300u64).to_be_bytes::<32>());
+        let log = test_log(
+            pool_addr,
+            vec![
+                l2i_ingest::event::v3_burn_topic(),
+                B256::ZERO,
+                word_i32(0),
+                word_i32(200),
+            ],
+            data,
+        );
+
+        apply_log(1, &mirror, &HashMap::new(), &log);
+
+        assert_eq!(active_liquidity(&mirror, &id), U256::from(700u64));
+    }
+
+    #[test]
+    fn v3_mint_outside_the_current_tick_range_does_not_touch_active_liquidity() {
+        let mirror = Mirror::new();
+        let pool_addr = Address::from([9u8; 20]);
+        let id = l2i_core::PoolAddress::Contract(pool_addr);
+        mirror.insert(v3_pool_state(id, 100, 1000));
+
+        // Range [200, 300) does not bracket tick=100 — must be a no-op.
+        let mut data = vec![0u8; 128];
+        data[32..64].copy_from_slice(&U256::from(500u64).to_be_bytes::<32>());
+        let log = test_log(
+            pool_addr,
+            vec![
+                l2i_ingest::event::v3_mint_topic(),
+                B256::ZERO,
+                word_i32(200),
+                word_i32(300),
+            ],
+            data,
+        );
+
+        apply_log(1, &mirror, &HashMap::new(), &log);
+
+        assert_eq!(active_liquidity(&mirror, &id), U256::from(1000u64));
+    }
+
+    #[test]
+    fn v4_modify_liquidity_dispatches_to_the_mirror_by_pool_id() {
+        let mirror = Mirror::new();
+        let pool_id = B256::from([5u8; 32]);
+        let id = l2i_core::PoolAddress::PoolId(pool_id);
+        mirror.insert(v3_pool_state(id, 100, 1000));
+        // The PoolManager singleton — irrelevant to the lookup (V4 identity comes
+        // from the poolId topic, not the emitting address), included for realism.
+        let pool_manager = Address::from([0x99u8; 20]);
+
+        // event ModifyLiquidity(bytes32 indexed id, address indexed sender, int24
+        // tickLower, int24 tickUpper, int256 liquidityDelta, bytes32 salt) — data:
+        // [tickLower, tickUpper, liquidityDelta, salt]; delta=+500 brackets tick=100.
+        let mut data = vec![0u8; 128];
+        data[0..32].copy_from_slice(word_i32(0).as_slice());
+        data[32..64].copy_from_slice(word_i32(200).as_slice());
+        data[64..96].copy_from_slice(&I256::try_from(500i64).unwrap().to_be_bytes::<32>());
+        let log = test_log(
+            pool_manager,
+            vec![
+                l2i_v4::event::v4_modify_liquidity_topic(),
+                pool_id,
+                B256::ZERO,
+            ],
+            data,
+        );
+
+        apply_log(1, &mirror, &HashMap::new(), &log);
+
+        assert_eq!(active_liquidity(&mirror, &id), U256::from(1500u64));
+    }
+
+    #[test]
+    fn v3_swap_and_sync_dispatch_still_work_after_the_refactor_to_a_free_function() {
+        // Cheap regression guard: the CRITICAL-finding fix turned `apply_log`
+        // from a `&self` method into a free function — prove the pre-existing
+        // V2 Sync and V3 Swap branches still fire correctly through it.
+        let mirror = Mirror::new();
+        let pool_addr = Address::from([3u8; 20]);
+        let id = l2i_core::PoolAddress::Contract(pool_addr);
+        mirror.insert(PoolState {
+            identity: id,
+            kind: PoolKind::V2,
+            fee_pips: 3000,
+            token0: Token::with_symbol(1, Address::from([1u8; 20]), 18, "A"),
+            token1: Token::with_symbol(1, Address::from([2u8; 20]), 6, "B"),
+            state: LiveState::V2 {
+                reserve0: U256::from(1u64),
+                reserve1: U256::from(1u64),
+            },
+            blockstamp: Blockstamp {
+                chain_id: 1,
+                number: 99,
+                block_hash: B256::from([6u8; 32]),
+                timestamp: 1,
+            },
+            verified: true,
+        });
+
+        let mut data = vec![0u8; 64];
+        data[0..32].copy_from_slice(&U256::from(111u64).to_be_bytes::<32>());
+        data[32..64].copy_from_slice(&U256::from(222u64).to_be_bytes::<32>());
+        let log = test_log(pool_addr, vec![sync_topic()], data);
+
+        apply_log(1, &mirror, &HashMap::new(), &log);
+
+        match mirror.get(&id).unwrap().state {
+            LiveState::V2 { reserve0, reserve1 } => {
+                assert_eq!(reserve0, U256::from(111u64));
+                assert_eq!(reserve1, U256::from(222u64));
+            }
+            LiveState::V3 { .. } => panic!("expected V2 state"),
+        }
+    }
 }

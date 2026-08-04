@@ -127,8 +127,16 @@ export function LiveProvider({ children }: { children: ReactNode }) {
   }, [state.settings]);
 
   const resetSettings = useCallback(async () => {
-    const next = await api.resetSettings();
-    dispatch({ type: "settings", settings: next });
+    try {
+      const next = await api.resetSettings();
+      dispatch({ type: "settings", settings: next });
+    } catch {
+      // Previously unhandled: a failed reset (backend down, network error) left
+      // an uncaught promise rejection and the button did nothing visible.
+      // Reconcile from source of truth, same as patchSettings' failure path.
+      const current = await api.settings();
+      dispatch({ type: "settings", settings: current });
+    }
   }, []);
 
   const execute = useCallback((id: string) => api.execute(id), []);

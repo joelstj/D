@@ -114,6 +114,7 @@ export function SettingsPanel() {
             label="Flash-loan size"
             value={settings.loanAmountUsd}
             min={100}
+            max={100_000_000}
             step={1000}
             unit="USD"
             onCommit={(v) => set("loanAmountUsd", v)}

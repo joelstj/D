@@ -72,6 +72,16 @@ pub fn v3_swap_topic() -> B256 {
     Swap::SIGNATURE_HASH
 }
 
+/// The V3 `Mint` topic0 (in-range liquidity add).
+pub fn v3_mint_topic() -> B256 {
+    Mint::SIGNATURE_HASH
+}
+
+/// The V3 `Burn` topic0 (in-range liquidity remove).
+pub fn v3_burn_topic() -> B256 {
+    Burn::SIGNATURE_HASH
+}
+
 /// Decode a V3 `Swap`'s `(sqrtPriceX96, liquidity, tick)` from its 160-byte data.
 pub fn decode_v3_swap_data(data: &[u8]) -> Result<(U256, U256, i32)> {
     if data.len() != 160 {
