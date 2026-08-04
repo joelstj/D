@@ -20,6 +20,7 @@ function opp(id: string, netProfitUsd = 100): ArbitrageOpportunity {
     confidence: 0.8,
     status: "new",
     expiresAt: Date.now() + 10000,
+    isCrossChain: false,
   };
 }
 

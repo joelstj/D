@@ -56,6 +56,38 @@ export interface ArbitrageOpportunity {
    * measures `Date.now() - originWallMs` for the ingest → displayed latency.
    */
   originWallMs?: number;
+  /**
+   * Whether this opportunity spans two chains (a source/buy chain and a
+   * different destination/sell chain). Always present — `false` for an
+   * ordinary same-chain opportunity. Cross-chain arbitrage cannot be
+   * atomically flash-loaned (a single transaction cannot span two chains);
+   * it executes as two separate, non-atomic transactions with capital
+   * exposed in flight between them — see
+   * `contracts/contracts/crosschain/CrossChainArbitrageExecutor.sol`'s
+   * NatSpec for the authoritative framing.
+   */
+  isCrossChain: boolean;
+  /**
+   * Destination (sell) chain id for a cross-chain opportunity. Present only
+   * when `isCrossChain` is true AND the source engine payload's `chain_ids`
+   * unambiguously identified exactly one chain other than the source
+   * {@link chainId} — never guessed at from ambiguous data.
+   */
+  destChainId?: number;
+  /**
+   * The dashboard network *key* for {@link destChainId} (e.g. `"arbitrum"`),
+   * resolved through the same chainId→key network-registry lookup used for
+   * {@link network} — so downstream code (settings filters, UI) never needs
+   * to re-implement chainId→key resolution. Present under the same
+   * conditions as `destChainId`.
+   */
+  destNetwork?: string;
+  /**
+   * Expected wall-clock seconds between the source leg settling and the
+   * destination leg becoming executable (bridge transit time). Present only
+   * for a cross-chain opportunity (`isCrossChain: true`).
+   */
+  settleSeconds?: number;
 }
 
 export interface ExecutionResult {
@@ -63,7 +95,14 @@ export interface ExecutionResult {
   opportunityId: string;
   ts: number;
   mode: "paper" | "live";
-  status: "filled" | "reverted";
+  /**
+   * `"skipped"` means no fill/revert was attempted or modelled at all — used
+   * for a cross-chain opportunity, which `PaperExecutor` refuses to simulate
+   * with atomic fill/revert semantics (see {@link PaperExecutor} in
+   * `executor.ts`: `CrossChainArbitrageExecutor.sol` is non-atomic, so
+   * pretending a "revert" only costs gas would be dishonest).
+   */
+  status: "filled" | "reverted" | "skipped";
   network: string;
   requestedProfitUsd: number;
   realizedProfitUsd: number;

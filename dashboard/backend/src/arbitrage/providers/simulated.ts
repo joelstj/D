@@ -150,6 +150,8 @@ export class SimulatedProvider implements OpportunityProvider {
       confidence,
       status: "new",
       expiresAt: now + 6000 + Math.floor(Math.random() * 6000),
+      // The simulated stream never models a cross-chain route.
+      isCrossChain: false,
     };
   }
 }

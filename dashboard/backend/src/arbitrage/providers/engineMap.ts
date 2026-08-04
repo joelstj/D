@@ -156,6 +156,29 @@ export function mapEngineOpportunity(
   const chainId = o.numeraire.chain_id || o.chain_ids?.[0] || o.block?.chain_id || 0;
   const network = NETWORKS_BY_CHAIN_ID[chainId];
 
+  // Cross-chain destination: `chain_ids` lists every chain this opportunity
+  // touches; the source is `chainId` (resolved above from the numeraire). The
+  // destination is whichever *other* entry is present — but only when there is
+  // unambiguously exactly one, so we never guess at a destination from
+  // ambiguous data (root CLAUDE.md invariant 1: no fabricated data in a
+  // runtime path). Resolved through the exact same chainId→key registry
+  // lookup used for the source `network` field just above, including its
+  // `chain-<id>` fallback for a chain id outside the registry.
+  const isCrossChain = o.is_cross_chain === true;
+  let destChainId: number | undefined;
+  let destNetwork: string | undefined;
+  if (isCrossChain) {
+    const others = [...new Set(Array.isArray(o.chain_ids) ? o.chain_ids : [])].filter(
+      (id) => id !== chainId,
+    );
+    const [onlyOther] = others;
+    if (others.length === 1 && onlyOther !== undefined) {
+      destChainId = onlyOther;
+      const destNet = NETWORKS_BY_CHAIN_ID[destChainId];
+      destNetwork = destNet?.key ?? `chain-${destChainId}`;
+    }
+  }
+
   const route: RouteLeg[] = o.legs.map((leg) => ({
     dex: shortPool(leg.pool),
     tokenIn: leg.token_in.symbol,
@@ -196,6 +219,10 @@ export function mapEngineOpportunity(
     confidence: Math.max(0, Math.min(1, num(o.risk?.success_probability))),
     status: "new",
     expiresAt: now + ttlMs,
+    isCrossChain,
+    ...(destChainId !== undefined ? { destChainId } : {}),
+    ...(destNetwork !== undefined ? { destNetwork } : {}),
+    ...(isCrossChain ? { settleSeconds: num(o.settle_seconds) } : {}),
     ...(originWallMs && originWallMs > 0 ? { originWallMs } : {}),
   };
 }

@@ -31,6 +31,7 @@ export function makeOpportunity(over: Partial<ArbitrageOpportunity> = {}): Arbit
     confidence: 0.9,
     status: "new",
     expiresAt: now + 10_000,
+    isCrossChain: false,
     ...over,
   };
 }

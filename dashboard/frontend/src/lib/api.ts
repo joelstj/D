@@ -85,9 +85,12 @@ export const api = {
         { method: "POST" },
       ),
     artifact: (name: string) => request<ContractArtifact>(`/api/contracts/artifact/${name}`),
-    deployParams: (network: string, admin: string) =>
+    /** `contract` defaults (server-side) to the atomic `FlashLoanArbitrage`;
+     *  pass `"CrossChainArbitrageExecutor"` for its 1-arg constructor. */
+    deployParams: (network: string, admin: string, contract?: string) =>
       request<DeployParams>(
-        `/api/contracts/deploy-params/${network}?admin=${encodeURIComponent(admin)}`,
+        `/api/contracts/deploy-params/${network}?admin=${encodeURIComponent(admin)}` +
+          (contract ? `&contract=${encodeURIComponent(contract)}` : ""),
       ),
     recordDeployment: (body: {
       network: string;

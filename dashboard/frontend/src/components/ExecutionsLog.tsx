@@ -1,4 +1,4 @@
-import { CheckCircle2, Inbox, XCircle } from "lucide-react";
+import { CheckCircle2, Inbox, MinusCircle, XCircle } from "lucide-react";
 import { useLive } from "../hooks/useLiveData";
 import { useNow } from "../hooks/useNow";
 import { formatAmount, timeAgo } from "../lib/format";
@@ -27,10 +27,16 @@ export function ExecutionsLog() {
         <ul className="scroll-thin max-h-[260px] divide-y divide-border-soft overflow-auto">
           {executions.map((e) => {
             const filled = e.status === "filled";
+            // "skipped" (e.g. a cross-chain opportunity PaperExecutor declines to
+            // model atomically, see D2) is a deliberate non-attempt, not a failed
+            // trade — it gets a neutral marker rather than the "reverted" red X.
+            const skipped = e.status === "skipped";
             return (
               <li key={e.id} className="flex items-center gap-3 px-5 py-2.5">
                 {filled ? (
                   <CheckCircle2 size={16} className="shrink-0 text-pos" />
+                ) : skipped ? (
+                  <MinusCircle size={16} className="shrink-0 text-ink-faint" />
                 ) : (
                   <XCircle size={16} className="shrink-0 text-neg" />
                 )}

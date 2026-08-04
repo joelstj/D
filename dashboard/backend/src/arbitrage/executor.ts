@@ -7,16 +7,47 @@ export interface Executor {
   execute(opp: ArbitrageOpportunity, settings: Settings): Promise<ExecutionResult>;
 }
 
+/** Honest reason attached to a cross-chain paper "skip" result. */
+export const CROSS_CHAIN_SKIP_REASON =
+  "cross-chain execution requires the two-leg CrossChainArbitrageExecutor flow — not simulated as atomic";
+
 /**
  * Simulates execution without ever broadcasting a transaction. Realized profit
  * is modelled from the opportunity's confidence and configured slippage, so the
  * PnL curve behaves like a real (imperfect) fill stream. This is the default
  * and safe executor — no funds can move.
+ *
+ * This atomic fill/revert model is only honest for a *same-chain* flash-loan
+ * trade, where a revert genuinely costs gas only and nothing else. It is
+ * actively false for a cross-chain opportunity:
+ * `CrossChainArbitrageExecutor.sol`'s own NatSpec says capital is dispatched
+ * on the source chain and sits in flight, exposed to price movement and
+ * bridge risk, until a *separate* destination-chain transaction settles it —
+ * there is no single atomic "revert and lose only gas" outcome to simulate.
+ * So a cross-chain opportunity is never run through the atomic model at all;
+ * see {@link CROSS_CHAIN_SKIP_REASON}.
  */
 export class PaperExecutor implements Executor {
   readonly mode = "paper" as const;
 
   async execute(opp: ArbitrageOpportunity, settings: Settings): Promise<ExecutionResult> {
+    if (opp.isCrossChain) {
+      return {
+        id: randomUUID(),
+        opportunityId: opp.id,
+        ts: Date.now(),
+        mode: this.mode,
+        status: "skipped",
+        network: opp.network,
+        requestedProfitUsd: opp.netProfitUsd,
+        // Nothing was attempted: no simulated gain, no simulated gas spend.
+        realizedProfitUsd: 0,
+        gasCostUsd: 0,
+        numeraireIsUsd: opp.numeraireIsUsd,
+        notes: CROSS_CHAIN_SKIP_REASON,
+      };
+    }
+
     // Model network + inclusion latency.
     await delay(60 + Math.random() * 220);
 

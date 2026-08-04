@@ -184,9 +184,20 @@ export class ArbitrageEngine extends EventEmitter {
    *    which `engineMap` sets for a non-stablecoin numeraire whose `…Usd` fields are
    *    really numeraire base units). For a non-USD numeraire the unit-agnostic
    *    `minProfitBps` remains the gate; we never compare base units to dollars.
+   *
+   * A cross-chain opportunity is additionally checked against its *destination*
+   * network (`opp.destNetwork`, from `engineMap`'s D1 fix), not just the source
+   * `opp.network` above — otherwise an operator who explicitly disabled a chain
+   * had no way to keep a cross-chain opportunity merely *routed through* it (as
+   * the destination/sell leg) from qualifying, since before D1 the destination
+   * chain was never structurally present to check at all. When `destNetwork`
+   * is unresolved (engineMap left it undefined — see its own "don't guess"
+   * defensiveness) this extra check is skipped; the source-network check above
+   * still applies unconditionally.
    */
   private qualifies(opp: ArbitrageOpportunity, s: Settings): boolean {
     if (!s.networks.includes(opp.network)) return false;
+    if (opp.isCrossChain && opp.destNetwork && !s.networks.includes(opp.destNetwork)) return false;
     const allowedTokens = new Set(s.tokens);
     allowedTokens.add(s.baseToken);
     for (const leg of opp.route) {
@@ -339,6 +350,12 @@ export class ArbitrageEngine extends EventEmitter {
   }
 
   private applyResult(result: ExecutionResult) {
+    // A "skipped" result (currently: a cross-chain opportunity PaperExecutor
+    // refuses to model atomically — see executor.ts) was never actually
+    // attempted, so it must not inflate `executed`/`reverted` or move PnL:
+    // counting it as a revert would misrepresent a modelling refusal as a
+    // real failed trade.
+    if (result.status === "skipped") return;
     this.stats.executed += 1;
     if (result.status === "filled") this.stats.filled += 1;
     else this.stats.reverted += 1;
