@@ -227,9 +227,7 @@ contract CrossChainDualFork is Test {
         vm.expectRevert(
             abi.encodeWithSelector(CrossChainArbitrageExecutor.BridgeAdapterNotAllowed.selector, address(rogueBridge))
         );
-        exec.executeSourceLeg(
-            noSteps, address(0), 0, address(rogueBridge), POLYGON_WMATIC, 1, 8453, wrongRecipient, ""
-        );
+        exec.executeSourceLeg(noSteps, address(0), 0, address(rogueBridge), POLYGON_WMATIC, 1, 8453, wrongRecipient, "");
 
         // (c) both new guardian setters revert for the executor bot.
         vm.prank(bot);
