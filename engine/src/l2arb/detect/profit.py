@@ -87,29 +87,72 @@ class MevModel:
 
     Heuristic and configurable — it does not claim to predict the mempool, only to
     rank opportunities by how likely they are to land profitably. Bigger, more
-    obvious edges attract more competition (lower ``capture``); more hops and
-    cross-chain settlement lower the success probability.
+    obvious edges attract more competition (lower ``capture``); more hops lower the
+    success probability.
+
+    Cross-chain settlement is not atomic (E4 — docs/ARBITRAGE_THEORY.md §5): it
+    always carries some irreducible risk (``cross_chain_base_penalty`` — bridge
+    counterparty risk, non-atomicity, present even at a hypothetical instant
+    settlement) **plus** a haircut that grows with time in flight
+    (``cross_chain_penalty_per_minute`` times minutes waiting for ``settle_seconds``
+    to elapse). A 30-second fast bridge and a 60-minute canonical bridge are not
+    the same risk and must not get an identical confidence haircut. Like
+    :class:`GasModel`, the per-minute rate is a conservative, configurable
+    *estimate* — not a live volatility read.
     """
 
     base_success_probability: float = 0.9
     per_hop_success_penalty: float = 0.04
-    cross_chain_success_penalty: float = 0.25
+    # Any cross-chain hop carries this much irreducible risk (bridge counterparty
+    # risk, non-atomicity) even at a hypothetical instant settlement.
+    cross_chain_base_penalty: float = 0.05
+    # Additional haircut per minute of settlement wait — the settle-time scaling
+    # E4 adds. Calibrated so the total penalty at the 600s (10-minute) settle time
+    # this codebase's own fixtures/docs already treat as the representative
+    # cross-chain wait reproduces the previous flat constant exactly
+    # (0.05 + 0.02 * 10 == 0.25); it now correctly scales down for a fast bridge
+    # and up for a slow one instead of applying that same 0.25 uniformly
+    # regardless of settle_seconds.
+    cross_chain_penalty_per_minute: float = 0.02
     base_capture_ratio: float = 0.7
     competition_scale_bps: float = 50.0
 
-    def assess(self, hops: int, profit_bps: float, is_cross_chain: bool) -> RiskAssessment:
+    def assess(
+        self,
+        hops: int,
+        profit_bps: float,
+        is_cross_chain: bool,
+        settle_seconds: int = 0,
+    ) -> RiskAssessment:
+        """Score one candidate: hop count, edge size, and (if cross-chain) time in flight.
+
+        ``settle_seconds`` defaults to 0 for same-chain call sites (no settlement
+        wait to haircut) and for backward compatibility; cross-chain callers
+        (``detect/cross_chain.py``) always pass the bridge's real settlement time.
+        """
         success = self.base_success_probability - self.per_hop_success_penalty * max(0, hops - 2)
-        if is_cross_chain:
-            success -= self.cross_chain_success_penalty
-        success = _clamp(success, 0.05, 0.99)
-        capture = self.base_capture_ratio / (1.0 + profit_bps / self.competition_scale_bps)
-        capture = _clamp(capture, 0.05, 1.0)
-        frontrun = _clamp(1.0 - success, 0.0, 1.0)
-        notes = (
+        notes: tuple[str, ...] = (
             f"hops={hops}",
             f"cross_chain={is_cross_chain}",
             f"edge_bps={profit_bps:.1f}",
         )
+        if is_cross_chain:
+            minutes = max(0, settle_seconds) / 60.0
+            drift_penalty = (
+                self.cross_chain_base_penalty + self.cross_chain_penalty_per_minute * minutes
+            )
+            success -= drift_penalty
+            # The price-drift risk note docs/ARBITRAGE_THEORY.md §5 promises every
+            # cross-chain report carries, alongside settle_seconds itself.
+            notes = (
+                *notes,
+                f"settle_seconds={settle_seconds}",
+                f"price_drift_risk_penalty={drift_penalty:.3f}",
+            )
+        success = _clamp(success, 0.05, 0.99)
+        capture = self.base_capture_ratio / (1.0 + profit_bps / self.competition_scale_bps)
+        capture = _clamp(capture, 0.05, 1.0)
+        frontrun = _clamp(1.0 - success, 0.0, 1.0)
         return RiskAssessment(success, capture, frontrun, notes)
 
 
@@ -124,6 +167,14 @@ class ProfitContext:
     "now" is never read from the wall clock here; the caller (the API boundary)
     supplies it explicitly, which keeps this function trivially testable with a
     frozen clock.
+
+    ``price_drift_bps_per_minute`` is the same opt-in shape, one field over: a
+    cross-chain-only, settle-time-scaled price-drift haircut (see
+    ``detect/cross_chain.py`` and docs/ARBITRAGE_THEORY.md §5). Defaults to
+    ``None`` (no haircut) for the same reason — pure and deterministic here; the
+    API boundary resolves and supplies the operator's real
+    ``L2ARB__CROSS_CHAIN_PRICE_DRIFT_BPS_PER_MINUTE`` default. Same-chain
+    ``evaluate`` never reads it (no settlement wait to haircut).
     """
 
     gas_cost_fn: GasCostFn
@@ -132,6 +183,7 @@ class ProfitContext:
     seed_size_hint: int | None = None
     now_ts: int | None = None
     max_pool_age_seconds: int | None = None
+    price_drift_bps_per_minute: float | None = None
 
 
 def input_capacity(pool: PoolState, token_in_key: TokenKey) -> int:

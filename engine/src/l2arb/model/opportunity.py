@@ -81,10 +81,14 @@ class Opportunity:
     score: float
     verified: bool = False
     expected_net: int = 0
-    # Cross-chain only: bridge cost (in the numeraire) and non-atomic settlement
-    # time. Zero for single-chain opportunities, so ``net = gross - gas - bridge``
+    # Cross-chain only: bridge cost (in the numeraire), a settle-time-scaled
+    # price-drift haircut (in the numeraire — zero unless the operator has
+    # configured L2ARB__CROSS_CHAIN_PRICE_DRIFT_BPS_PER_MINUTE; see
+    # detect/cross_chain.py), and non-atomic settlement time. All zero for
+    # single-chain opportunities, so ``net = gross - gas - bridge - drift``
     # reduces to ``net = gross - gas`` there.
     bridge_cost: int = 0
+    price_drift_cost: int = 0
     settle_seconds: int = 0
 
     @property

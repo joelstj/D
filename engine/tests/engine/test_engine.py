@@ -116,6 +116,48 @@ def test_cross_chain_detection_wired_in(gk: type[GraphKit]) -> None:
     assert any(o.strategy is StrategyKind.CROSS_CHAIN_TWO_HOP for o in opps)
 
 
+def test_cross_chain_price_drift_context_is_threaded_to_the_opportunity(
+    gk: type[GraphKit],
+) -> None:
+    # E1: _detect_cross_chain() must thread the buy-chain context's
+    # price_drift_bps_per_minute through to cross_chain_two_hop, exactly like the
+    # pre-existing min_profit_bps wiring immediately above it in engine.py.
+    from dataclasses import replace
+
+    from l2arb.detect.cross_chain import BridgeQuote, StaticBridgeModel
+    from l2arb.model.canonical_asset import AssetRegistry, AssetRepresentation, CanonicalAsset
+    from l2arb.model.opportunity import StrategyKind
+
+    arb, base = 42161, 8453
+    num_x, weth_x = gk.token(1, chain=arb), gk.token(2, chain=arb)
+    weth_y, num_y = gk.token(3, chain=base), gk.token(4, chain=base)
+
+    engine = ArbitrageEngine()
+    # Only the buy-side (arb) chain gets a non-None rate; base stays at the
+    # pure-compute default (None) to prove it's specifically the buy-chain
+    # context that reaches cross_chain_two_hop, not just "some" context.
+    engine.configure_chain(arb, replace(gk.profit_ctx(), price_drift_bps_per_minute=5.0))
+    engine.configure_chain(base, gk.profit_ctx())
+    engine.ingest(gk.v2(10, num_x, weth_x, 1_000_000 * 10**18, 1000 * 10**18))  # cheap
+    engine.ingest(gk.v2(11, weth_y, num_y, 1000 * 10**18, 1_100_000 * 10**18))  # dear
+
+    registry = AssetRegistry()
+    registry.register(
+        CanonicalAsset("WETH", (AssetRepresentation(weth_x), AssetRepresentation(weth_y)))
+    )
+    registry.register(
+        CanonicalAsset("USDC", (AssetRepresentation(num_x), AssetRepresentation(num_y)))
+    )
+    bridge = StaticBridgeModel(
+        {("WETH", arb, base): BridgeQuote(fee_bps=10.0, fixed_fee=0, settle_seconds=600)}
+    )
+    engine.configure_cross_chain(registry, bridge, [("WETH", "USDC")])
+
+    opps = [o for o in engine.compute(top_n=10) if o.strategy is StrategyKind.CROSS_CHAIN_TWO_HOP]
+    assert opps
+    assert opps[0].price_drift_cost > 0
+
+
 def test_cross_chain_disabled_by_default(gk: type[GraphKit]) -> None:
     engine = ArbitrageEngine()
     engine.configure_chain(gk.CHAIN, gk.profit_ctx())

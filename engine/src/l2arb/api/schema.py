@@ -126,6 +126,7 @@ def opportunity_to_dict(opp: Opportunity) -> dict[str, Any]:
         "gross_profit": str(opp.gross_profit),
         "gas_cost": str(opp.gas_cost),
         "bridge_cost": str(opp.bridge_cost),
+        "price_drift_cost": str(opp.price_drift_cost),
         "net_profit": str(opp.net_profit),
         "profit_bps": opp.profit_bps,
         "expected_net": str(opp.expected_net),

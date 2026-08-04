@@ -178,10 +178,25 @@ net = out(s*) − s* − gas_cost_numeraire − bridge_cost(if x-chain)
   explicitly, never assumed.
 - **Spread**: price the asset in a common numeraire (a stable) on chain A and
   chain B from live pools. Candidate if
-  `price_B − price_A > bridge_cost + fees + slippage(both legs)`.
+  `price_B − price_A > bridge_cost + fees + slippage(both legs) + price_drift_cost`.
 - **Bridge model**: cost (fee + gas both sides) and **settlement time**. Because
-  settlement is not atomic, the report includes `time_to_settle` and a
-  price-drift risk note — this is a *detected spread*, not a guaranteed capture.
+  settlement is not atomic, capital is in flight and exposed to real price
+  movement for `settle_seconds` — two mechanisms model that risk, distinctly:
+  1. **Profit gate (monetary)**: a configurable, settle-time-scaled price-drift
+     haircut (`price_drift_bps_per_minute · settle_seconds/60`, applied to the
+     sell-leg output) is subtracted from `net_profit` alongside `bridge_cost` and
+     `gas_cost` — opt-in/`None` at the pure compute layer, a real conservative
+     operator default (`L2ARB__CROSS_CHAIN_PRICE_DRIFT_BPS_PER_MINUTE`) at the API
+     boundary, mirroring the freshness gate's threading (CLAUDE.md §8 item 1).
+  2. **Risk score (confidence)**: `MevModel.assess`'s cross-chain
+     success-probability penalty grows with minutes in flight
+     (`cross_chain_base_penalty + cross_chain_penalty_per_minute · minutes`), not
+     a flat constant — a 30-second fast bridge and a 60-minute canonical bridge
+     are scored differently.
+
+  Because settlement is not atomic, the report includes `settle_seconds` and a
+  `price_drift_risk_penalty` note in `risk.notes` — this is a *detected spread*,
+  not a guaranteed capture.
 - No cross-chain triangular/multi-hop (scope).
 
 ## 6. What the tests must pin (see docs/TESTING_STRATEGY.md)

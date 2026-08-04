@@ -188,6 +188,7 @@ class ArbitrageEngine:
                     buy_ctx=self._contexts[buy_chain],
                     sell_ctx=self._contexts[sell_chain],
                     min_profit_bps=self._contexts[buy_chain].min_profit_bps,
+                    price_drift_bps_per_minute=self._contexts[buy_chain].price_drift_bps_per_minute,
                 )
                 if opp is not None:
                     out.append(opp)
