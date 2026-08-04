@@ -33,7 +33,7 @@ Compiled with **solc 0.8.20** (zero warnings) and tested with Hardhat:
 
 | Suite | What it proves | Result |
 | --- | --- | --- |
-| `test/*.test.js` (offline) | Full mechanics on mock tokens/pools/providers: 2-hop & 3-hop arbs via Aave and Balancer, min-profit revert, access control, pause, griefer-callback rejection, GENERIC-router allowlisting, optimal-sizing math, and Yul-encoded DEX call differential tests | **37 passing** |
+| `test/*.test.js` (offline) | Full mechanics on mock tokens/pools/providers: 2-hop & 3-hop arbs via Aave and Balancer, min-profit revert, access control, pause, griefer-callback rejection, GENERIC-router and bridge-adapter allowlisting, sibling-executor registry, optimal-sizing math, and Yul-encoded DEX call differential tests | **48 passing** |
 | `test/fork/ArbitrumFork.test.js` (**live Arbitrum fork**) | **Real** atomic cross-DEX flash-loan arbs against **live** Uniswap V3 + SushiSwap V2, borrowing from **both Balancer V2 and Aave V3**, plus a live Aave premium read and an atomic revert when no arb exists | **4 passing** |
 | `test/fork/PolygonFork.test.js` (**live Polygon PoS fork**) | The same atomic borrow → cross-DEX → repay → profit path against **live** Uniswap V3 + QuickSwap V2 on Polygon | **5 passing** |
 | `test/fork/CrossChainDualFork.test.js` (**live dual fork: Polygon + Arbitrum**) | `CrossChainArbitrageExecutor`'s inventory-based source leg (real swap on a live Polygon fork) and destination leg (real swap on a live Arbitrum fork), run back-to-back in one test against genuinely independent live chain state | **1 passing** |
@@ -88,7 +88,7 @@ npm install
 # 2. Compile (downloads solc 0.8.20 on first run)
 npm run compile
 
-# 3. Offline unit tests (no RPC needed) — 33 tests
+# 3. Offline unit tests (no RPC needed) — 48 tests
 npm test
 
 # 4. Live mainnet-fork tests against real contracts
@@ -186,6 +186,23 @@ reverts.**
   hop's amount. The typed dex types (V2/V3/Curve) don't need this: their call
   shape is fixed to a well-known selector with the output recipient hardcoded
   to `address(this)`.
+- `CrossChainArbitrageExecutor.executeSourceLeg` guards its bridge adapter the
+  same way: it may only target an adapter `GUARDIAN_ROLE` has explicitly
+  allowlisted via `setBridgeAdapterAllowed` (`allowedBridgeAdapters`, deny-all
+  by default). Without it, the function's `forceApprove` of the adapter for
+  the contract's *entire* held balance of `bridgeToken` would let a
+  compromised `EXECUTOR_ROLE` key drain the full inventory through a
+  malicious "adapter" — the same shape of risk as an unallowlisted `GENERIC`
+  router above. The same contract also lets a guardian register a known-good
+  `siblingExecutor` address per destination chain id (`setSiblingExecutor`);
+  once one is registered for a chain, `executeSourceLeg` requires
+  `dstRecipient` to match it exactly, guarding against an operator typo or a
+  compromised `EXECUTOR_ROLE` key sending bridged funds to the wrong address.
+  A chain with no registered sibling is unconstrained, unchanged from before
+  this registry existed. Both are additive guardrails on top of the
+  inventory-based, non-atomic cross-chain model — they do not add exposure
+  caps or hedging, which remain unimplemented (see
+  [Limitations](#limitations)).
 - **Checks-effects-interactions** throughout; `nonReentrant` on the entry point.
 - Both flash callbacks verify the caller **is** the expected provider **and**
   that this contract itself armed the loan — blocking griefers who try to invoke
@@ -228,7 +245,7 @@ contracts/
   interfaces/                     # Aave, Balancer, DEX, bridge interfaces
   mocks/                          # test doubles (offline suite; incl. MockUniV3Router, DexRouterHarness)
 test/
-  *.test.js                       # offline Hardhat suites (33 tests)
+  *.test.js                       # offline Hardhat suites (48 tests)
   fork/ArbitrumFork.test.js       # live Arbitrum mainnet-fork suite (4 tests)
   fork/PolygonFork.test.js        # live Polygon mainnet-fork suite (5 tests)
   fork/CrossChainDualFork.test.js # live dual-fork cross-chain execution proof (1 test)
@@ -271,6 +288,14 @@ Stated plainly, because a senior engineer should:
    implemented here — those are real, separate engineering work (inventory
    drift accounting, a real bridge adapter, a funded treasury) before any
    capital should move through this path; see `docs/specs/10-cross-chain.md`.
+   Two narrower on-chain guardrails *are* implemented, and are not a
+   substitute for the above: a guardian-gated `allowedBridgeAdapters`
+   allowlist (deny-all by default) on `executeSourceLeg`'s bridge adapter,
+   and an optional per-chain `siblingExecutor` registry that, once a
+   destination chain is registered, requires `dstRecipient` to match it
+   exactly. These guard against a malicious/wrong bridge adapter and a
+   misdirected recipient — not against price drift, bridge failure, or
+   unbounded trade size. See [Security model](#security-model).
 2. **Profitability is not guaranteed.** The contract enforces atomic
    profit-or-revert; it does not create opportunities. Efficient markets, gas,
    MEV competition and latency all bear on real PnL.

@@ -58,6 +58,35 @@ contract CrossChainArbitrageExecutor is AccessControl, ReentrancyGuard, Pausable
     bytes32 public constant EXECUTOR_ROLE = keccak256("EXECUTOR_ROLE");
     bytes32 public constant GUARDIAN_ROLE = keccak256("GUARDIAN_ROLE");
 
+    // ---------------- Bridge / sibling-executor allowlists ---------------- //
+
+    /// @notice Bridge adapters `executeSourceLeg` is allowed to call. Empty
+    ///         (deny-all) until a guardian explicitly allows one.
+    /// @dev `executeSourceLeg` takes `bridgeAdapter` as a caller-supplied
+    ///      address, `forceApprove`s it for the ENTIRE held balance of
+    ///      `bridgeToken`, and calls it with `msg.value` — structurally the
+    ///      same shape of risk as `FlashLoanArbitrage`'s `DexType.GENERIC`
+    ///      router (see that contract's `allowedGenericRouters`). Without
+    ///      this allowlist, a compromised EXECUTOR_ROLE hot key could pass a
+    ///      malicious "adapter" contract and drain the full held inventory of
+    ///      `bridgeToken` (plus any attached native value) in one call. See
+    ///      `executeSourceLeg`.
+    mapping(address => bool) public allowedBridgeAdapters;
+
+    /// @notice Known-good executor address per destination chain id, set by a
+    ///         guardian. address(0) (the default for every chain id) means
+    ///         "no sibling registered" — `executeSourceLeg` then imposes no
+    ///         constraint on `dstRecipient` for that chain, exactly as before
+    ///         this registry existed.
+    /// @dev Guards against sending bridged funds to the wrong destination-
+    ///      chain address — without it, an operator typo or a compromised
+    ///      EXECUTOR_ROLE key has no on-chain check that `dstRecipient` is
+    ///      where this deployment actually expects funds to land. Settable
+    ///      back to address(0) deliberately (no `ZeroAddress` revert in that
+    ///      setter) so a guardian can intentionally unregister/unconstrain a
+    ///      chain. See `executeSourceLeg`.
+    mapping(uint256 => address) public siblingExecutor;
+
     error ZeroAddress();
     error EmptyRoute();
     error InsufficientBridgeAmount(uint256 produced, uint256 minBridge);
@@ -65,6 +94,8 @@ contract CrossChainArbitrageExecutor is AccessControl, ReentrancyGuard, Pausable
     error RouteSeedMismatch();
     error ZeroRouteInput();
     error NothingToRescue();
+    error BridgeAdapterNotAllowed(address adapter);
+    error SiblingMismatch(address dstRecipient, address expected);
 
     /// @notice Emitted after the source leg swaps and dispatches funds to a bridge.
     event SourceLegDispatched(
@@ -82,6 +113,13 @@ contract CrossChainArbitrageExecutor is AccessControl, ReentrancyGuard, Pausable
 
     event Rescued(address indexed token, address indexed to, uint256 amount);
 
+    /// @notice Emitted when a guardian changes a bridge adapter's allowlist status.
+    event BridgeAdapterAllowlistUpdated(address indexed adapter, bool allowed);
+
+    /// @notice Emitted when a guardian sets (or clears) the known-good
+    ///         sibling executor address for a destination chain id.
+    event SiblingExecutorUpdated(uint256 indexed chainId, address indexed executorAddr);
+
     /// @param admin Address granted admin, guardian and executor roles.
     constructor(address admin) {
         if (admin == address(0)) revert ZeroAddress();
@@ -95,11 +133,15 @@ contract CrossChainArbitrageExecutor is AccessControl, ReentrancyGuard, Pausable
     /// @param steps Route producing `bridgeToken` from held inventory (may be empty to bridge as-is).
     /// @param seedToken The token the route starts from (ignored if `steps` empty).
     /// @param seedAmount The amount of `seedToken` to feed into the route (or bridge directly).
-    /// @param bridgeAdapter Adapter wrapping the chosen bridge.
+    /// @param bridgeAdapter Adapter wrapping the chosen bridge. Must be
+    ///        allowlisted via `setBridgeAdapterAllowed` (deny-all by default)
+    ///        — see `allowedBridgeAdapters`.
     /// @param bridgeToken The token to bridge (route output).
     /// @param minBridgeAmount Revert unless at least this much `bridgeToken` is produced.
     /// @param dstChainId Destination chain id.
-    /// @param dstRecipient Recipient on the destination chain (usually the sibling executor).
+    /// @param dstRecipient Recipient on the destination chain (usually the
+    ///        sibling executor). If a sibling is registered for `dstChainId`
+    ///        via `setSiblingExecutor`, this must match it exactly.
     /// @param bridgeOptions Bridge-specific options (relayer fee, slippage, ...).
     /// @dev Non-atomic across chains — see the contract-level notice.
     function executeSourceLeg(
@@ -115,6 +157,11 @@ contract CrossChainArbitrageExecutor is AccessControl, ReentrancyGuard, Pausable
     ) external payable nonReentrant whenNotPaused onlyRole(EXECUTOR_ROLE) {
         if (bridgeAdapter == address(0) || bridgeToken == address(0) || dstRecipient == address(0)) {
             revert ZeroAddress();
+        }
+        if (!allowedBridgeAdapters[bridgeAdapter]) revert BridgeAdapterNotAllowed(bridgeAdapter);
+        address expected = siblingExecutor[dstChainId];
+        if (expected != address(0) && dstRecipient != expected) {
+            revert SiblingMismatch(dstRecipient, expected);
         }
 
         if (steps.length != 0) {
@@ -188,6 +235,26 @@ contract CrossChainArbitrageExecutor is AccessControl, ReentrancyGuard, Pausable
 
     function unpause() external onlyRole(GUARDIAN_ROLE) {
         _unpause();
+    }
+
+    /// @notice Allow or revoke a bridge adapter address for `executeSourceLeg`.
+    /// @dev GUARDIAN_ROLE, not EXECUTOR_ROLE — mirrors
+    ///      `FlashLoanArbitrage.setGenericRouterAllowed`: the hot bot key
+    ///      that picks the bridge adapter each call must not also be able to
+    ///      expand what it's allowed to call.
+    function setBridgeAdapterAllowed(address adapter, bool allowed) external onlyRole(GUARDIAN_ROLE) {
+        if (adapter == address(0)) revert ZeroAddress();
+        allowedBridgeAdapters[adapter] = allowed;
+        emit BridgeAdapterAllowlistUpdated(adapter, allowed);
+    }
+
+    /// @notice Set (or clear, via address(0)) the known-good sibling executor
+    ///         address for `chainId`.
+    /// @dev No `ZeroAddress` revert here: setting back to address(0) is a
+    ///      valid "unregister/unconstrain this chain" state, not a mistake.
+    function setSiblingExecutor(uint256 chainId, address executorAddr) external onlyRole(GUARDIAN_ROLE) {
+        siblingExecutor[chainId] = executorAddr;
+        emit SiblingExecutorUpdated(chainId, executorAddr);
     }
 
     /// @notice Sweeps an ERC20 balance to `to` (inventory or stuck funds).

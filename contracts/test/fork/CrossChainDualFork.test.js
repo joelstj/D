@@ -93,6 +93,9 @@ describe("CrossChainArbitrageExecutor — dual real fork (Polygon source -> Arbi
 
     const Bridge = await ethers.getContractFactory("MockBridgeAdapter");
     const bridge = await Bridge.deploy();
+    // Deny-by-default: executeSourceLeg only accepts an allowlisted bridge
+    // adapter (see CrossChainArbitrageExecutor.sol's allowedBridgeAdapters).
+    await sourceExec.setBridgeAdapterAllowed(bridge.target, true);
 
     const wmaticOnPolygon = await ethers.getContractAt(
       ["function deposit() payable", "function approve(address,uint256) returns (bool)", "function transfer(address,uint256) returns (bool)"],

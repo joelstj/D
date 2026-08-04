@@ -86,6 +86,11 @@ contract CrossChainDualFork is Test {
         sourceExec.grantRole(sourceExec.EXECUTOR_ROLE(), bot);
 
         MockBridgeAdapter bridge = new MockBridgeAdapter();
+        // Deny-by-default: executeSourceLeg only accepts an allowlisted
+        // bridge adapter (see CrossChainArbitrageExecutor.sol's
+        // allowedBridgeAdapters / the Hardhat mirror of this fix).
+        vm.prank(admin);
+        sourceExec.setBridgeAdapterAllowed(address(bridge), true);
 
         uint256 seedAmount = 1000 ether; // 1000 WMATIC of inventory
         vm.deal(manipulator, seedAmount + 10 ether);
@@ -170,5 +175,104 @@ contract CrossChainDualFork is Test {
         uint256 finalUsdc = IERC20(ARBITRUM_USDCe).balanceOf(address(destExec));
         assertGt(finalUsdc, 0, "destination leg produced no USDC.e");
         console2.log("Arbitrum destination leg settled USDC.e (6dp):", finalUsdc);
+    }
+
+    // ---------------------------------------------------------------
+    // New coverage for the bridge-adapter allowlist and sibling-executor
+    // registry (docs/notes-cross-chain-flash-loan-gaps.md items C2/C6).
+    // Mirrors the equivalent cases added to
+    // test/CrossChainArbitrageExecutor.test.js and the allowlist fix
+    // applied above to testCrossChainSourceThenDestinationLeg.
+    //
+    // WRITTEN, NOT EXECUTED IN THIS SANDBOX — forge is unavailable here
+    // (see the file-level notice above); unlike the Hardhat mirror this
+    // file otherwise tracks, this function has not been run against a
+    // real fork by any session to date.
+    //
+    // Only forks Polygon (the source chain): both new checks are entirely
+    // a source-leg concern that reverts (when they revert at all) before
+    // any destination-chain interaction, so a second (Arbitrum) fork would
+    // buy nothing here.
+    // ---------------------------------------------------------------
+    function testExecuteSourceLegBridgeAdapterAndSiblingGuardrails() public {
+        string memory polygonRpc = vm.envOr("POLYGON_RPC_URL", string(""));
+        if (bytes(polygonRpc).length == 0) {
+            emit log("skipped: set POLYGON_RPC_URL to run");
+            return;
+        }
+        vm.selectFork(vm.createFork(polygonRpc));
+        require(POLYGON_WMATIC.code.length != 0, "not a Polygon fork");
+
+        address admin = makeAddr("admin2");
+        address bot = makeAddr("bot2");
+        address sibling = makeAddr("sibling");
+        address wrongRecipient = makeAddr("wrongRecipient");
+
+        CrossChainArbitrageExecutor exec = new CrossChainArbitrageExecutor(admin);
+        vm.prank(admin);
+        exec.grantRole(exec.EXECUTOR_ROLE(), bot);
+
+        MockBridgeAdapter allowedBridge = new MockBridgeAdapter();
+        MockBridgeAdapter rogueBridge = new MockBridgeAdapter(); // deliberately never allowlisted
+        vm.prank(admin);
+        exec.setBridgeAdapterAllowed(address(allowedBridge), true);
+
+        vm.deal(address(this), 10 ether);
+        SwapStep[] memory noSteps = new SwapStep[](0); // bridge held inventory as-is; no route needed
+
+        // (a) reverts BridgeAdapterNotAllowed when the adapter isn't
+        // allowlisted. No inventory needed: this reverts before the
+        // bridgeToken balance is even read.
+        vm.prank(bot);
+        vm.expectRevert(
+            abi.encodeWithSelector(CrossChainArbitrageExecutor.BridgeAdapterNotAllowed.selector, address(rogueBridge))
+        );
+        exec.executeSourceLeg(
+            noSteps, address(0), 0, address(rogueBridge), POLYGON_WMATIC, 1, 8453, wrongRecipient, ""
+        );
+
+        // (c) both new guardian setters revert for the executor bot.
+        vm.prank(bot);
+        vm.expectRevert(); // AccessControlUnauthorizedAccount
+        exec.setBridgeAdapterAllowed(address(rogueBridge), true);
+        vm.prank(bot);
+        vm.expectRevert(); // AccessControlUnauthorizedAccount
+        exec.setSiblingExecutor(8453, sibling);
+
+        // (d) reverts SiblingMismatch once a sibling IS registered for
+        // dstChainId and dstRecipient doesn't match it (also reverts before
+        // the balance read, so still no inventory needed).
+        vm.prank(admin);
+        exec.setSiblingExecutor(8453, sibling);
+        vm.prank(bot);
+        vm.expectRevert(
+            abi.encodeWithSelector(CrossChainArbitrageExecutor.SiblingMismatch.selector, wrongRecipient, sibling)
+        );
+        exec.executeSourceLeg(
+            noSteps, address(0), 0, address(allowedBridge), POLYGON_WMATIC, 1, 8453, wrongRecipient, ""
+        );
+
+        // (e) succeeds once dstRecipient matches the registered sibling.
+        IWrappedNative(POLYGON_WMATIC).deposit{value: 1 ether}();
+        IWrappedNative(POLYGON_WMATIC).transfer(address(exec), 1 ether);
+        vm.prank(bot);
+        exec.executeSourceLeg(noSteps, address(0), 0, address(allowedBridge), POLYGON_WMATIC, 1, 8453, sibling, "");
+        assertEq(
+            IERC20(POLYGON_WMATIC).balanceOf(address(exec)), 0, "source executor should hold no WMATIC after bridging"
+        );
+
+        // (f) backward-compat: an unregistered dstChainId imposes no
+        // constraint on dstRecipient — matches every existing test (and
+        // every call before this registry existed).
+        assertEq(exec.siblingExecutor(999), address(0), "chain 999 should have no registered sibling");
+        IWrappedNative(POLYGON_WMATIC).deposit{value: 1 ether}();
+        IWrappedNative(POLYGON_WMATIC).transfer(address(exec), 1 ether);
+        vm.prank(bot);
+        exec.executeSourceLeg(
+            noSteps, address(0), 0, address(allowedBridge), POLYGON_WMATIC, 1, 999, wrongRecipient, ""
+        );
+        assertEq(
+            IERC20(POLYGON_WMATIC).balanceOf(address(exec)), 0, "source executor should hold no WMATIC after bridging"
+        );
     }
 }
