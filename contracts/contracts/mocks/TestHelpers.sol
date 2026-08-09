@@ -18,6 +18,17 @@ contract OptimalArbitrageHarness {
         return OptimalArbitrage.optimalV2Amount(rInA, rOutA, rInB, rOutB, feeBps);
     }
 
+    function optimalV2AmountTwoFee(
+        uint256 rInA,
+        uint256 rOutA,
+        uint256 rInB,
+        uint256 rOutB,
+        uint256 feeBpsBuy,
+        uint256 feeBpsSell
+    ) external pure returns (uint256 amountIn, uint256 expectedProfit) {
+        return OptimalArbitrage.optimalV2AmountTwoFee(rInA, rOutA, rInB, rOutB, feeBpsBuy, feeBpsSell);
+    }
+
     function getAmountOut(uint256 amountIn, uint256 rIn, uint256 rOut, uint256 feeBps) external pure returns (uint256) {
         return OptimalArbitrage.getAmountOut(amountIn, rIn, rOut, feeBps);
     }

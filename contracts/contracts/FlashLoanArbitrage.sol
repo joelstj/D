@@ -357,7 +357,13 @@ contract FlashLoanArbitrage is
         (uint256 rInA, uint256 rOutA, address intermediate) = _pairInfo(pairBuy, tokenBorrow);
         (uint256 rInB, uint256 rOutB,) = _pairInfo(pairSell, intermediate);
 
-        (amountIn,) = OptimalArbitrage.optimalV2Amount(rInA, rOutA, rInB, rOutB, feeBpsBuy);
+        // Size with BOTH pools' fees. Passing only `feeBpsBuy` here (as an
+        // earlier revision did) sized the loan for a hypothetical pair where
+        // the sell pool also charged the buy pool's fee, so any asymmetric
+        // pairing — a 0.30% V2 pool against a 0.05% V3-style pool, the common
+        // real case — was systematically mis-sized even though the profit
+        // estimate below already used each pool's own fee.
+        (amountIn,) = OptimalArbitrage.optimalV2AmountTwoFee(rInA, rOutA, rInB, rOutB, feeBpsBuy, feeBpsSell);
         if (amountIn == 0) return (0, 0);
 
         uint256 out1 = OptimalArbitrage.getAmountOut(amountIn, rInA, rOutA, feeBpsBuy);

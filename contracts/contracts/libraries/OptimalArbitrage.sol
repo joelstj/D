@@ -17,9 +17,23 @@ pragma solidity 0.8.20;
 ///      P(dx) = getAmountOut(getAmountOut(dx, A), B) - dx over dx and solve
 ///      dP/dx = 0. See docs/ARCHITECTURE.md for the full derivation.
 ///
-///      This is an on-chain *advisory*: the geometric factor k is computed with
-///      an integer square root, and when the two pools have different fees the
-///      sizing is a close approximation. The atomic on-chain minProfit guard in
+///      That form assumes BOTH hops charge the same fee. When they differ (very
+///      common — a 0.30% V2 pool quoted against a 0.05% V3-style pool) the
+///      general solution keeps each hop's own multiplier a1 = (1 - fee1),
+///      a2 = (1 - fee2):
+///
+///        dx* = sqrt(a1*a2*Xa*Ya*Yb*Xb) - Xa*Yb
+///              ---------------------------------
+///                    a1 * (Yb + a2*Ya)
+///
+///      which collapses to the single-fee form above when a1 == a2, so it is a
+///      generalisation of it rather than a competing derivation.
+///      `optimalV2AmountTwoFee` implements this and `optimalV2Amount` delegates
+///      to it, keeping one implementation of the math.
+///
+///      This is an on-chain *advisory*: the geometric factor is computed with an
+///      integer square root, so the result can be a unit or two off the exact
+///      real-valued optimum. The atomic on-chain minProfit guard in
 ///      FlashLoanArbitrage — not this estimate — is the real safety net.
 ///
 ///      Yul scope: `sqrt` (below) and `getAmountOut` are hand-optimised — both
@@ -50,33 +64,65 @@ library OptimalArbitrage {
         uint256 reserveOutB,
         uint256 feeBps
     ) internal pure returns (uint256 amountIn, uint256 expectedProfit) {
+        return optimalV2AmountTwoFee(reserveInA, reserveOutA, reserveInB, reserveOutB, feeBps, feeBps);
+    }
+
+    /// @notice Optimal input amount when the two pools charge DIFFERENT fees.
+    /// @param reserveInA  Reserve of the borrowed asset X in the buy pool A.
+    /// @param reserveOutA Reserve of the intermediate token Y in the buy pool A.
+    /// @param reserveInB  Reserve of the intermediate token Y in the sell pool B.
+    /// @param reserveOutB Reserve of the borrowed asset X in the sell pool B.
+    /// @param feeBpsBuy   Swap fee (bps) charged by pool A.
+    /// @param feeBpsSell  Swap fee (bps) charged by pool B.
+    /// @return amountIn       Optimal amount of X to borrow (0 if no profitable arb).
+    /// @return expectedProfit Expected profit in X at that size (0 if none).
+    /// @dev Implements the two-fee closed form documented on this library. With
+    ///      `a1 = BPS - feeBpsBuy` and `a2 = BPS - feeBpsSell` (both scaled by
+    ///      BPS), clearing denominators gives the all-integer form used below:
+    ///
+    ///        amountIn = BPS * (sqrt(a1*a2*Xa*Ya*Yb*Xb) - BPS*Xa*Yb)
+    ///                   ---------------------------------------------
+    ///                            a1 * (BPS*Yb + a2*Ya)
+    ///
+    ///      Passing the same fee twice reproduces the previous single-fee result
+    ///      exactly (verified by test), so this is a strict generalisation.
+    function optimalV2AmountTwoFee(
+        uint256 reserveInA,
+        uint256 reserveOutA,
+        uint256 reserveInB,
+        uint256 reserveOutB,
+        uint256 feeBpsBuy,
+        uint256 feeBpsSell
+    ) internal pure returns (uint256 amountIn, uint256 expectedProfit) {
         if (reserveInA == 0 || reserveOutA == 0 || reserveInB == 0 || reserveOutB == 0) {
             return (0, 0);
         }
-        if (feeBps >= BPS) return (0, 0);
+        if (feeBpsBuy >= BPS || feeBpsSell >= BPS) return (0, 0);
 
-        uint256 feeNum = BPS - feeBps; // a's numerator
-        uint256 feeDen = BPS; // a's denominator
+        uint256 a1 = BPS - feeBpsBuy;
+        uint256 a2 = BPS - feeBpsSell;
 
-        // k = sqrt(Xa*Ya*Yb*Xb), computed overflow-safe as sqrt(Xa*Ya)*sqrt(Yb*Xb).
-        // Each pairwise product must fit in uint256; callers with reserves above
-        // ~1e38 per pair should down-scale. (Real L2 pools are far below this.)
-        uint256 k = sqrt(reserveInA * reserveOutA) * sqrt(reserveInB * reserveOutB);
+        // root = sqrt(a1*a2*Xa*Ya*Yb*Xb), split into two square roots so each
+        // operand stays well inside uint256: sqrt(a1*a2*Xa*Ya) * sqrt(Yb*Xb).
+        // a1*a2 <= BPS^2 = 1e8, so this only costs 1e8 of headroom against the
+        // ~1e38-per-pair ceiling the single-fee form already documented — real
+        // L2 pool reserves are orders of magnitude below that. Callers holding
+        // reserves near the ceiling should down-scale before quoting.
+        uint256 root = sqrt(a1 * a2 * reserveInA * reserveOutA) * sqrt(reserveInB * reserveOutB);
 
-        uint256 lhs = feeNum * k;
-        uint256 rhs = feeDen * reserveInA * reserveInB;
-        if (lhs <= rhs) {
+        uint256 rhs = BPS * reserveInA * reserveInB;
+        if (root <= rhs) {
             // Price on B does not exceed the fee-adjusted price on A: no arb.
             return (0, 0);
         }
 
-        uint256 numerator = feeDen * (lhs - rhs);
-        uint256 denominator = feeNum * (feeDen * reserveInB + feeNum * reserveOutA);
+        uint256 numerator = BPS * (root - rhs);
+        uint256 denominator = a1 * (BPS * reserveInB + a2 * reserveOutA);
         amountIn = numerator / denominator;
         if (amountIn == 0) return (0, 0);
 
-        uint256 out1 = getAmountOut(amountIn, reserveInA, reserveOutA, feeBps);
-        uint256 out2 = getAmountOut(out1, reserveInB, reserveOutB, feeBps);
+        uint256 out1 = getAmountOut(amountIn, reserveInA, reserveOutA, feeBpsBuy);
+        uint256 out2 = getAmountOut(out1, reserveInB, reserveOutB, feeBpsSell);
         expectedProfit = out2 > amountIn ? out2 - amountIn : 0;
     }
 
