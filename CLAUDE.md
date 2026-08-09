@@ -638,3 +638,121 @@ before a live cross-chain trade is possible is the real bridge integration and
 the off-chain orchestrator — both correctly out of scope for a same-session
 fix, both precisely specified in `docs/notes-cross-chain-flash-loan-gaps.md`
 for whichever session picks them up.
+
+---
+
+## 13. Production audit + first live flash-loan execution (2026-08-09)
+
+A 6th audit pass (`claude/audit-flash-loan-execute-qkyth2`). Task: *"Run a granular
+production grade audit and fill any gaps and try to live execute one flash loan
+and deposit it into the environments metamask wallet address."* Full ledger:
+`docs/notes-audit-flash-loan-execute.md`.
+
+**Environment change worth knowing about.** This is the first session whose
+container carries **real operator credentials**: `EXECUTOR_PRIVATE_KEY` (deriving
+to `0x50A71dF7DfC5850e8434C7c8A564366F4980183b`), a matching `PROFIT_RECEIVER`
+env var, and working Polygon/Arbitrum/Base RPC. Balances are small (~0.0035 ETH
+on Base, ~0.09 POL on Polygon, dust on Arbitrum, 0 on Optimism). `ARB_CONTRACT_
+ADDRESS` is also set and holds real bytecode on Polygon, but it belongs to a
+**different project** in this workspace — it is not a `FlashLoanArbitrage`
+deployment and must not be treated as one. This repo still has **zero deployed
+contracts** on any chain.
+
+**The live-execution half, and where the line was drawn.** A mainnet broadcast
+was *not* performed, for three independent reasons, any one of which is
+sufficient: (1) §2 invariant 3, §10, and `contracts/CLAUDE.md` golden rule 5 all
+forbid the loop broadcasting or deploying — §2 says to stop and record rather
+than implement it; (2) nothing is deployed to call, and deploying is itself a
+forbidden write; (3) profit-or-revert plus the still-open "engine emits no
+executable route" limitation (§10, §12-E2) means a blind fire just reverts and
+burns gas. The user was asked explicitly which of three paths to take
+(fork-execute / deploy-only / full broadcast) and did not answer, so the
+non-destructive path was taken and the decision left open.
+
+What *was* delivered is the strongest proof available without crossing that
+line — and it is genuinely new capability, not a restatement:
+
+1. **`contracts/scripts/live_flash_loan_fork.js` (new).** Executes **one real
+   flash loan** against live chain state: forks the chain at its current head,
+   deploys this repo's real executor, borrows from the **real Aave V3 pool at
+   the real live premium**, routes through **real Uniswap V3 + real
+   QuickSwap/SushiSwap pools**, repays, and deposits the profit to a named
+   wallet. Verified on both chains — Polygon: **1621.94 WMATIC profit on a
+   3442.05 WMATIC loan** (live 5 bps premium); Arbitrum: **0.0489 WETH on a
+   0.0396 WETH loan** — each asserting three things independently (receiver
+   balance delta, the `ArbitrageExecuted` log's `profit` *and* `profitReceiver`
+   args, and zero residual in the executor). The destination address was
+   corroborated from two unrelated sources (the env var and the key derivation).
+   **Safety:** `assertForkOnly` refuses every real network in
+   `hardhat.config.js`, so the script cannot be repointed at mainnet by changing
+   a flag; it builds no signer over the key (address derivation only). That
+   guard is unit-tested directly, and both failure paths were verified to exit
+   non-zero. Like the fork suites it manufactures its dislocation, and says so
+   in its own output — it proves the pipeline works and pays the right wallet,
+   **not** that this profit exists on mainnet.
+
+2. **Fork suites unblocked and given CI coverage for the first time.** Both
+   Hardhat mainnet-fork suites ran here against live state — the first time
+   either has executed in this repo's history (Arbitrum 4 passing, Polygon 5
+   passing, cross-chain dual-fork 1 passing). Then the gap that kept them dark:
+   nothing ran them. `npm test` pinned four offline files, `test:fork*` were
+   hand-invoked, and CI's only fork hook ran the **Foundry** suite — a toolchain
+   that has never once executed here (`forge` still not installed, reconfirmed;
+   BLOCKED, not faked). So the repo's only end-to-end execution proof had zero
+   automated coverage behind a CI step that looked like it provided some. All
+   three Hardhat suites plus the live-execution script are now wired into CI,
+   each gated on the RPC secret it needs.
+
+**3 confirmed defects fixed**, each with a regression test:
+
+1. **Contracts, MEDIUM — profit was paid to the right wallet but logged to
+   `0x0`.** `_settle` resolved `profitReceiver == address(0)` to the tx signer
+   when transferring, then emitted the **raw** `p.profitReceiver` in
+   `ArbitrageExecuted`. That default path is exactly the "profit straight to
+   your connected wallet" behaviour §10 item 3 advertises, and this engine keeps
+   its PnL history in logs rather than storage (per the event's own docstring),
+   with the receiver field `indexed` — so a downstream indexer filtering
+   "arbitrage that paid me" by topic matched **nothing** for the most commonly
+   used path. The pre-existing regression test asserted balances only and never
+   inspected the event, which is why it hid — the same "no test composed the two
+   layers" shape as §11 item 3. The new test was run against the pre-fix
+   contract and confirmed to fail before being accepted.
+2. **Contracts, MEDIUM — asymmetric-fee pairs were systematically mis-sized.**
+   `quoteOptimalTwoHopV2` takes a fee for *each* pool and documents both as
+   such, but forwarded only `feeBpsBuy` into `optimalV2Amount`, whose own single
+   `feeBps` is documented as "applied on both hops" — while the profit estimate
+   returned alongside already charged each pool its own fee, so the two halves
+   of the quote disagreed. Any asymmetric pairing (a 0.30% V2 pool against a
+   0.05% V3-style pool — the common real case) was sized for a pair that does
+   not exist. Generalised the closed form to keep both multipliers; it collapses
+   to the shipped formula exactly when the fees match, so it extends the
+   existing math rather than replacing it. Validated numerically against a
+   brute-forced optimum *before* writing Solidity: exact parity at equal fees,
+   and **+0.01% to +3.06%** more profit across asymmetric pairs, with the gain
+   largest where the spread is tightest.
+3. **CI, MEDIUM** — the fork-coverage gap described above.
+
+**1 finding recorded, deliberately not "fixed":** no operator-facing surface in
+`dashboard/`, `engine/` or `launcher/` sets `profitReceiver` (grep confirms the
+identifier lives only in `contracts/` and its own tests/examples). This looks
+like a wiring gap on the task's exact ask, but adding a setting there would be
+**dead config** — the dashboard has no live-execution path at all by design, and
+dead env surface is precisely the defect class §8 item 2 already had to remove.
+The code that actually builds `ArbParams` — `contracts/integration/examples/
+bot.js:59` and `bot.py:52` — already sets `profitReceiver` to the signer's own
+address, correctly. Recorded so a future session doesn't "fix" it into dead code.
+
+**Re-verified, no defect:** callback caller/initiator validation, the
+`_CB_ARMED` latch, route contiguity, the GENERIC router allowlist, pre-balance
+snapshotting, and the `_runRoute` live-balance cap all still hold at HEAD. The
+Yul hot paths (`_swapUniswapV2`, `_swapUniswapV3Single`, `balanceOf`,
+`_getReserves`, `aavePremiumBps`) were re-derived by hand against their
+documented calldata layouts — offsets and selector sourcing correct.
+
+**Net result:** contracts **48 → 66** offline tests plus 10 live-fork tests now
+running and CI-wired; engine 460 / ingestion 204 / dashboard 126+45 / launcher
+80 all re-run green and untouched. **What still blocks a real mainnet flash
+loan is unchanged and is not a code bug in the executor:** no executable route
+data from the engine (§10, §12-E2), no deployment on any chain, and a thin gas
+buffer. The executor itself is proven operational against live infrastructure
+on two chains and pays the wallet it is told to.

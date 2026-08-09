@@ -33,16 +33,21 @@ Compiled with **solc 0.8.20** (zero warnings) and tested with Hardhat:
 
 | Suite | What it proves | Result |
 | --- | --- | --- |
-| `test/*.test.js` (offline) | Full mechanics on mock tokens/pools/providers: 2-hop & 3-hop arbs via Aave and Balancer, min-profit revert, access control, pause, griefer-callback rejection, GENERIC-router and bridge-adapter allowlisting, sibling-executor registry, optimal-sizing math, and Yul-encoded DEX call differential tests | **48 passing** |
+| `test/*.test.js` (offline) | Full mechanics on mock tokens/pools/providers: 2-hop & 3-hop arbs via Aave and Balancer, min-profit revert, access control, pause, griefer-callback rejection, GENERIC-router and bridge-adapter allowlisting, sibling-executor registry, optimal-sizing math (including asymmetric pool fees), profit-receiver logging, the live-execution script's broadcast guard, and Yul-encoded DEX call differential tests | **66 passing** |
 | `test/fork/ArbitrumFork.test.js` (**live Arbitrum fork**) | **Real** atomic cross-DEX flash-loan arbs against **live** Uniswap V3 + SushiSwap V2, borrowing from **both Balancer V2 and Aave V3**, plus a live Aave premium read and an atomic revert when no arb exists | **4 passing** |
 | `test/fork/PolygonFork.test.js` (**live Polygon PoS fork**) | The same atomic borrow → cross-DEX → repay → profit path against **live** Uniswap V3 + QuickSwap V2 on Polygon | **5 passing** |
 | `test/fork/CrossChainDualFork.test.js` (**live dual fork: Polygon + Arbitrum**) | `CrossChainArbitrageExecutor`'s inventory-based source leg (real swap on a live Polygon fork) and destination leg (real swap on a live Arbitrum fork), run back-to-back in one test against genuinely independent live chain state | **1 passing** |
 
 The live-fork tests manufacture a price dislocation and then **capture it
-atomically**, e.g. real runs banked **`0.94 WETH` profit on a `0.80 WETH`
-flash loan** on Arbitrum and **`2739 WMATIC` profit on a `3593 WMATIC` loan**
+atomically**, e.g. real runs banked **`0.93 WETH` profit on a `0.79 WETH`
+flash loan** on Arbitrum and **`1623 WMATIC` profit on a `3442 WMATIC` loan**
 on Polygon — proving the borrow → cross-DEX multi-hop → repay → profit path is
-fully operational on-chain on both chains.
+fully operational on-chain on both chains. (Exact figures move with live pool
+depth; these are from the most recent verified run.)
+
+All three fork suites, plus the live-execution script below, now run in CI
+whenever the corresponding RPC secret (`ARBITRUM_RPC_URL` / `POLYGON_RPC_URL`)
+is configured, and self-skip cleanly when it isn't.
 
 ```
 FlashLoanArbitrage — Arbitrum mainnet fork (live contracts)
@@ -88,7 +93,7 @@ npm install
 # 2. Compile (downloads solc 0.8.20 on first run)
 npm run compile
 
-# 3. Offline unit tests (no RPC needed) — 48 tests
+# 3. Offline unit tests (no RPC needed) — 66 tests
 npm test
 
 # 4. Live mainnet-fork tests against real contracts
@@ -99,7 +104,28 @@ FORK_RPC_URL=https://polygon-rpc.com npm run test:fork:polygon         # Polygon
 POLYGON_RPC_URL=https://polygon-rpc.com \
 ARBITRUM_RPC_URL=https://arb1.arbitrum.io/rpc \
   npm run test:fork:crosschain
+
+# 6. Execute ONE real flash loan on live state, paying a wallet you name.
+#    Runs only against the in-process fork — it refuses every real network,
+#    builds no signer, and broadcasts nothing.
+FORK_RPC_URL=https://arb1.arbitrum.io/rpc \
+PROFIT_RECEIVER=0xYourMetaMaskAddress \
+  npx hardhat run scripts/live_flash_loan_fork.js
 ```
+
+`scripts/live_flash_loan_fork.js` is the end-to-end operator proof: it deploys
+this repo's executor onto a fork of the chain's current head, borrows from the
+**real** Aave V3 pool at the **real** live premium, routes through **real**
+Uniswap V3 and V2 pools, repays, and deposits the profit into the address you
+name — then verifies the balance delta, the `ArbitrageExecuted` log, and that
+the executor retained nothing. Recent runs: **1621.94 WMATIC** profit on a
+3442.05 WMATIC loan (Polygon) and **0.0489 WETH** on a 0.0396 WETH loan
+(Arbitrum).
+
+Like the fork suites, it manufactures the dislocation it captures. It proves
+the pipeline is operational and pays the right wallet — **not** that this
+profit is sitting on mainnet. Real execution stays a human-signed MetaMask
+action.
 
 > A handful of free public RPCs (e.g. `polygon-rpc.com`) rate-limit or block
 > the bulk archival-style calls a mainnet fork makes. If a fork test fails
