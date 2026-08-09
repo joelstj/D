@@ -696,12 +696,21 @@ line — and it is genuinely new capability, not a restatement:
    either has executed in this repo's history (Arbitrum 4 passing, Polygon 5
    passing, cross-chain dual-fork 1 passing). Then the gap that kept them dark:
    nothing ran them. `npm test` pinned four offline files, `test:fork*` were
-   hand-invoked, and CI's only fork hook ran the **Foundry** suite — a toolchain
-   that has never once executed here (`forge` still not installed, reconfirmed;
-   BLOCKED, not faked). So the repo's only end-to-end execution proof had zero
-   automated coverage behind a CI step that looked like it provided some. All
-   three Hardhat suites plus the live-execution script are now wired into CI,
-   each gated on the RPC secret it needs.
+   hand-invoked, and CI's only *fork* hook pointed at the **Foundry** suite,
+   gated on an `ARBITRUM_RPC_URL` secret that has never been configured — so
+   that step has never actually run either. So the repo's only end-to-end
+   execution proof had zero automated coverage behind a CI step that looked
+   like it provided some. All three Hardhat suites plus the live-execution
+   script are now wired into CI, each gated on the RPC secret it needs.
+
+   **Correction to the earlier framing in this file's history:** Foundry is
+   unavailable in these *sandboxed sessions* (`forge` not installed —
+   reconfirmed again here, so the local Solidity suite stays BLOCKED, not
+   faked), but it installs and runs fine **in CI** via `foundry-toolchain@v1`:
+   the run on this PR executed 16 Foundry tests green. Only the fork-gated
+   Foundry step is dark, and only for want of a secret. Prior sessions' "the
+   Foundry suite has never executed" should be read as "never executed *in a
+   dev sandbox*" — it is not true of CI.
 
 **3 confirmed defects fixed**, each with a regression test:
 

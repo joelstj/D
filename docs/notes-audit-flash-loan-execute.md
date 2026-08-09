@@ -67,7 +67,7 @@ itself. The mainnet-broadcast decision is left with the user.
 | contracts Hardhat offline | **48 passing**, 10 pending (fork suites self-skip) |
 | dashboard `pnpm verify` | typecheck + **126 backend** + **45 frontend** + both builds |
 | launcher unittest | **80 passed** |
-| contracts Foundry | **BLOCKED** — `forge` not installed. Recorded, not faked (as in §9/§11/§12). |
+| contracts Foundry | **BLOCKED locally** — `forge` not installed in this sandbox. Recorded, not faked (as in §9/§11/§12). Note it *does* run in CI via `foundry-toolchain@v1` (16 tests green on this PR's run) — only its fork-gated step is dark, for want of a secret. |
 
 ### Newly unblocked this session
 
@@ -94,7 +94,7 @@ fixed, with the reasoning stated.
 | # | Sev | Component | Finding | Disposition |
 |---|-----|-----------|---------|-------------|
 | A1 | MEDIUM | contracts | `ArbitrageExecuted` logs `p.profitReceiver` **raw** (`FlashLoanArbitrage.sol:290`), not the effective recipient. On the default path — `profitReceiver == address(0)`, which `_settle` resolves to the tx signer — the event records `0x0` as the indexed receiver while the funds go to the signer. The contract's own comment says "Historical PnL lives in logs, not storage," so every downstream indexer/PnL attribution mis-attributes exactly the path root `CLAUDE.md` §10 item 3 advertises as the headline feature ("profit straight to your connected wallet by default"). The field is `indexed`, so a topic filter for "arbitrage that paid me" returns nothing. The existing regression test (`FlashLoanArbitrage.test.js:138`) asserts *balances* but never the emitted event — which is why it hid, the same "no test composed the two layers" shape as §11 item 3. | **FIX** |
-| A2 | MEDIUM | CI | The Hardhat fork suites are the repo's **only** working live-execution proof, and nothing runs them. `npm test` pins 4 offline files; `test:fork*` are separate scripts invoked by hand. CI's one fork hook (`ci.yml:110`) gates on `ARBITRUM_RPC_URL` and runs the **Foundry** suite — a toolchain that has never once executed in this repo (§9/§11/§12 all record `forge` missing). So the proof that the executor works against live chains has zero automated coverage, and the CI step that looks like it provides coverage cannot run. | **FIX** |
+| A2 | MEDIUM | CI | The Hardhat fork suites are the repo's **only** working live-execution proof, and nothing runs them. `npm test` pins 4 offline files; `test:fork*` are separate scripts invoked by hand. CI's one fork hook (`ci.yml:110`) gates on an `ARBITRUM_RPC_URL` secret that has never been configured and points at the **Foundry** suite, so it has never run either. So the proof that the executor works against live chains has zero automated coverage, behind a CI step that looks like it provides some. | **FIX** |
 | A3 | MEDIUM | contracts | `quoteOptimalTwoHopV2` accepts `feeBpsBuy` **and** `feeBpsSell` and documents both as per-pool fees, but passes only `feeBpsBuy` into `OptimalArbitrage.optimalV2Amount`, whose own signature documents its single `feeBps` as "applied on both hops." The *profit estimate* then correctly uses each pool's own fee. Net effect: for an asymmetric-fee pair (very common — a 0.30% V2 pool against a 0.05% V3-style pool) the returned "optimal" loan size is optimal for a pair that does not exist, so the caller systematically under- or over-borrows. Not a fund-safety issue (`minProfit` is still the hard guard) but a real correctness gap in an advertised sizing feature. | **FIX** |
 | A4 | LOW→n/a | product | No operator-facing surface anywhere in `dashboard/`, `engine/`, or `launcher/` sets `profitReceiver` — grep confirms the identifier exists only in `contracts/` and its own tests/examples. Initially looked like a wiring gap on the user's exact ask. **On inspection it is not a defect to fix:** the dashboard has no live-execution path at all (by design, invariant 3), so a "where does profit go" setting there would be dead config — precisely the defect class §8 item 2 already had to remove. The code that *does* build `ArbParams` — `contracts/integration/examples/bot.js:59` and `bot.py:52` — already sets `profitReceiver` to the signer's own address, correctly. | **RECORD** (no change; documented so the next session doesn't "fix" it into dead config) |
 | A5 | — | contracts | Reviewed for fund-safety regressions against current HEAD rather than trusting the changelog: callback caller/initiator validation, the `_CB_ARMED` latch, route contiguity, the GENERIC router allowlist, pre-balance snapshotting so parked tokens are never paid out as profit, and the `_runRoute` live-balance cap. All present and enforced. The Yul hot paths (`_swapUniswapV2`, `_swapUniswapV3Single`, `balanceOf`, `_getReserves`, `aavePremiumBps`) were re-derived by hand against their documented calldata layouts — offsets and selector sourcing are correct. | **No defect** |
@@ -217,5 +217,20 @@ none is a same-session fix:
    human-signed MetaMask action through the dashboard Contracts panel (§10).
 3. **Gas.** The operator wallet holds ~0.0035 ETH on Base and ~0.09 POL on Polygon — enough for a
    deploy on one chain, not for a meaningful operating buffer.
-4. **Foundry still BLOCKED** — `forge` not installed. Recorded, not faked, as in every prior
-   session. The Hardhat mirror now has CI coverage, which is the practical mitigation.
+4. **Foundry still BLOCKED locally** — `forge` not installed in the sandbox. Recorded, not faked,
+   as in every prior session. It does run in CI (16 tests green on this PR), so the gap is
+   local verification only; its fork-gated step needs an `ARBITRUM_RPC_URL` secret to light up.
+
+## Correction to a claim made mid-session
+
+While driving this PR to green I read the CI logs and found that **Foundry installs and runs fine
+in CI** via `foundry-toolchain@v1` — the run on this PR executed 16 Foundry tests green. An
+earlier draft of finding A2 (and the PR description) said the Foundry suite "has never once
+executed in this repo," generalising every prior session's *sandbox* observation into a claim
+about CI. That was wrong and is corrected above and in root `CLAUDE.md` §13.
+
+The finding itself is unaffected: the Hardhat fork suites — the ones that actually execute an
+end-to-end arbitrage against live pools, and the ones validated this session — had **no CI hook at
+all**, and the Foundry fork step that did exist is gated on a secret that has never been set. Both
+statements were verified against `ci.yml` and the live run. Only the characterisation of Foundry's
+availability was overstated.
