@@ -161,6 +161,52 @@ describe("FlashLoanArbitrage (offline mechanics)", () => {
     expect(await f.usdc.balanceOf(f.arb.target)).to.equal(0n);
   });
 
+  // Companion to the test above, covering the LOG rather than the balances.
+  // Both assertions are needed: an earlier revision paid the signer correctly
+  // but emitted the raw `p.profitReceiver` (address(0)) in the event, so PnL
+  // attribution built on these logs — which is where this engine keeps its
+  // history, per the event's own docstring — credited 0x0 for every trade that
+  // used the connected-wallet default. The receiver field is `indexed`, so a
+  // topic filter for "arbitrage that paid me" matched nothing.
+  it("emits the EFFECTIVE profit receiver when profitReceiver=0, not the zero address", async () => {
+    const f = await deploy();
+    const amount = e(10000, 6n);
+    const params = {
+      ...twoHopParams(f, Provider.AAVE_V3, amount),
+      profitReceiver: ethers.ZeroAddress,
+    };
+
+    const tx = await f.arb.connect(f.bot).executeArbitrage(params);
+    const receipt = await tx.wait();
+    const event = receipt.logs
+      .filter((l) => l.address === f.arb.target)
+      .map((l) => f.arb.interface.parseLog(l))
+      .find((parsed) => parsed && parsed.name === "ArbitrageExecuted");
+
+    expect(event, "ArbitrageExecuted not emitted").to.not.equal(undefined);
+    expect(event.args.profitReceiver).to.equal(f.bot.address);
+    expect(event.args.profitReceiver).to.not.equal(ethers.ZeroAddress);
+    // And the logged profit matches what the signer actually received.
+    expect(event.args.profit).to.be.gt(0n);
+  });
+
+  // The explicit-receiver path must keep logging the address the caller named.
+  it("emits the explicit profit receiver unchanged when one is supplied", async () => {
+    const f = await deploy();
+    const params = twoHopParams(f, Provider.AAVE_V3, e(10000, 6n));
+    await expect(f.arb.connect(f.bot).executeArbitrage(params))
+      .to.emit(f.arb, "ArbitrageExecuted")
+      .withArgs(
+        f.usdc.target,
+        Provider.AAVE_V3,
+        f.receiver.address,
+        (v) => v > 0n,
+        (v) => v > 0n,
+        (v) => v > 0n,
+        2n
+      );
+  });
+
   it("executes a profitable 2-hop arb via Balancer V2 (0 fee)", async () => {
     const f = await deploy();
     const amount = e(10000, 6n);

@@ -282,12 +282,21 @@ contract FlashLoanArbitrage is
         if (generated < required) revert InsufficientProfit(generated, required);
 
         uint256 profit = generated - owed;
+        // Resolve the receiver once, and log THIS address rather than the raw
+        // `p.profitReceiver`. On the default path (`profitReceiver == 0`, i.e.
+        // "pay whoever signed the tx" — the connected-wallet default the
+        // dashboard and the integration bots rely on) the raw field is the zero
+        // address, so logging it would attribute every such trade's profit to
+        // 0x0. PnL history for this engine lives in these logs, not in storage
+        // (see the event's docstring), and the field is `indexed` — so a
+        // downstream indexer filtering "arbitrage that paid me" by topic would
+        // match nothing at all for exactly the path most operators use.
+        address to = p.profitReceiver == address(0) ? executor : p.profitReceiver;
         if (profit != 0) {
-            address to = p.profitReceiver == address(0) ? executor : p.profitReceiver;
             IERC20(asset).safeTransfer(to, profit);
         }
 
-        emit ArbitrageExecuted(asset, provider, p.profitReceiver, amount, owed, profit, p.steps.length);
+        emit ArbitrageExecuted(asset, provider, to, amount, owed, profit, p.steps.length);
     }
 
     /// @dev Feed-forward execution: the borrowed `amount` seeds hop 0, and each
