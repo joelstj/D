@@ -1,7 +1,54 @@
-import { describe, it, expect, vi } from "vitest";
-import { render, screen, fireEvent } from "@testing-library/react";
-import { ContractsPanelView, type ContractsPanelViewProps } from "./ContractsPanel";
+import { describe, it, expect, vi, beforeEach } from "vitest";
+import { render, screen, fireEvent, waitFor } from "@testing-library/react";
+import { ContractsPanelView, ContractsPanel, type ContractsPanelViewProps } from "./ContractsPanel";
 import type { ContractsStatus, NetworkContractStatus } from "../lib/types";
+
+// The real wagmi-wired container (`ContractsPanel`) previously had zero test
+// coverage — only this file's pure-props `ContractsPanelView` was exercised.
+// Mocked here the same way `WalletButton.test.tsx` mocks wagmi: at the module
+// level, since the container calls the hooks directly (no dependency-injection
+// seam) and a real MetaMask connection can't exist in a unit test.
+// `vi.mock` factories run when the mocked module is first imported — which
+// happens transitively via `./ContractsPanel`'s own imports, i.e. BEFORE this
+// file's own top-level `const`s would otherwise run. Any value a factory
+// reads eagerly (rather than through a closure invoked later, at render/call
+// time) must therefore come from `vi.hoisted`, which Vitest guarantees is
+// initialized before every `vi.mock` factory regardless of import order.
+const { deployContractAsync, switchChainAsync, waitForTransactionReceipt, apiContracts, mockWallet } = vi.hoisted(() => ({
+  deployContractAsync: vi.fn(),
+  switchChainAsync: vi.fn(),
+  waitForTransactionReceipt: vi.fn(),
+  apiContracts: {
+    status: vi.fn(),
+    compile: vi.fn(),
+    artifact: vi.fn(),
+    deployParams: vi.fn(),
+    recordDeployment: vi.fn(),
+    readiness: vi.fn(),
+  },
+  mockWallet: {
+    address: undefined as `0x${string}` | undefined,
+    chainId: undefined as number | undefined,
+    isConnected: false,
+  },
+}));
+
+vi.mock("wagmi", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("wagmi")>();
+  return {
+    ...actual,
+    useAccount: () => ({
+      address: mockWallet.address,
+      chainId: mockWallet.chainId,
+      isConnected: mockWallet.isConnected,
+    }),
+    useSwitchChain: () => ({ switchChainAsync }),
+    useDeployContract: () => ({ deployContractAsync }),
+  };
+});
+
+vi.mock("wagmi/actions", () => ({ waitForTransactionReceipt }));
+vi.mock("../lib/api", () => ({ api: { contracts: apiContracts } }));
 
 function net(over: Partial<NetworkContractStatus>): NetworkContractStatus {
   return {
@@ -43,7 +90,7 @@ function props(over: Partial<ContractsPanelViewProps> = {}): ContractsPanelViewP
     loading: false,
     error: null,
     wallet: { connected: false },
-    busy: { compiling: false, deploying: null, readiness: false },
+    busy: { compiling: false, deploying: new Set(), readiness: false },
     readiness: null,
     notice: null,
     onCompile: vi.fn(),
@@ -287,5 +334,155 @@ describe("ContractsPanelView", () => {
       );
       expect(screen.queryByText(/↳ cross-chain/i)).not.toBeInTheDocument();
     });
+  });
+});
+
+/** Two deployable networks, both compiled, neither deployed yet — the shape
+ *  needed to exercise real concurrent deploys below. */
+function twoNetworkStatus(): ContractsStatus {
+  return {
+    available: true,
+    contractsDir: "/repo/contracts",
+    compiled: true,
+    artifacts: [
+      { name: "FlashLoanArbitrage", role: "atomic", compiled: true, bytecodeHash: "sha256:a", bytecodeSize: 100 },
+      { name: "CrossChainArbitrageExecutor", role: "crosschain", compiled: true, bytecodeHash: "sha256:b", bytecodeSize: 100 },
+    ],
+    networks: [
+      net({ key: "arbitrum", name: "Arbitrum One", chainId: 42161 }),
+      net({ key: "base", name: "Base", chainId: 8453, explorer: "https://basescan.org" }),
+    ],
+    generatedAt: 1,
+  };
+}
+
+describe("ContractsPanel (wagmi-wired container)", () => {
+  beforeEach(() => {
+    deployContractAsync.mockReset();
+    switchChainAsync.mockReset().mockResolvedValue(undefined);
+    waitForTransactionReceipt.mockReset().mockResolvedValue({ contractAddress: "0xdeployed00000000000000000000000000000000" });
+    Object.values(apiContracts).forEach((m) => m.mockReset());
+    apiContracts.status.mockResolvedValue(twoNetworkStatus());
+    apiContracts.deployParams.mockResolvedValue({
+      network: "arbitrum",
+      chainId: 42161,
+      contract: "FlashLoanArbitrage",
+      providerVerified: true,
+      aavePool: "0xaave",
+      balancerVault: "0xbal",
+      args: [],
+    });
+    apiContracts.artifact.mockResolvedValue({ contractName: "FlashLoanArbitrage", abi: [], bytecode: "0x00" });
+    apiContracts.recordDeployment.mockResolvedValue({
+      record: { network: "arbitrum", chainId: 42161, address: "0xdeployed00000000000000000000000000000000", crossChainAddress: null, deployedAt: "2026-01-01T00:00:00.000Z" },
+      env: { file: ".env", created: false, updatedKeys: [] },
+    });
+    mockWallet.address = "0xabc0000000000000000000000000000000abc0";
+    mockWallet.chainId = 42161;
+    mockWallet.isConnected = true;
+  });
+
+  it("onDeploy: switches chain, deploys via MetaMask, records the result, and refreshes", async () => {
+    render(<ContractsPanel />);
+    const deployButtons = await screen.findAllByRole("button", { name: /^Deploy$/ });
+    fireEvent.click(deployButtons[0]!);
+
+    await waitFor(() => expect(deployContractAsync).toHaveBeenCalledOnce());
+    expect(apiContracts.deployParams).toHaveBeenCalledWith("arbitrum", mockWallet.address);
+    expect(apiContracts.artifact).toHaveBeenCalledWith("FlashLoanArbitrage");
+
+    await waitFor(() =>
+      expect(apiContracts.recordDeployment).toHaveBeenCalledWith(
+        expect.objectContaining({ network: "arbitrum", address: "0xdeployed00000000000000000000000000000000" }),
+      ),
+    );
+    expect(await screen.findByText(/recorded to \.env/i)).toBeInTheDocument();
+    // status() is called once on mount and again by the post-deploy refresh().
+    await waitFor(() => expect(apiContracts.status).toHaveBeenCalledTimes(2));
+  });
+
+  it("onDeploy: shows a friendly message when the wallet rejects the deploy, and re-enables the button", async () => {
+    deployContractAsync.mockRejectedValueOnce(new Error("User rejected the request"));
+    render(<ContractsPanel />);
+    const deployButtons = await screen.findAllByRole("button", { name: /^Deploy$/ });
+    fireEvent.click(deployButtons[0]!);
+
+    expect(await screen.findByText(/cancelled in wallet/i)).toBeInTheDocument();
+    await waitFor(() => expect((deployButtons[0] as HTMLButtonElement).disabled).toBe(false));
+    expect(apiContracts.recordDeployment).not.toHaveBeenCalled();
+  });
+
+  it("onDeployCrossChain: requests the cross-chain artifact and keeps the atomic address unchanged when recording", async () => {
+    const deployedNetworks = [
+      net({
+        key: "arbitrum",
+        name: "Arbitrum One",
+        action: "ready",
+        deployment: { network: "arbitrum", chainId: 42161, address: "0x9999999999999999999999999999999999999999", crossChainAddress: null, deployedAt: "2026-01-01T00:00:00.000Z" },
+      }),
+    ];
+    apiContracts.status.mockResolvedValue(status({ networks: deployedNetworks }));
+
+    render(<ContractsPanel />);
+    const button = await screen.findByRole("button", { name: /deploy cross-chain/i });
+    fireEvent.click(button);
+
+    await waitFor(() =>
+      expect(apiContracts.deployParams).toHaveBeenCalledWith("arbitrum", mockWallet.address, "CrossChainArbitrageExecutor"),
+    );
+    expect(apiContracts.artifact).toHaveBeenCalledWith("CrossChainArbitrageExecutor");
+    await waitFor(() =>
+      expect(apiContracts.recordDeployment).toHaveBeenCalledWith(
+        expect.objectContaining({
+          network: "arbitrum",
+          address: "0x9999999999999999999999999999999999999999", // unchanged atomic address
+          crossChainAddress: "0xdeployed00000000000000000000000000000000",
+        }),
+      ),
+    );
+  });
+
+  it("onCompile: calls the compile endpoint and refreshes status", async () => {
+    apiContracts.compile.mockResolvedValue({ ok: true, output: "", artifacts: [] });
+    render(<ContractsPanel />);
+    const compileButton = await screen.findByRole("button", { name: /^Compile$/ });
+    fireEvent.click(compileButton);
+
+    await waitFor(() => expect(apiContracts.compile).toHaveBeenCalledOnce());
+    expect(await screen.findByText(/compiled successfully/i)).toBeInTheDocument();
+  });
+
+  it("regression: a deploy in flight on one network is not clobbered by starting or finishing a deploy on another network", async () => {
+    // Regression for the bug where `busy.deploying` was a single shared
+    // `string | null` — starting network B's deploy overwrote network A's
+    // busy flag, silently re-enabling A's button and hiding its spinner
+    // while A's transaction was still pending in the wallet.
+    let resolveArb!: (hash: string) => void;
+    let resolveBase!: (hash: string) => void;
+    const arbTx = new Promise<string>((res) => { resolveArb = res; });
+    const baseTx = new Promise<string>((res) => { resolveBase = res; });
+    deployContractAsync.mockImplementationOnce(() => arbTx).mockImplementationOnce(() => baseTx);
+
+    render(<ContractsPanel />);
+    const deployButtons = await screen.findAllByRole("button", { name: /^Deploy$/ });
+    expect(deployButtons).toHaveLength(2);
+
+    fireEvent.click(deployButtons[0]!); // arbitrum
+    await waitFor(() => expect(deployContractAsync).toHaveBeenCalledTimes(1));
+    fireEvent.click(deployButtons[1]!); // base, while arbitrum's tx is still pending
+    await waitFor(() => expect(deployContractAsync).toHaveBeenCalledTimes(2));
+
+    // Both rows must show the busy state at once — impossible with a single
+    // shared busy key, which could only ever equal one network at a time.
+    await waitFor(() => expect(screen.getAllByText(/Deploying…/i)).toHaveLength(2));
+
+    // Finishing arbitrum's deploy must not clear base's busy state.
+    resolveArb("0xarbhash");
+    await waitFor(() => expect(screen.getAllByText(/Deploying…/i)).toHaveLength(1));
+    expect(screen.getAllByText(/Deploying…/i)[0]).toBeInTheDocument();
+    expect((deployButtons[1] as HTMLButtonElement).disabled).toBe(true);
+
+    resolveBase("0xbasehash");
+    await waitFor(() => expect(screen.queryAllByText(/Deploying…/i)).toHaveLength(0));
   });
 });

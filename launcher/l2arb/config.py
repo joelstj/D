@@ -16,6 +16,7 @@ placeholders and refuse to pretend the live stack is ready.
 
 from __future__ import annotations
 
+from . import setup
 from .paths import Layout
 
 ENGINE_PORT = 8080
@@ -33,13 +34,29 @@ _PLACEHOLDER_MARKERS = ("YOUR_", "0xWETH", "0xUSDC", "0xWETH_USDC")
 
 
 def ensure_config_toml(lo: Layout) -> str:
-    """Materialise .l2arb/config.toml from the ingestion example if absent."""
+    """Materialise .l2arb/config.toml from the ingestion example if absent, with
+    every chain's real shipped pool registry copied alongside it into the
+    writable state dir and referenced by absolute path.
+
+    Previously this was a verbatim copy, so every chain's `pool_registry`
+    pointed at `config/pools/<chain>.toml` — a relative path that resolved (if
+    at all) only against the ingestion source tree's own directory, which may
+    not be writable (e.g. bundled inside the .exe) and was never populated by
+    any automated path except Arbitrum's quick-start wizard. Rewriting each
+    reference to the materialised absolute path makes every chain's pool data
+    actually reachable, the same way the quick-start path already worked for
+    Arbitrum alone.
+    """
     lo.ensure_state_dirs()
     dst = lo.config_toml
     if not dst.exists():
         example = lo.ingestion / "config" / "config.example.toml"
         if example.exists():
-            dst.write_text(example.read_text())
+            text = example.read_text()
+            for chain, pool_path in setup.materialize_pool_registries(lo).items():
+                placeholder = f'pool_registry = "config/pools/{chain}.toml"'
+                text = text.replace(placeholder, f"pool_registry = {setup._toml_str(str(pool_path))}", 1)
+            dst.write_text(text)
     return str(dst)
 
 

@@ -1,0 +1,88 @@
+# Optimism pool registry.
+#
+# Real, on-chain-verified pools: each was confirmed live via a direct eth_call
+# to the Uniswap V3 factory's getPool() (not a search/summary), reading
+# token0/token1/liquidity() at the time of writing — all entries below had
+# non-zero on-chain liquidity when checked. The startup validation gate
+# (docs/ARCHITECTURE.md §7) re-proves every entry on-chain before it enters the
+# live set regardless. See config/pools/README.md for the full schema.
+
+# ── WETH/USDC ────────────────────────────────────────────────────────────────
+[[pool]]
+dex = "uniswap_v3"
+kind = "v3"
+address = "0xc1738D90E2E26C35784A0d3E3d8A9f795074bcA4"
+fee_pips = 3000
+token0 = "0x0b2C639c533813f4Aa9D7837CAf62653d097Ff85"  # USDC (native)
+token1 = "0x4200000000000000000000000000000000000006"  # WETH
+factory = "0x1F98431c8aD98523631AE4a59f267346ea31F984"  # Uniswap V3 factory
+
+[[pool]]
+dex = "uniswap_v3"
+kind = "v3"
+address = "0x1fb3cf6e48F1E7B10213E7b6d87D4c073C7Fdb7b"
+fee_pips = 500
+token0 = "0x0b2C639c533813f4Aa9D7837CAf62653d097Ff85"  # USDC (native)
+token1 = "0x4200000000000000000000000000000000000006"  # WETH
+factory = "0x1F98431c8aD98523631AE4a59f267346ea31F984"
+
+# ── WETH/USDT ────────────────────────────────────────────────────────────────
+[[pool]]
+dex = "uniswap_v3"
+kind = "v3"
+address = "0xc858A329Bf053BE78D6239C4A4343B8FbD21472b"
+fee_pips = 500
+token0 = "0x4200000000000000000000000000000000000006"  # WETH
+token1 = "0x94b008aA00579c1307B0EF2c499aD98a8ce58e58"  # USDT
+factory = "0x1F98431c8aD98523631AE4a59f267346ea31F984"
+
+[[pool]]
+dex = "uniswap_v3"
+kind = "v3"
+address = "0xdd0c6bAe8Ad5998c358b823df15A2A4181Da1b80"
+fee_pips = 3000
+token0 = "0x4200000000000000000000000000000000000006"  # WETH
+token1 = "0x94b008aA00579c1307B0EF2c499aD98a8ce58e58"  # USDT
+factory = "0x1F98431c8aD98523631AE4a59f267346ea31F984"
+
+# ── WETH/DAI ─────────────────────────────────────────────────────────────────
+[[pool]]
+dex = "uniswap_v3"
+kind = "v3"
+address = "0x03aF20bDAaFfB4cC0A521796a223f7D85e2aAc31"
+fee_pips = 3000
+token0 = "0x4200000000000000000000000000000000000006"  # WETH
+token1 = "0xDA10009cBd5D07dd0CeCc66161FC93D7c9000da1"  # DAI
+factory = "0x1F98431c8aD98523631AE4a59f267346ea31F984"
+
+[[pool]]
+dex = "uniswap_v3"
+kind = "v3"
+address = "0x95d9D28606ee55De7667f0F176eBfc3215CFD9C0"
+fee_pips = 500
+token0 = "0x4200000000000000000000000000000000000006"  # WETH
+token1 = "0xDA10009cBd5D07dd0CeCc66161FC93D7c9000da1"  # DAI
+factory = "0x1F98431c8aD98523631AE4a59f267346ea31F984"
+
+# ── USDC/USDT ────────────────────────────────────────────────────────────────
+[[pool]]
+dex = "uniswap_v3"
+kind = "v3"
+address = "0xA73C628eaf6e283E26A7b1f8001CF186aa4c0E8E"
+fee_pips = 100
+token0 = "0x0b2C639c533813f4Aa9D7837CAf62653d097Ff85"  # USDC (native)
+token1 = "0x94b008aA00579c1307B0EF2c499aD98a8ce58e58"  # USDT
+factory = "0x1F98431c8aD98523631AE4a59f267346ea31F984"
+
+[[pool]]
+dex = "uniswap_v3"
+kind = "v3"
+address = "0x9B0c2660B535a156aDf827481b2F9b61f31EBc49"
+fee_pips = 3000
+token0 = "0x0b2C639c533813f4Aa9D7837CAf62653d097Ff85"  # USDC (native)
+token1 = "0x94b008aA00579c1307B0EF2c499aD98a8ce58e58"  # USDT
+factory = "0x1F98431c8aD98523631AE4a59f267346ea31F984"
+
+# NOT included: Velodrome (Optimism's deepest native DEX by TVL) is
+# Solidly-style — out of scope per docs/ENGINE_CONTRACT.md §1, same reasoning
+# as Aerodrome on Base (its Superchain-deployed fork).

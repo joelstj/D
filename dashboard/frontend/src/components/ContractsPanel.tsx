@@ -41,7 +41,7 @@ export interface ContractsPanelViewProps {
   loading: boolean;
   error: string | null;
   wallet: { address?: string; chainKey?: string; connected: boolean };
-  busy: { compiling: boolean; deploying: string | null; readiness: boolean };
+  busy: { compiling: boolean; deploying: ReadonlySet<string>; readiness: boolean };
   readiness: ReadinessResult[] | null;
   notice: { kind: "ok" | "err"; text: string } | null;
   onCompile: () => void;
@@ -55,6 +55,21 @@ export interface ContractsPanelViewProps {
  *  distinct from the plain `network.key` used for the atomic deploy button. */
 function crossChainBusyKey(networkKey: string): string {
   return `${networkKey}:crosschain`;
+}
+
+/** Immutable add/remove helpers for the `busy.deploying` set — every network
+ *  row and both deploy actions (atomic + cross-chain) share this one set, so
+ *  a deploy in flight on one row must never be clobbered by a click on
+ *  another row starting or finishing concurrently (regression: a single
+ *  shared `string | null` let a second deploy's start/finish silently
+ *  re-enable or re-disable an unrelated row mid-transaction). */
+function withBusy(set: ReadonlySet<string>, key: string): Set<string> {
+  return new Set(set).add(key);
+}
+function withoutBusy(set: ReadonlySet<string>, key: string): Set<string> {
+  const next = new Set(set);
+  next.delete(key);
+  return next;
 }
 
 /**
@@ -134,8 +149,8 @@ export function ContractsPanelView(props: ContractsPanelViewProps) {
                 compiled={compiled}
                 crossChainCompiled={crossChainCompiled}
                 wallet={wallet}
-                deploying={busy.deploying === n.key}
-                deployingCrossChain={busy.deploying === crossChainBusyKey(n.key)}
+                deploying={busy.deploying.has(n.key)}
+                deployingCrossChain={busy.deploying.has(crossChainBusyKey(n.key))}
                 onDeploy={() => props.onDeploy(n)}
                 onDeployCrossChain={() => props.onDeployCrossChain(n)}
               />
@@ -374,9 +389,9 @@ export function ContractsPanel() {
   const [status, setStatus] = useState<ContractsStatus | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [busy, setBusy] = useState<{ compiling: boolean; deploying: string | null; readiness: boolean }>({
+  const [busy, setBusy] = useState<{ compiling: boolean; deploying: ReadonlySet<string>; readiness: boolean }>({
     compiling: false,
-    deploying: null,
+    deploying: new Set(),
     readiness: false,
   });
   const [readiness, setReadiness] = useState<ReadinessResult[] | null>(null);
@@ -417,7 +432,7 @@ export function ContractsPanel() {
       setNotice({ kind: "err", text: "Connect your wallet first" });
       return;
     }
-    setBusy((b) => ({ ...b, deploying: n.key }));
+    setBusy((b) => ({ ...b, deploying: withBusy(b.deploying, n.key) }));
     setNotice(null);
     try {
       // Ensure MetaMask is on the target chain so the deploy lands where intended.
@@ -454,7 +469,7 @@ export function ContractsPanel() {
     } catch (e) {
       setNotice({ kind: "err", text: deployErrorMessage(e) });
     } finally {
-      setBusy((b) => ({ ...b, deploying: null }));
+      setBusy((b) => ({ ...b, deploying: withoutBusy(b.deploying, n.key) }));
     }
   };
 
@@ -478,7 +493,7 @@ export function ContractsPanel() {
       return;
     }
     const atomicAddress = n.deployment.address;
-    setBusy((b) => ({ ...b, deploying: crossChainBusyKey(n.key) }));
+    setBusy((b) => ({ ...b, deploying: withBusy(b.deploying, crossChainBusyKey(n.key)) }));
     setNotice(null);
     try {
       if (chainId !== n.chainId) {
@@ -515,7 +530,7 @@ export function ContractsPanel() {
     } catch (e) {
       setNotice({ kind: "err", text: deployErrorMessage(e) });
     } finally {
-      setBusy((b) => ({ ...b, deploying: null }));
+      setBusy((b) => ({ ...b, deploying: withoutBusy(b.deploying, crossChainBusyKey(n.key)) }));
     }
   };
 
