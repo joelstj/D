@@ -14,6 +14,17 @@ const PREMIUM_ABI = [
   },
 ] as const;
 
+/** OpenZeppelin `Pausable::paused()` — identical on both executor contracts. */
+const PAUSED_ABI = [
+  {
+    type: "function",
+    name: "paused",
+    stateMutability: "view",
+    inputs: [],
+    outputs: [{ type: "bool" }],
+  },
+] as const;
+
 /**
  * Production {@link ChainProbe}: lazily-built, read-only viem public clients, one
  * per configured chain. `getCodeSize` reads deployed bytecode; `premiumBps`
@@ -48,5 +59,13 @@ export class ViemChainProbe implements ChainProbe {
       functionName: "aavePremiumBps",
     })) as bigint;
     return Number(v);
+  }
+
+  async paused(chainKey: string, address: string): Promise<boolean> {
+    return (await this.client(chainKey).readContract({
+      address: address as `0x${string}`,
+      abi: PAUSED_ABI,
+      functionName: "paused",
+    })) as boolean;
   }
 }
