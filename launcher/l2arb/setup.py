@@ -11,10 +11,19 @@ registries across five chains. This module removes that barrier:
   gate re-proves at startup — nothing is invented here).
 * **Provider presets**: paste an Alchemy/Infura API key and we template each
   supported chain's endpoint URL; or paste full endpoint URLs directly.
+* **All-chain setup** (``l2arb setup --all-chains``): walks every chain this
+  component targets (arbitrum/base/optimism/unichain/ink). Each chain's RPC
+  endpoint is auto-detected from the environment (common env-var spellings for
+  an already-configured RPC credential) or prompted for individually; pools are
+  auto-discovered on-chain (``ingestion/scripts/discover_pools.py``) or fall
+  back to a shipped example, and any chain this can't fully verify is written
+  disabled with the endpoint preserved and the exact next step spelled out —
+  never a guessed-at address.
 
 The endpoint fields accept the comma-separated ``primary, backup`` failover form
 the ingestion layer supports. Everything here is pure string/dict logic (no I/O)
-apart from the wizard driver at the bottom, so it is unit-tested deterministically.
+apart from the wizard drivers and the pool-discovery subprocess call, so the
+logic is unit-tested deterministically.
 
 Execution stays **paper-by-default and human-gated** — this only writes read-only
 data-source config; it never enables broadcasting.
@@ -22,7 +31,10 @@ data-source config; it never enables broadcasting.
 
 from __future__ import annotations
 
+import json
+import os
 import shutil
+import sys
 from pathlib import Path
 from typing import Callable
 
@@ -328,5 +340,348 @@ def run_setup(lo: Layout, args, prompt: Prompt = input) -> int:
     console.banner("Setup complete")
     console.info("Go live now with:  l2arb run --live")
     console.info("(or just relaunch — the app auto-detects a live-ready config)")
+    return 0 if ok else 1
+
+
+# ── Multi-chain guided setup (`l2arb setup --all-chains`) ────────────────────
+# Generalizes the Arbitrum quick-start above to every chain this component
+# targets: auto-detect an already-configured RPC endpoint per chain from the
+# environment, prompt individually for whatever is still missing, and attempt
+# real on-chain pool discovery per chain — falling back to a shipped example
+# or an honest "curate this by hand" instruction, never a guess. Nothing here
+# invents an address it can't source from the shipped, already-vetted
+# constants below or discover on-chain via `discover_pools.py`.
+
+KNOWN_CHAINS = ("arbitrum", "base", "optimism", "unichain", "ink")
+
+# Structural per-chain metadata (chain_id / gas model / block time) for all 5
+# target chains — copied from the already-shipped `config.example.toml`, not
+# invented. Every chain gets this regardless of whether real token addresses
+# are also known for it (see `_CHAIN_TEMPLATE` below).
+_CHAIN_META: dict[str, dict] = {
+    "arbitrum": {"chain_id": 42161, "block_time_ms": 250, "gas_model": "arbitrum", "gas_safety_multiplier": 1.6},
+    "base": {"chain_id": 8453, "block_time_ms": 2000, "gas_model": "op_stack", "gas_safety_multiplier": 1.5},
+    "optimism": {"chain_id": 10, "block_time_ms": 2000, "gas_model": "op_stack", "gas_safety_multiplier": 1.5},
+    "unichain": {"chain_id": 130, "block_time_ms": 1000, "gas_model": "op_stack", "gas_safety_multiplier": 1.5},
+    "ink": {"chain_id": 57073, "block_time_ms": 1000, "gas_model": "op_stack", "gas_safety_multiplier": 1.5},
+}
+
+# Real, already-vetted WETH/USDC addresses (matches contracts/config/addresses.js
+# and the pool registries discover_pools.py has independently verified
+# on-chain) for the chains this wizard can fully auto-assemble an *enabled*
+# block for. Unichain (native liquidity is Uniswap V4 — no per-pool factory to
+# query this way) and Ink (no confidently-known native USDC here) are
+# deliberately absent: both still get their endpoint saved and prompted for
+# like any other chain, but render as a disabled placeholder instead of a
+# guessed-at enabled one — see `render_disabled_chain_block`.
+_CHAIN_TEMPLATE: dict[str, dict] = {
+    "base": {
+        "weth": "0x4200000000000000000000000000000000000006",
+        "usdc": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+    },
+    "optimism": {
+        "weth": "0x4200000000000000000000000000000000000006",
+        "usdc": "0x0b2C639c533813f4Aa9D7837CAf62653d097Ff85",
+    },
+}
+
+# Environment variable name patterns checked, in order, for an already-
+# configured endpoint per chain — so an operator who already has RPC creds in
+# their shell/`.env` (common for this kind of bot) gets them picked up
+# automatically instead of being asked to paste something already sitting
+# right there. `{CHAIN}` is the chain name upper-cased.
+_HTTP_ENV_PATTERNS = ("RPC_URL_{CHAIN}", "{CHAIN}_RPC_URL", "L2ARB__CHAINS__{CHAIN}__HTTP")
+_WS_ENV_PATTERNS = ("L2ARB__CHAINS__{CHAIN}__WSS", "WS_URL_{CHAIN}", "{CHAIN}_WS_URL")
+
+
+def _first_env_match(patterns: tuple[str, ...], chain: str, env: dict[str, str]) -> str | None:
+    upper = chain.strip().upper()
+    for pat in patterns:
+        val = (env.get(pat.format(CHAIN=upper)) or "").strip()
+        if val:
+            return val
+    return None
+
+
+def detect_env_endpoints(chain: str, env: dict[str, str]) -> tuple[str | None, str | None]:
+    """`(http_url, ws_url)` already present in `env` for `chain`, or `None` each
+    if not found. Pure function — pass `os.environ` (or a fake dict) explicitly."""
+    return _first_env_match(_HTTP_ENV_PATTERNS, chain, env), _first_env_match(_WS_ENV_PATTERNS, chain, env)
+
+
+def resolve_chain_endpoints(chain: str, env: dict[str, str], prompt: Prompt) -> tuple[str, str] | None:
+    """`(ws_url, http_url)` for `chain`: prefer an endpoint already sitting in
+    `env`; otherwise prompt the operator for it individually, offering a skip
+    (empty input). A `ws_url` missing from the environment is derived from the
+    resolved `http_url` (same heuristic the Arbitrum quick-start already uses)
+    rather than asked for separately — most providers don't need a second paste
+    for it. Returns `None` when the operator skips this chain entirely."""
+    http, ws = detect_env_endpoints(chain, env)
+    if http:
+        console.ok(f"{chain}: found an RPC endpoint already configured in your environment")
+    else:
+        console.info(f"Paste an HTTPS RPC URL for {chain} (Enter to skip this chain):")
+        http = prompt(f"{chain} HTTPS RPC URL: ").strip()
+        if not http:
+            return None
+    return (ws or derive_ws_url(http)), http
+
+
+def _discover_pools_json(
+    lo: Layout, chain: str, http_url: str, runner: Callable[..., tuple[int, str]]
+) -> dict | None:
+    """Invoke `discover_pools.py --json` for `chain` and return its parsed
+    result, or `None` if the subprocess itself couldn't produce JSON at all
+    (script missing, python not found, timeout) — distinct from the script
+    running fine and reporting nothing found, which comes back as a normal
+    result with an empty `pools` list."""
+    script = lo.ingestion / "scripts" / "discover_pools.py"
+    if not script.exists():
+        return None
+    _code, out = runner(
+        [sys.executable, str(script), "--chain", chain, "--http-url", http_url, "--json"],
+        cwd=lo.ingestion,
+    )
+    try:
+        return json.loads(out)
+    except (ValueError, TypeError):
+        return None
+
+
+def _pick_native_price_pool(result: dict | None, weth: str, usdc: str) -> str | None:
+    """The best WETH/USDC pool address for native-price derivation from a
+    `discover_pools.py` JSON result — prefers the 0.05% tier (matches the
+    convention the Arbitrum quick-start already uses), else any pairing found."""
+    if not result or not result.get("pools"):
+        return None
+    candidates = [
+        p
+        for p in result["pools"]
+        if {p["token0"].lower(), p["token1"].lower()} == {weth.lower(), usdc.lower()}
+    ]
+    if not candidates:
+        return None
+    preferred = next((p for p in candidates if p["fee_pips"] == 500), None)
+    return (preferred or candidates[0])["address"]
+
+
+def materialize_chain_pools(
+    lo: Layout, chain: str, http_url: str, runner: Callable[..., tuple[int, str]] = proc.capture
+) -> tuple[Path | None, str, dict | None]:
+    """Get `chain` a real pool registry, cheapest-and-most-current source
+    first: live on-chain discovery, then the shipped `.example.toml` (if this
+    chain has one), else neither — the caller falls back to an honest
+    "curate this by hand" instruction rather than a guess. Returns
+    `(materialized_path_or_None, a short human-readable note, the raw
+    discovery result if one ran)`."""
+    lo.ensure_state_dirs()
+    dst = lo.state_dir / "pools" / f"{chain}.toml"
+    dst.parent.mkdir(parents=True, exist_ok=True)
+
+    result = _discover_pools_json(lo, chain, http_url, runner)
+    if result and result.get("pools") and result.get("toml"):
+        dst.write_text(result["toml"])
+        return dst, f"discovered {len(result['pools'])} real pool(s) on-chain", result
+
+    shipped = lo.ingestion / "config" / "pools" / f"{chain}.example.toml"
+    if shipped.exists():
+        shutil.copyfile(shipped, dst)
+        return dst, "used the shipped example pool registry (discovery found nothing usable)", result
+
+    return None, "no pool registry available yet", result
+
+
+def render_chain_block(chain: str, ws_url: str, http_url: str, pool_registry: str, native_price_pool: str | None) -> str:
+    """An *enabled* `[[chains]]` block for a chain in `_CHAIN_TEMPLATE`
+    (WETH/USDC hubs, OP-stack gas model) — the same shape `config.example.toml`
+    ships, with real resolved endpoints and pool registry substituted in."""
+    meta = _CHAIN_META[chain]
+    t = _CHAIN_TEMPLATE[chain]
+    weth, usdc = t["weth"], t["usdc"]
+    native_block = f"[chains.native_price_pools]\n{_quote(usdc)} = {_quote(native_price_pool)}\n" if native_price_pool else ""
+    return f"""\
+[[chains]]
+name          = "{chain}"
+chain_id      = {meta['chain_id']}
+enabled       = true
+ws_url        = {_toml_str(ws_url)}
+http_url      = {_toml_str(http_url)}
+block_time_ms = {meta['block_time_ms']}
+gas_model     = "{meta['gas_model']}"
+min_profit_bps        = 5.0
+base_gas              = 150000
+per_hop_gas           = 100000
+gas_safety_multiplier = {meta['gas_safety_multiplier']}
+reconcile_interval_ms = 2000
+hubs        = [{_quote(weth)}, {_quote(usdc)}]
+numeraires  = [{_quote(weth)}, {_quote(usdc)}]
+weth        = {_quote(weth)}
+pool_registry = {_toml_str(pool_registry)}
+{native_block}
+"""
+
+
+def render_disabled_chain_block(chain: str, ws_url: str, http_url: str, pool_registry: str) -> str:
+    """A *disabled* `[[chains]]` placeholder that still preserves a resolved
+    endpoint when this wizard doesn't have enough verified data (tokens,
+    pools) to bring the chain fully online — so the operator's input isn't
+    silently thrown away, and the concrete next step is spelled out in the
+    file itself rather than guessed at."""
+    meta = _CHAIN_META[chain]
+    return f"""\
+[[chains]]
+name          = "{chain}"
+chain_id      = {meta['chain_id']}
+# Disabled: no verified pool registry yet. Add real entries to the file at
+# pool_registry below (see ingestion/config/pools/README.md for the schema, or
+# try: python3 ingestion/scripts/discover_pools.py --chain {chain} \\
+#   --http-url <this chain's RPC URL> --factory 0x... --token NAME=0x...
+# ), then flip this to true.
+enabled       = false
+ws_url        = {_toml_str(ws_url)}
+http_url      = {_toml_str(http_url)}
+block_time_ms = {meta['block_time_ms']}
+gas_model     = "{meta['gas_model']}"
+min_profit_bps        = 5.0
+base_gas              = 150000
+per_hop_gas           = 100000
+gas_safety_multiplier = {meta['gas_safety_multiplier']}
+reconcile_interval_ms = 2000
+hubs        = []
+numeraires  = []
+pool_registry = {_toml_str(pool_registry)}
+
+"""
+
+
+def multi_chain_config(chain_blocks: list[str]) -> str:
+    """A complete `config.toml` from already-rendered `[[chains]]` blocks (via
+    `render_chain_block`/`render_disabled_chain_block`, or the Arbitrum quick-
+    start's own block extracted verbatim). Cross-chain detection stays off,
+    same reasoning as the Arbitrum quick-start: it needs a verified bridge/
+    asset address set this wizard doesn't have."""
+    header = """\
+# L2 Arbitrage Bot — multi-chain config (generated by `l2arb setup --all-chains`).
+# Real endpoints came from you (or your environment); addresses are the same
+# on-chain-verified constants config.example.toml ships, or freshly discovered
+# and verified on-chain by scripts/discover_pools.py. The startup gate
+# re-proves every pool again before it enters the live set. Execution stays
+# paper/simulated.
+schema_version = 1
+
+[engine]
+transport                 = "http"
+http_url                  = "http://127.0.0.1:8080"
+subprocess_cmd            = "python -m l2arb.api.runner"
+health_path               = "/health"
+detect_path               = "/detect"
+top_n                     = 10
+max_hops                  = 4
+call_timeout_ms           = 50
+keep_alive                = true
+first_request_incremental = false
+
+[cadence]
+mode            = "hybrid"
+min_interval_ms = 25
+max_interval_ms = 1000
+incremental     = true
+
+[output]
+sink    = "ws"
+ws_bind = "0.0.0.0:9001"
+
+[observability]
+health_bind  = "0.0.0.0:9090"
+metrics_bind = "0.0.0.0:9100"
+log_level    = "info"
+log_format   = "json"
+
+[infra]
+multicall3          = "0xcA11bde05977b3631167028862bE2a173976CA11"
+op_gas_price_oracle = "0x420000000000000000000000000000000000000F"
+op_l1_block         = "0x4200000000000000000000000000000000000015"
+arb_gas_info        = "0x000000000000000000000000000000000000006C"
+
+"""
+    return header + "".join(chain_blocks) + "[cross_chain]\nenabled = false\n"
+
+
+def run_setup_all_chains(
+    lo: Layout,
+    prompt: Prompt = input,
+    env: dict[str, str] | None = None,
+    runner: Callable[..., tuple[int, str]] = proc.capture,
+) -> int:
+    """Guided setup across every chain this component targets. For each chain:
+    auto-detect an already-configured RPC endpoint from the environment, or
+    prompt individually for one (skippable); then attempt real on-chain pool
+    discovery, falling back to a shipped example or an honest disabled
+    placeholder that preserves the endpoint and spells out the next step.
+    `runner` is a test seam for the pool-discovery subprocess call (see
+    `materialize_chain_pools`) — production callers always omit it."""
+    env = os.environ if env is None else env  # type: ignore[assignment]
+    console.banner("Set up live on-chain data — all chains")
+    console.info("Checking your environment for already-configured RPC endpoints,")
+    console.info("then asking you individually for anything still missing.")
+    console.info("Enter (empty) to skip a chain entirely.")
+
+    blocks: list[str] = []
+    enabled_chains: list[str] = []
+    needs_pools: list[str] = []
+    skipped: list[str] = []
+
+    for chain in KNOWN_CHAINS:
+        endpoints = resolve_chain_endpoints(chain, env, prompt)
+        if endpoints is None:
+            console.warn(f"{chain}: skipped (no endpoint)")
+            skipped.append(chain)
+            continue
+        ws_url, http_url = endpoints
+
+        pool_path, note, discovery = materialize_chain_pools(lo, chain, http_url, runner)
+        console.info(f"{chain}: {note}")
+
+        if pool_path is not None and chain == "arbitrum":
+            full = arbitrum_quickstart_config(ws_url, http_url, str(pool_path))
+            blocks.append(full[full.index("[[chains]]") : full.index("[cross_chain]")])
+            enabled_chains.append(chain)
+        elif pool_path is not None and chain in _CHAIN_TEMPLATE:
+            t = _CHAIN_TEMPLATE[chain]
+            native_pool = _pick_native_price_pool(discovery, t["weth"], t["usdc"])
+            blocks.append(render_chain_block(chain, ws_url, http_url, str(pool_path), native_pool))
+            enabled_chains.append(chain)
+        else:
+            target = lo.state_dir / "pools" / f"{chain}.toml"
+            blocks.append(render_disabled_chain_block(chain, ws_url, http_url, str(target)))
+            needs_pools.append(chain)
+
+    if not blocks:
+        console.warn("no chain got an endpoint — nothing written. Paper mode still works.")
+        return 1
+
+    cfg = multi_chain_config(blocks)
+    lo.ensure_state_dirs()
+    lo.config_toml.write_text(cfg)
+    console.ok(f"wrote {lo.config_toml}")
+    if enabled_chains:
+        console.ok(f"live-ready now: {', '.join(enabled_chains)}")
+
+    ok, note = validate_config(lo)
+    (console.ok if ok else console.warn)(note)
+
+    if skipped or needs_pools:
+        console.banner("Needs your input before these chains go live")
+        for chain in skipped:
+            console.info(f"  {chain}: no endpoint given — re-run `l2arb setup --all-chains`, or hand-edit {lo.config_toml}")
+        for chain in needs_pools:
+            console.info(
+                f"  {chain}: endpoint saved but disabled — add real pools to "
+                f"{lo.state_dir / 'pools' / f'{chain}.toml'} "
+                "(see ingestion/config/pools/README.md), then flip its `enabled` to true"
+            )
+
+    console.banner("Setup complete")
+    console.info("Go live now with:  l2arb run --live")
     return 0 if ok else 1
 

@@ -3,7 +3,10 @@
 Subcommands:
   doctor            report toolchains, install state, and config readiness
   install           build the components (``--paper-only`` for dashboard alone)
-  setup             guided setup for live on-chain data (Arbitrum quick-start)
+  setup             guided setup for live on-chain data (Arbitrum quick-start;
+                    ``--all-chains`` covers every chain, auto-detecting RPC
+                    endpoints from your environment and prompting individually
+                    for anything missing, endpoints and pools alike)
   run               start the stack (``--live`` for the full on-chain path)
   auto  (default)   install-if-needed, then run and open the dashboard
 
@@ -47,6 +50,13 @@ def build_parser() -> argparse.ArgumentParser:
     p_setup.add_argument("--http", help="Arbitrum HTTPS RPC URL (skips the prompt)")
     p_setup.add_argument("--ws", help="Arbitrum WebSocket URL (default: derived from --http)")
     p_setup.add_argument("--backup", help="backup HTTPS URL appended for rate-limit failover")
+    p_setup.add_argument(
+        "--all-chains",
+        action="store_true",
+        help="guided setup for every chain (arbitrum/base/optimism/unichain/ink): "
+        "auto-detects RPC endpoints already in your environment, prompts individually "
+        "for the rest, and auto-discovers real pools on-chain where possible",
+    )
 
     p_run = sub.add_parser("run", help="start the stack")
     _add_run_flags(p_run)
@@ -86,6 +96,8 @@ def cmd_install(lo, args) -> int:
 
 
 def cmd_setup(lo, args) -> int:
+    if getattr(args, "all_chains", False):
+        return setup.run_setup_all_chains(lo)
     return setup.run_setup(lo, args)
 
 
@@ -108,7 +120,8 @@ def _welcome() -> None:
     console.info("This first run installs everything it needs and opens the dashboard.")
     console.info("It starts in SAFE paper/simulation mode — it never sends a real")
     console.info("transaction or touches your funds. To watch real on-chain data later,")
-    console.info("run `l2arb setup` (one RPC URL) and then `l2arb run --live`.")
+    console.info("run `l2arb setup` (one RPC URL, Arbitrum only) or `l2arb setup --all-chains`")
+    console.info("(every chain, auto-detected/prompted individually), then `l2arb run --live`.")
     console.info("First install needs internet and a few minutes; later runs are instant.")
 
 
