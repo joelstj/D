@@ -211,6 +211,36 @@ class WriteQuickstartTest(unittest.TestCase):
         self.assertIsNone(setup.write_arbitrum_quickstart(lo, "wss://x", "https://x"))
 
 
+class MaterializePoolRegistriesTest(unittest.TestCase):
+    def _layout_with_pools(self, chains) -> Layout:
+        root = Path(tempfile.mkdtemp())
+        pools = root / "ingestion" / "config" / "pools"
+        pools.mkdir(parents=True)
+        for c in chains:
+            (pools / f"{c}.example.toml").write_text(f"# real {c} pools\n[[pool]]\nkind='v3'\n")
+        return Layout(root)
+
+    def test_materialises_every_shipped_chain(self):
+        # Previously only Arbitrum was ever materialised anywhere automated
+        # (root CLAUDE.md §9 finding: "4 of 5 chains get zero pools/config").
+        lo = self._layout_with_pools(setup.POOL_CHAINS)
+        result = setup.materialize_pool_registries(lo)
+        self.assertEqual(set(result.keys()), set(setup.POOL_CHAINS))
+        for chain, path in result.items():
+            self.assertTrue(path.exists())
+            self.assertEqual(path, lo.state_dir / "pools" / f"{chain}.toml")
+            self.assertIn("real", path.read_text())
+
+    def test_omits_chains_with_no_shipped_example_rather_than_erroring(self):
+        lo = self._layout_with_pools(("arbitrum", "base"))
+        result = setup.materialize_pool_registries(lo)
+        self.assertEqual(set(result.keys()), {"arbitrum", "base"})
+
+    def test_empty_ingestion_tree_yields_no_chains(self):
+        lo = Layout(Path(tempfile.mkdtemp()))
+        self.assertEqual(setup.materialize_pool_registries(lo), {})
+
+
 class ValidateConfigTest(unittest.TestCase):
     def test_missing_binary_is_not_a_failure(self):
         lo = Layout(Path(tempfile.mkdtemp()))
@@ -471,6 +501,30 @@ class RunSetupAllChainsTest(unittest.TestCase):
         rc = setup.run_setup_all_chains(lo, prompt=lambda _m: "", env={}, runner=self._fake_runner_finds_pools_only_for(set()))
         self.assertEqual(rc, 1)
         self.assertFalse(lo.config_toml.exists())
+
+    def test_unichain_and_ink_go_live_via_their_shipped_examples(self):
+        # Regression for the _CHAIN_TEMPLATE extension (root CLAUDE.md §17's
+        # post-merge reconciliation with §16): unichain/ink are now templated
+        # chains too, not just arbitrum/base/optimism — given an endpoint and
+        # their real shipped example (live discovery finding nothing, same as
+        # the other chains in this test class), they render *enabled*, not
+        # disabled-with-endpoint-preserved.
+        lo = self._lo_with_shipped_arbitrum_pools()
+        for chain in ("unichain", "ink"):
+            (lo.ingestion / "config" / "pools" / f"{chain}.example.toml").write_text(
+                '[[pool]]\ndex="uniswap_v3"\nkind="v3"\naddress="0x' + "9" * 40 + '"\n'
+                'fee_pips=500\ntoken0="0x' + "4" * 40 + '"\ntoken1="0x' + "5" * 40 + '"\n'
+            )
+        env = {c.upper() + "_RPC_URL": f"https://{c}.example/x" for c in ("unichain", "ink")}
+        rc = setup.run_setup_all_chains(
+            lo, prompt=lambda _m: "", env=env, runner=self._fake_runner_finds_pools_only_for(set())
+        )
+        self.assertEqual(rc, 0)
+        text = lo.config_toml.read_text()
+        for chain in ("unichain", "ink"):
+            block_start = text.index(f'name          = "{chain}"')
+            block = text[block_start : block_start + 400]
+            self.assertIn("enabled       = true", block, f"{chain} should be enabled, got:\n{block}")
 
 
 if __name__ == "__main__":

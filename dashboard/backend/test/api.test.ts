@@ -12,7 +12,18 @@ describe("REST API", () => {
 
   beforeAll(() => {
     handles = buildServer({
-      env: { ...loadEnv(), dataSource: "simulated", executionMode: "paper" },
+      env: {
+        ...loadEnv(),
+        dataSource: "simulated",
+        executionMode: "paper",
+        // Isolate from whatever RPC/executor env this sandbox happens to have
+        // ambiently set (e.g. an operator's real RPC credentials) — this suite
+        // asserts the *unconfigured* shape of the read-only probe below, so it
+        // must not depend on the ambient process environment being empty.
+        rpcUrls: {},
+        executorAddress: undefined,
+        executionProbeChain: undefined,
+      },
       provider: new StubProvider([makeOpportunity({ netProfitUsd: 175 })]),
       autoStartEngine: false,
       initialSettings: { minProfitUsd: 0, minProfitBps: 0 },

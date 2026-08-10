@@ -1,9 +1,149 @@
-# optimism pool registry — auto-discovered by scripts/discover_pools.py.
-# Factory 0x1F98431c8aD98523631AE4a59f267346ea31F984 was fingerprinted on-chain before use (see the
-# module docstring); every entry below is re-proven on-chain again by the
-# startup validation gate (docs/ARCHITECTURE.md §7) before it enters the live
-# set. Curate freely — add, remove, or hand-edit entries.
+# Optimism pool registry.
+#
+# Real, on-chain-verified pools across WETH/USDC/USDT/DAI (every pairing that
+# has a live Uniswap V3 pool, at every standard fee tier that exists) —
+# auto-discovered and independently re-verified by scripts/discover_pools.py:
+# the factory is fingerprinted on-chain before use, and every pool's own
+# token0()/token1()/fee() is cross-checked against what was asked for before
+# acceptance. The startup validation gate (docs/ARCHITECTURE.md §7) re-proves
+# every entry on-chain again before it enters the live set regardless — a
+# stale entry is rejected loudly, never silently trusted. Curate freely — add,
+# remove, or hand-edit entries. See config/pools/README.md for the schema.
+#
+# Token addresses used: WETH 0x4200...0006, USDC (native) 0x0b2C...Ff85,
+# USDT 0x94b0...e58, DAI 0xDA10...0da1.
 
+# ── USDC / DAI ─────────────────────────────────────────────────────────────
+[[pool]]
+dex      = "uniswap_v3"
+kind     = "v3"
+address  = "0xd28f71e383e93c570d3edfe82ebbceb35ec6c412"
+fee_pips = 100
+token0   = "0x0b2c639c533813f4aa9d7837caf62653d097ff85"
+token1   = "0xda10009cbd5d07dd0cecc66161fc93d7c9000da1"
+factory  = "0x1F98431c8aD98523631AE4a59f267346ea31F984"
+
+[[pool]]
+dex      = "uniswap_v3"
+kind     = "v3"
+address  = "0x3cbc1d79ac3ddea5020ed9edfb5f948fb7902107"
+fee_pips = 3000
+token0   = "0x0b2c639c533813f4aa9d7837caf62653d097ff85"
+token1   = "0xda10009cbd5d07dd0cecc66161fc93d7c9000da1"
+factory  = "0x1F98431c8aD98523631AE4a59f267346ea31F984"
+
+# ── USDT / DAI ─────────────────────────────────────────────────────────────
+[[pool]]
+dex      = "uniswap_v3"
+kind     = "v3"
+address  = "0x8323d063b1d12acce4742f1e3ed9bc46d71f4222"
+fee_pips = 100
+token0   = "0x94b008aa00579c1307b0ef2c499ad98a8ce58e58"
+token1   = "0xda10009cbd5d07dd0cecc66161fc93d7c9000da1"
+factory  = "0x1F98431c8aD98523631AE4a59f267346ea31F984"
+
+[[pool]]
+dex      = "uniswap_v3"
+kind     = "v3"
+address  = "0x827f0a2a4376bc26729f398b865f424dc8456841"
+fee_pips = 500
+token0   = "0x94b008aa00579c1307b0ef2c499ad98a8ce58e58"
+token1   = "0xda10009cbd5d07dd0cecc66161fc93d7c9000da1"
+factory  = "0x1F98431c8aD98523631AE4a59f267346ea31F984"
+
+[[pool]]
+dex      = "uniswap_v3"
+kind     = "v3"
+address  = "0xea0f33940eb221aaad9360891cab08ef4f1f0703"
+fee_pips = 3000
+token0   = "0x94b008aa00579c1307b0ef2c499ad98a8ce58e58"
+token1   = "0xda10009cbd5d07dd0cecc66161fc93d7c9000da1"
+factory  = "0x1F98431c8aD98523631AE4a59f267346ea31F984"
+
+[[pool]]
+dex      = "uniswap_v3"
+kind     = "v3"
+address  = "0xa0959d2dcd9dd56bf080a10cfe29eeb401344e3d"
+fee_pips = 10000
+token0   = "0x94b008aa00579c1307b0ef2c499ad98a8ce58e58"
+token1   = "0xda10009cbd5d07dd0cecc66161fc93d7c9000da1"
+factory  = "0x1F98431c8aD98523631AE4a59f267346ea31F984"
+
+# ── WETH / DAI ─────────────────────────────────────────────────────────────
+[[pool]]
+dex      = "uniswap_v3"
+kind     = "v3"
+address  = "0x1a172713bdf4b9c846028e43081e73ca90a399dd"
+fee_pips = 100
+token0   = "0x4200000000000000000000000000000000000006"
+token1   = "0xda10009cbd5d07dd0cecc66161fc93d7c9000da1"
+factory  = "0x1F98431c8aD98523631AE4a59f267346ea31F984"
+
+[[pool]]
+dex      = "uniswap_v3"
+kind     = "v3"
+address  = "0x95d9d28606ee55de7667f0f176ebfc3215cfd9c0"
+fee_pips = 500
+token0   = "0x4200000000000000000000000000000000000006"
+token1   = "0xda10009cbd5d07dd0cecc66161fc93d7c9000da1"
+factory  = "0x1F98431c8aD98523631AE4a59f267346ea31F984"
+
+[[pool]]
+dex      = "uniswap_v3"
+kind     = "v3"
+address  = "0x03af20bdaaffb4cc0a521796a223f7d85e2aac31"
+fee_pips = 3000
+token0   = "0x4200000000000000000000000000000000000006"
+token1   = "0xda10009cbd5d07dd0cecc66161fc93d7c9000da1"
+factory  = "0x1F98431c8aD98523631AE4a59f267346ea31F984"
+
+[[pool]]
+dex      = "uniswap_v3"
+kind     = "v3"
+address  = "0x815ae7bf44dda74ed9274377ed711efc8b567911"
+fee_pips = 10000
+token0   = "0x4200000000000000000000000000000000000006"
+token1   = "0xda10009cbd5d07dd0cecc66161fc93d7c9000da1"
+factory  = "0x1F98431c8aD98523631AE4a59f267346ea31F984"
+
+# ── USDC / USDT ────────────────────────────────────────────────────────────
+[[pool]]
+dex      = "uniswap_v3"
+kind     = "v3"
+address  = "0xa73c628eaf6e283e26a7b1f8001cf186aa4c0e8e"
+fee_pips = 100
+token0   = "0x0b2c639c533813f4aa9d7837caf62653d097ff85"
+token1   = "0x94b008aa00579c1307b0ef2c499ad98a8ce58e58"
+factory  = "0x1F98431c8aD98523631AE4a59f267346ea31F984"
+
+[[pool]]
+dex      = "uniswap_v3"
+kind     = "v3"
+address  = "0x2926736c30ef3649f9e6b5c5918ea88871f79f2b"
+fee_pips = 500
+token0   = "0x0b2c639c533813f4aa9d7837caf62653d097ff85"
+token1   = "0x94b008aa00579c1307b0ef2c499ad98a8ce58e58"
+factory  = "0x1F98431c8aD98523631AE4a59f267346ea31F984"
+
+[[pool]]
+dex      = "uniswap_v3"
+kind     = "v3"
+address  = "0x9b0c2660b535a156adf827481b2f9b61f31ebc49"
+fee_pips = 3000
+token0   = "0x0b2c639c533813f4aa9d7837caf62653d097ff85"
+token1   = "0x94b008aa00579c1307b0ef2c499ad98a8ce58e58"
+factory  = "0x1F98431c8aD98523631AE4a59f267346ea31F984"
+
+[[pool]]
+dex      = "uniswap_v3"
+kind     = "v3"
+address  = "0xb2febfa632121285d5f2e91acff7954dfbc8100b"
+fee_pips = 10000
+token0   = "0x0b2c639c533813f4aa9d7837caf62653d097ff85"
+token1   = "0x94b008aa00579c1307b0ef2c499ad98a8ce58e58"
+factory  = "0x1F98431c8aD98523631AE4a59f267346ea31F984"
+
+# ── WETH / USDC ────────────────────────────────────────────────────────────
 [[pool]]
 dex      = "uniswap_v3"
 kind     = "v3"
@@ -39,3 +179,44 @@ fee_pips = 10000
 token0   = "0x0b2c639c533813f4aa9d7837caf62653d097ff85"
 token1   = "0x4200000000000000000000000000000000000006"
 factory  = "0x1F98431c8aD98523631AE4a59f267346ea31F984"
+
+# ── WETH / USDT ────────────────────────────────────────────────────────────
+[[pool]]
+dex      = "uniswap_v3"
+kind     = "v3"
+address  = "0x64750f4098a7f98352f7cd5797f421ceb8d94f64"
+fee_pips = 100
+token0   = "0x4200000000000000000000000000000000000006"
+token1   = "0x94b008aa00579c1307b0ef2c499ad98a8ce58e58"
+factory  = "0x1F98431c8aD98523631AE4a59f267346ea31F984"
+
+[[pool]]
+dex      = "uniswap_v3"
+kind     = "v3"
+address  = "0xc858a329bf053be78d6239c4a4343b8fbd21472b"
+fee_pips = 500
+token0   = "0x4200000000000000000000000000000000000006"
+token1   = "0x94b008aa00579c1307b0ef2c499ad98a8ce58e58"
+factory  = "0x1F98431c8aD98523631AE4a59f267346ea31F984"
+
+[[pool]]
+dex      = "uniswap_v3"
+kind     = "v3"
+address  = "0xdd0c6bae8ad5998c358b823df15a2a4181da1b80"
+fee_pips = 3000
+token0   = "0x4200000000000000000000000000000000000006"
+token1   = "0x94b008aa00579c1307b0ef2c499ad98a8ce58e58"
+factory  = "0x1F98431c8aD98523631AE4a59f267346ea31F984"
+
+[[pool]]
+dex      = "uniswap_v3"
+kind     = "v3"
+address  = "0x2df05e4cdbd758cb1a99a34bb0d767e040d6b078"
+fee_pips = 10000
+token0   = "0x4200000000000000000000000000000000000006"
+token1   = "0x94b008aa00579c1307b0ef2c499ad98a8ce58e58"
+factory  = "0x1F98431c8aD98523631AE4a59f267346ea31F984"
+
+# NOT included: Velodrome, Optimism's deepest native DEX by TVL, is
+# Solidly-style (variable stable/volatile curve per pool) — out of scope per
+# docs/ENGINE_CONTRACT.md §1 ("stableswap/Solidly-stable... out of scope").

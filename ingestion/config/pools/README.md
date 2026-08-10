@@ -14,19 +14,25 @@ Uniswap-V3-style concentrated liquidity (`v3`), and Uniswap **V4** pools with a
 
 Pool addresses are intentionally **not** committed as a curated set here — they
 are environment/DEX-specific and must be gathered and verified for your
-deployment. `arbitrum.example.toml`, `base.example.toml`, and
-`optimism.example.toml` ship real, on-chain-verified WETH/USDC starting points
-(copy to `<chain>.toml` and curate); `unichain`/`ink` have none yet — see below.
+deployment. Every one of the 5 target chains ships a real, on-chain-verified
+`<chain>.example.toml` starting point (copy to `<chain>.toml` and curate) —
+`arbitrum`/`base`/`optimism` WETH/USDC across every standard fee tier,
+`optimism` also WETH/USDT/DAI and USDC/USDT/DAI, `unichain` USDC/WETH/USDT via
+its own chain-specific Uniswap V3 deployment (Unichain's *majority* liquidity
+is Uniswap V4 — a singleton `PoolManager`, not a per-pool factory — these V3
+pools are real but not the whole picture), and `ink` one real WETH/USDC pool
+(a genuinely thin chain today, not an under-researched one).
 
 **Populate these automatically**: `../scripts/discover_pools.py --chain <name>
 --http-url <your RPC URL> --out config/pools/<name>.toml` fingerprints a
 candidate Uniswap V3 factory on-chain (never trusted by address alone), then
 queries `getPool()` directly per fee tier for a named token set (WETH/USDC by
 default, `--token NAME=0xADDRESS` to add more) — a handful of cheap reads, not a
-`PairCreated`/`PoolCreated` log crawl over the chain's whole history. `l2arb
+`PairCreated`/`PoolCreated` log crawl over the chain's whole history. Every one
+of the 5 target chains has a known-good candidate factory built in. `l2arb
 setup --all-chains` (the launcher) runs this automatically per chain and falls
-back to prompting when it can't verify a factory (V4-only chains like Unichain,
-or a chain with no confidently-known factory address, like Ink). Either way, let
+back to a shipped example, or prompting, when live discovery can't confirm
+anything (e.g. a chain whose configured RPC is unreachable). Either way, let
 the startup gate prove each entry — this script only proposes candidates.
 
 ## Schema

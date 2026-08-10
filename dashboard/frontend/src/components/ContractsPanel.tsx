@@ -43,7 +43,12 @@ export interface ContractsPanelViewProps {
   loading: boolean;
   error: string | null;
   wallet: { address?: string; chainKey?: string; connected: boolean };
-  busy: { compiling: boolean; deploying: string | null; readiness: boolean; pausing: string | null };
+  busy: {
+    compiling: boolean;
+    deploying: ReadonlySet<string>;
+    readiness: boolean;
+    pausing: ReadonlySet<string>;
+  };
   readiness: ReadinessResult[] | null;
   notice: { kind: "ok" | "err"; text: string } | null;
   onCompile: () => void;
@@ -69,6 +74,24 @@ function pauseBusyKey(network: string, target: "atomic" | "crosschain"): string 
  *  distinct from the plain `network.key` used for the atomic deploy button. */
 function crossChainBusyKey(networkKey: string): string {
   return `${networkKey}:crosschain`;
+}
+
+/** Immutable add/remove helpers for a `busy.*` key set. Used by both
+ *  `busy.deploying` (every network row and both deploy actions, atomic +
+ *  cross-chain) and `busy.pausing` (every pause/unpause action) — an action
+ *  in flight on one row must never be clobbered by a click on another row
+ *  starting or finishing concurrently (regression: a single shared
+ *  `string | null` let a second action's start/finish silently re-enable or
+ *  re-disable an unrelated row mid-transaction). Fixed once here for
+ *  `deploying`; `pausing` shipped with the same shared-string shape
+ *  separately and gets the identical fix as part of reconciling the two. */
+function withBusy(set: ReadonlySet<string>, key: string): Set<string> {
+  return new Set(set).add(key);
+}
+function withoutBusy(set: ReadonlySet<string>, key: string): Set<string> {
+  const next = new Set(set);
+  next.delete(key);
+  return next;
 }
 
 /**
@@ -148,8 +171,8 @@ export function ContractsPanelView(props: ContractsPanelViewProps) {
                 compiled={compiled}
                 crossChainCompiled={crossChainCompiled}
                 wallet={wallet}
-                deploying={busy.deploying === n.key}
-                deployingCrossChain={busy.deploying === crossChainBusyKey(n.key)}
+                deploying={busy.deploying.has(n.key)}
+                deployingCrossChain={busy.deploying.has(crossChainBusyKey(n.key))}
                 onDeploy={() => props.onDeploy(n)}
                 onDeployCrossChain={() => props.onDeployCrossChain(n)}
               />
@@ -215,7 +238,7 @@ export function ContractsPanelView(props: ContractsPanelViewProps) {
                     {r.hasCode && (
                       <PauseControl
                         paused={r.paused}
-                        busy={props.busy.pausing === pauseBusyKey(r.network, "atomic")}
+                        busy={props.busy.pausing.has(pauseBusyKey(r.network, "atomic"))}
                         disabled={!props.wallet.connected}
                         onPause={() => props.onPauseToggle(r, "atomic", true)}
                         onUnpause={() => props.onPauseToggle(r, "atomic", false)}
@@ -245,7 +268,7 @@ export function ContractsPanelView(props: ContractsPanelViewProps) {
                       <div className="pl-3">
                         <PauseControl
                           paused={r.crossChainPaused}
-                          busy={props.busy.pausing === pauseBusyKey(r.network, "crosschain")}
+                          busy={props.busy.pausing.has(pauseBusyKey(r.network, "crosschain"))}
                           disabled={!props.wallet.connected}
                           onPause={() => props.onPauseToggle(r, "crosschain", true)}
                           onUnpause={() => props.onPauseToggle(r, "crosschain", false)}
@@ -476,14 +499,14 @@ export function ContractsPanel() {
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState<{
     compiling: boolean;
-    deploying: string | null;
+    deploying: ReadonlySet<string>;
     readiness: boolean;
-    pausing: string | null;
+    pausing: ReadonlySet<string>;
   }>({
     compiling: false,
-    deploying: null,
+    deploying: new Set(),
     readiness: false,
-    pausing: null,
+    pausing: new Set(),
   });
   const [readiness, setReadiness] = useState<ReadinessResult[] | null>(null);
   const [notice, setNotice] = useState<{ kind: "ok" | "err"; text: string } | null>(null);
@@ -523,7 +546,7 @@ export function ContractsPanel() {
       setNotice({ kind: "err", text: "Connect your wallet first" });
       return;
     }
-    setBusy((b) => ({ ...b, deploying: n.key }));
+    setBusy((b) => ({ ...b, deploying: withBusy(b.deploying, n.key) }));
     setNotice(null);
     try {
       // Ensure MetaMask is on the target chain so the deploy lands where intended.
@@ -560,7 +583,7 @@ export function ContractsPanel() {
     } catch (e) {
       setNotice({ kind: "err", text: walletErrorMessage(e) });
     } finally {
-      setBusy((b) => ({ ...b, deploying: null }));
+      setBusy((b) => ({ ...b, deploying: withoutBusy(b.deploying, n.key) }));
     }
   };
 
@@ -584,7 +607,7 @@ export function ContractsPanel() {
       return;
     }
     const atomicAddress = n.deployment.address;
-    setBusy((b) => ({ ...b, deploying: crossChainBusyKey(n.key) }));
+    setBusy((b) => ({ ...b, deploying: withBusy(b.deploying, crossChainBusyKey(n.key)) }));
     setNotice(null);
     try {
       if (chainId !== n.chainId) {
@@ -621,7 +644,7 @@ export function ContractsPanel() {
     } catch (e) {
       setNotice({ kind: "err", text: walletErrorMessage(e) });
     } finally {
-      setBusy((b) => ({ ...b, deploying: null }));
+      setBusy((b) => ({ ...b, deploying: withoutBusy(b.deploying, crossChainBusyKey(n.key)) }));
     }
   };
 
@@ -656,7 +679,7 @@ export function ContractsPanel() {
       return;
     }
     const contractName = target === "atomic" ? "FlashLoanArbitrage" : "CrossChainArbitrageExecutor";
-    setBusy((b) => ({ ...b, pausing: pauseBusyKey(r.network, target) }));
+    setBusy((b) => ({ ...b, pausing: withBusy(b.pausing, pauseBusyKey(r.network, target)) }));
     setNotice(null);
     try {
       if (chainId !== r.chainId) {
@@ -676,7 +699,7 @@ export function ContractsPanel() {
     } catch (e) {
       setNotice({ kind: "err", text: walletErrorMessage(e) });
     } finally {
-      setBusy((b) => ({ ...b, pausing: null }));
+      setBusy((b) => ({ ...b, pausing: withoutBusy(b.pausing, pauseBusyKey(r.network, target)) }));
     }
   };
 

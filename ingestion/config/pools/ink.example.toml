@@ -1,0 +1,24 @@
+# Ink pool registry.
+#
+# Ink is a genuinely thin chain today — this is the one pool this session could
+# confirm live on-chain (direct eth_call to Ink's own verified Uniswap V3
+# factory's getPool(), reading token0/token1/liquidity()), not a gap left
+# unresearched. The startup validation gate (docs/ARCHITECTURE.md §7) re-proves
+# it on-chain before it enters the live set regardless. See
+# config/pools/README.md for the full schema.
+#
+# Velodrome's Superchain deployment (config/addresses.js has no Ink entry for
+# it, but the factory is 0x31832f2a97Fd20664D76Cc421207669b55CE4BC0 with real
+# ~$12M TVL per DeFiLlama) is Ink's deepest liquidity — Solidly-style, out of
+# scope per docs/ENGINE_CONTRACT.md §1, same reasoning as Aerodrome/Velodrome
+# elsewhere in this registry set.
+
+# Uniswap V3 — WETH/USDC 0.01%.
+[[pool]]
+dex      = "uniswap_v3"
+kind     = "v3"
+address  = "0x3fC1bC73B807B4d522B168A816d8022396A459aD"
+fee_pips = 100
+token0   = "0x2D270e6886d130D724215A266106e6832161EAEd"  # USDC (native)
+token1   = "0x4200000000000000000000000000000000000006"  # WETH
+factory  = "0x640887A9ba3A9C53Ed27D0F7e8246A4F933f3424"  # Uniswap V3 factory

@@ -16,7 +16,7 @@ from unittest import mock
 # Make the launcher package importable when run from the repo root.
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from l2arb import cli, config, console, payload, prereqs, proc, state  # noqa: E402
+from l2arb import cli, config, console, payload, prereqs, proc, setup, state  # noqa: E402
 from l2arb.paths import Layout, workspace_root  # noqa: E402
 from l2arb.prereqs import _VERSION_RE, _ge, merge_path  # noqa: E402
 from l2arb.proc import _resolve  # noqa: E402
@@ -190,6 +190,83 @@ class ConfigTest(unittest.TestCase):
         self.assertEqual(config.health_url("ingestion", 8787), "http://127.0.0.1:9100/health")
         self.assertEqual(config.health_url("dashboard", 9000), "http://127.0.0.1:9000/api/health")
         self.assertIsNone(config.health_url("contracts", 8787))
+
+    def _layout_with_ingestion_tree(
+        self,
+        config_chains=("arbitrum", "base", "optimism", "unichain", "ink"),
+        example_chains=None,
+    ) -> Layout:
+        """A workspace with a real-shaped ingestion/config tree: the example
+        config has a [[chains]] block (referencing pool_registry by the plain,
+        unmaterialised relative path) for every chain in `config_chains`, but
+        only `example_chains` (defaults to all of `config_chains`) actually has
+        a shipped pool .example.toml — lets a test model an incomplete
+        ingestion tree without also lying about which chains the config itself
+        declares."""
+        if example_chains is None:
+            example_chains = config_chains
+        root = Path(tempfile.mkdtemp())
+        pools_dir = root / "ingestion" / "config" / "pools"
+        pools_dir.mkdir(parents=True)
+        chain_blocks = "\n".join(
+            f'[[chains]]\nname = "{c}"\npool_registry = "config/pools/{c}.toml"\n' for c in config_chains
+        )
+        (root / "ingestion" / "config" / "config.example.toml").write_text(
+            f"schema_version = 1\n\n{chain_blocks}"
+        )
+        for c in example_chains:
+            (pools_dir / f"{c}.example.toml").write_text(f"# real {c} pools\n[[pool]]\nkind='v3'\n")
+        return Layout(root)
+
+    def test_ensure_config_toml_materialises_and_rewrites_every_chains_pools(self):
+        lo = self._layout_with_ingestion_tree()
+        config.ensure_config_toml(lo)
+        text = lo.config_toml.read_text()
+        for c in ("arbitrum", "base", "optimism", "unichain", "ink"):
+            pool_file = lo.state_dir / "pools" / f"{c}.toml"
+            self.assertTrue(pool_file.exists(), f"{c} pool registry was not materialised")
+            # The config references the materialised absolute path, not the
+            # original relative "config/pools/<chain>.toml" placeholder.
+            self.assertIn(str(pool_file), text)
+            self.assertNotIn(f'pool_registry = "config/pools/{c}.toml"', text)
+
+    def test_ensure_config_toml_leaves_pool_registry_alone_for_a_chain_with_no_shipped_example(self):
+        # The config declares all 5 chains, but only Arbitrum's example ships —
+        # mirrors an incomplete ingestion tree rather than assuming every
+        # chain always has one.
+        lo = self._layout_with_ingestion_tree(example_chains=("arbitrum",))
+        config.ensure_config_toml(lo)
+        text = lo.config_toml.read_text()
+        self.assertNotIn('pool_registry = "config/pools/arbitrum.toml"', text)
+        # base/optimism/unichain/ink had nothing to materialise, so their
+        # placeholder reference is left exactly as shipped, not corrupted.
+        self.assertIn('pool_registry = "config/pools/base.toml"', text)
+
+    def test_ensure_config_toml_is_idempotent(self):
+        lo = self._layout_with_ingestion_tree()
+        config.ensure_config_toml(lo)
+        first = lo.config_toml.read_text()
+        config.ensure_config_toml(lo)
+        self.assertEqual(lo.config_toml.read_text(), first)
+
+    @unittest.skipUnless(sys.version_info >= (3, 11), "tomllib needs 3.11+")
+    def test_ensure_config_toml_escapes_a_windows_style_pool_path(self):
+        # Regression, same shape as setup.py's quick-start fix (root CLAUDE.md
+        # §9 item 4): a backslash-heavy absolute path interpolated raw into a
+        # TOML basic string becomes invalid escape sequences and the whole
+        # generated config fails to parse. ensure_config_toml must go through
+        # the same Windows-safe `_toml_str` escaping, not a raw f-string.
+        # materialize_pool_registries is mocked directly (rather than pointing
+        # state_dir at a Windows path) so the test does real filesystem I/O
+        # only through normal, this-OS-native paths.
+        import tomllib
+
+        lo = self._layout_with_ingestion_tree(config_chains=("arbitrum",))
+        win_path = r"C:\Users\Alice\AppData\Local\L2ArbBot\.l2arb\pools\arbitrum.toml"
+        with mock.patch.object(setup, "materialize_pool_registries", return_value={"arbitrum": Path(win_path)}):
+            config.ensure_config_toml(lo)
+        parsed = tomllib.loads(lo.config_toml.read_text())
+        self.assertEqual(parsed["chains"][0]["pool_registry"], win_path)
 
 
 class PrereqParsingTest(unittest.TestCase):

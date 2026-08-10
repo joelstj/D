@@ -52,6 +52,27 @@ import {IBridgeAdapter} from "../interfaces/IBridgeAdapter.sol";
 ///      supplied `bytes options` of unknown shape, so it can't be hand-encoded
 ///      the way DexRouter's fixed-shape swap calls can) worth converting —
 ///      considered, not skipped.
+///
+///      `_walkRoute`'s own `SwapStep memory step = steps[i]` (a calldata-to-
+///      memory struct decode per hop, unlike `FlashLoanArbitrage._runRoute`'s
+///      equivalent line, which is a free pointer copy since its `steps` is
+///      already memory) looks like a textbook fit for
+///      `docs/specs/07-gas-and-yul.md`'s "Route decoding... no memory copies"
+///      pattern, and was concretely tried: `DexRouter.execute` was refactored
+///      from a `SwapStep memory` parameter to twelve scalar parameters (so
+///      each caller passes only the fields it already has, calldata or
+///      memory, with no struct materialisation). Measured with a real 2-hop
+///      `executeDestinationLeg` call, before/after on an otherwise-identical
+///      commit (`git stash`, not a guess): 161,240 gas before, 162,209 after
+///      — a reproducible **+969 gas regression**, not a win. The struct-decode
+///      savings were real but smaller than the added cost of marshalling
+///      twelve stack arguments across the internal-call boundary instead of
+///      one struct pointer, for the common case (V2/V3_SINGLE hops, where
+///      `data` is empty and there was little decode cost to save in the
+///      first place). Reverted rather than shipped, per this file's own gas
+///      rule: "optimize against a benchmark, never on vibes." Recorded here
+///      so a future session doesn't re-attempt the same measured-losing
+///      change from scratch.
 contract CrossChainArbitrageExecutor is AccessControl, ReentrancyGuard, Pausable {
     using SafeERC20 for IERC20;
 

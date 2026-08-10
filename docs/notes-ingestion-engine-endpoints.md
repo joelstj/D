@@ -3,7 +3,8 @@
 Branch `claude/ingestion-engine-endpoints-rx9h18`. Task: *"debug and fix the ingestion
 engine and ensure it is loading up websocket and RPC endpoints, or at least [prompt] the
 user to individually add all ingestion routes and endpoints and also pools if not
-automatically generated."* Full summary in root `CLAUDE.md` §16; this file is the
+automatically generated."* Full summary in root `CLAUDE.md` §17 (renumbered from §16 during
+merge — see the Post-merge reconciliation section at the end of this file); this file is the
 detailed working record.
 
 ## Starting point
@@ -303,3 +304,71 @@ itself. A config that's still template text now fails loudly and specifically at
 `--check-config` time instead of entering a silent, opaque reconnect loop. The one
 piece not provable live — WS connectivity — was root-caused precisely (proxy policy,
 not code) rather than guessed at or silently left unexplained.
+
+## Post-merge reconciliation with PR #28 (`claude/arbitrage-gui-compile-deploy-0cvfjn`)
+
+PR #29 (this branch) reported merge conflicts against `main` shortly after opening. A parallel
+session had, independently and concurrently, built pool auto-discovery/curation for the same
+gap this branch targeted — real `add/add` git conflicts on `config/pools/{base,optimism}
+.example.toml` (both sides created these paths from scratch), plus a text conflict in root
+`CLAUDE.md` (both sessions appended a "§16"). `launcher/l2arb/setup.py`/`test_setup.py` and
+`ingestion/crates/registry/src/schema.rs` all auto-merged cleanly — different call paths /
+insertion points, no real overlap.
+
+**Cross-validation, not just conflict resolution.** Before resolving anything, both sides'
+claimed pool addresses were compared, then independently re-verified live on-chain via this
+branch's own `discover_pools.py` (not trusted from either side's notes alone):
+
+- Every address the two sessions' independently-derived data had in common matched exactly
+  (case-insensitive) — e.g. Base's WETH/USDC 0.05%/1.00% tiers, Optimism's WETH/USDC 0.05%/
+  0.30% tiers. Strong evidence both approaches (this branch's live `getPool()`
+  fingerprint-and-verify tool vs. PR #28's live `eth_call`-verified manual research) produce
+  genuinely correct on-chain data, not just internally-consistent data.
+- PR #28's *new* claims beyond the overlap — Optimism's WETH/USDT, WETH/DAI, USDC/USDT pools,
+  and the Unichain/Ink registries entirely (each on its own chain-specific Uniswap V3 factory,
+  not the cross-chain-default address the other three chains share) — were re-derived from
+  scratch via fresh `discover_pools.py --factory ... --token ...` calls against this container's
+  real RPC credentials for those chains. Every single claimed address matched.
+
+**Resolution merged rather than picked a side:**
+- `base.example.toml`: kept this branch's 4th fee-tier pool (0.30%) that PR #28's file was
+  missing; adopted PR #28's clearer per-pool comments and its "NOT included: Aerodrome/BaseSwap,
+  out of scope" footer.
+- `optimism.example.toml`: regenerated via `discover_pools.py` using PR #28's wider
+  WETH/USDT/DAI/USDC token set (all four re-verified live first) — 22 independently-verified
+  pools, strictly more than either session's file alone. Grouped by pair with section comments;
+  added a "NOT included: Velodrome, Solidly-style, out of scope" footer matching the established
+  pattern.
+- `arbitrum.example.toml`, `unichain.example.toml`, `ink.example.toml`: PR #28's unmodified,
+  separately-verified work — this branch never touched Arbitrum's registry, and had originally
+  (incorrectly, as it turned out) judged Unichain/Ink unreachable by this discovery method.
+
+**A real correction to this branch's own earlier reasoning.** This file's Finding 2 originally
+excluded Unichain ("native V4, a different discovery mechanism entirely") and Ink ("no
+confidently-known factory anywhere in this repo") from auto-discovery. PR #28's research proved
+that wrong for Unichain specifically — it has a real, usable, chain-specific Uniswap V3
+deployment (`0x1F98400000000000000000000000000000000003`) alongside its majority V4 liquidity —
+and supplied the missing factory address for Ink (`0x640887A9ba3A9C53Ed27D0F7e8246A4F933f3424`)
+that this branch's own research simply hadn't found. Both were independently re-fingerprinted and
+every claimed pool re-derived live (above) before being trusted. Corrected accordingly:
+`discover_pools.py`'s `CHAIN_CANDIDATES` and `launcher/l2arb/setup.py`'s `_CHAIN_TEMPLATE` both
+grew from 3 chains to all 5 — `l2arb setup --all-chains` can now fully auto-assemble every one of
+the 5 target chains (not just arbitrum/base/optimism), wherever an RPC endpoint is available. A
+new launcher test (`test_unichain_and_ink_go_live_via_their_shipped_examples`) proves this
+concretely: given an endpoint and their real shipped example, both chains now render *enabled*
+through `--all-chains`, not the disabled-with-endpoint-preserved fallback.
+
+**Gates, all independently re-run green by this session *after* the merge** (not trusted from
+either side's pre-merge report): ingestion `fmt` + `clippy -D warnings` + full workspace suite
+(222 tests, including PR #28's own new `l2i-registry::schema::
+every_shipped_example_pool_registry_parses_and_is_canonically_ordered` test — re-run directly
+against this reconciliation's substantially-changed `base`/`optimism` registries, not assumed to
+still pass); `discover_pools.py`'s offline suite (16 tests, unaffected — pure functions, chain-
+agnostic); launcher (127 tests). Dashboard/contracts/engine were untouched by this reconciliation
+(zero conflicts on those trees) and were already independently green per PR #28's own audit.
+
+Root `CLAUDE.md`'s two same-day sections were renumbered by merge order rather than edited to
+merge into one: PR #28 landed on `main` first and keeps §16; this branch's section becomes §17,
+with a "Post-merge reconciliation with §16" paragraph appended (matching §16's own established
+pattern for reconciling with its parallel-session predecessor, §15) rather than silently rewriting
+either session's original account of its own work.

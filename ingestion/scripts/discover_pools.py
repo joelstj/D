@@ -69,13 +69,17 @@ DEFAULT_FEE_TIERS = (100, 500, 3000, 10000)
 
 # ── Known candidates (see module docstring §1 — always fingerprinted, never
 # trusted blind). Sourced from this repo's own already-recorded address book
-# (`contracts/config/addresses.js`) and, for Arbitrum, the real pool already
-# committed at `config/pools/arbitrum.example.toml`. Unichain and Ink are
-# deliberately absent: Unichain's native liquidity is Uniswap V4 (a different
-# discovery mechanism — no per-pool contract, identity is a poolId over a
-# PoolManager singleton) and no Uniswap V3 factory address for Ink is
-# confidently known here — both fall back to the guided prompt instead of a
-# guess.
+# (`contracts/config/addresses.js`), the real pools already committed at
+# `config/pools/*.example.toml`, and — for Unichain/Ink's *own*
+# chain-specific Uniswap V3 factory deployments (neither uses the
+# cross-chain-default factory address the other three chains share) —
+# `docs/notes-arbitrage-gui-compile-deploy.md`'s sourced research, each
+# independently re-fingerprinted and re-derived live on-chain before being
+# added here (see root CLAUDE.md §17's post-merge reconciliation with §16).
+# Unichain's *majority* liquidity is Uniswap V4 (a different discovery
+# mechanism entirely — no per-pool contract, identity is a poolId over a
+# PoolManager singleton), but it also has a real, usable V3 deployment this
+# script can query the same way as any other chain.
 CHAIN_CANDIDATES: dict[str, dict] = {
     "arbitrum": {
         "chain_id": 42161,
@@ -99,6 +103,22 @@ CHAIN_CANDIDATES: dict[str, dict] = {
         "tokens": {
             "WETH": "0x4200000000000000000000000000000000000006",
             "USDC": "0x0b2C639c533813f4Aa9D7837CAf62653d097Ff85",
+        },
+    },
+    "unichain": {
+        "chain_id": 130,
+        "factory": "0x1F98400000000000000000000000000000000003",  # Unichain-specific deployment
+        "tokens": {
+            "WETH": "0x4200000000000000000000000000000000000006",
+            "USDC": "0x078D782b760474a361dDA0AF3839290b0EF57AD6",
+        },
+    },
+    "ink": {
+        "chain_id": 57073,
+        "factory": "0x640887A9ba3A9C53Ed27D0F7e8246A4F933f3424",
+        "tokens": {
+            "WETH": "0x4200000000000000000000000000000000000006",
+            "USDC": "0x2D270e6886d130D724215A266106e6832161EAEd",
         },
     },
 }

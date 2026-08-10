@@ -283,6 +283,38 @@ def materialize_arbitrum_pools(lo: Layout, source: Path | None = None) -> Path |
     return dst
 
 
+# Every chain the ingestion layer supports (root CLAUDE.md §1) — kept in sync
+# with `config.example.toml`'s `[[chains]]` blocks and `config/pools/*.example.toml`.
+POOL_CHAINS: tuple[str, ...] = ("arbitrum", "base", "optimism", "unichain", "ink")
+
+
+def materialize_pool_registries(lo: Layout, source_dir: Path | None = None) -> dict[str, Path]:
+    """Copy every shipped, real per-chain pool registry into the state dir and
+    return ``{chain: absolute path}``, so a generated config's `pool_registry`
+    references resolve regardless of the ingestion binary's cwd — or whether
+    the ingestion source tree is even writable (e.g. bundled inside the .exe).
+
+    Previously only Arbitrum's registry was ever materialised anywhere
+    automated (`materialize_arbitrum_pools`, used solely by the quick-start
+    wizard); the other 4 chains' `pool_registry` paths pointed at files that
+    were never created by any code path. Chains whose shipped example is
+    missing are simply omitted from the result, not an error — a caller that
+    requires one checks for it.
+    """
+    src_dir = source_dir or (lo.ingestion / "config" / "pools")
+    dst_dir = lo.state_dir / "pools"
+    dst_dir.mkdir(parents=True, exist_ok=True)
+    out: dict[str, Path] = {}
+    for chain in POOL_CHAINS:
+        src = src_dir / f"{chain}.example.toml"
+        if not src.exists():
+            continue
+        dst = dst_dir / f"{chain}.toml"
+        shutil.copyfile(src, dst)
+        out[chain] = dst
+    return out
+
+
 def write_arbitrum_quickstart(lo: Layout, ws_url: str, http_url: str) -> Path | None:
     """Materialise the Arbitrum pool registry and write a complete live-ready
     ``config.toml`` from the user's endpoints. Returns the config path, or None if
@@ -369,11 +401,18 @@ _CHAIN_META: dict[str, dict] = {
 # Real, already-vetted WETH/USDC addresses (matches contracts/config/addresses.js
 # and the pool registries discover_pools.py has independently verified
 # on-chain) for the chains this wizard can fully auto-assemble an *enabled*
-# block for. Unichain (native liquidity is Uniswap V4 — no per-pool factory to
-# query this way) and Ink (no confidently-known native USDC here) are
-# deliberately absent: both still get their endpoint saved and prompted for
-# like any other chain, but render as a disabled placeholder instead of a
-# guessed-at enabled one — see `render_disabled_chain_block`.
+# block for — every one of the 5 target chains. Unichain and Ink were added
+# after independently re-verifying `docs/notes-arbitrage-gui-compile-deploy.md`'s
+# sourced research live on-chain (each chain's own factory re-fingerprinted,
+# every pool re-derived — see root CLAUDE.md §17's post-merge reconciliation
+# with §16): Unichain's *majority* liquidity is Uniswap V4 (a different
+# discovery mechanism — no per-pool factory), but it also has a real, usable
+# V3 deployment at its own chain-specific factory address (not the
+# cross-chain-default one the other three chains share); Ink genuinely has
+# just the one real WETH/USDC pool today. A chain this wizard can't fully
+# verify (a future gap, or live discovery failing for an otherwise-templated
+# chain) still renders disabled with its endpoint preserved rather than a
+# guessed-at enabled block — see `render_disabled_chain_block`.
 _CHAIN_TEMPLATE: dict[str, dict] = {
     "base": {
         "weth": "0x4200000000000000000000000000000000000006",
@@ -382,6 +421,14 @@ _CHAIN_TEMPLATE: dict[str, dict] = {
     "optimism": {
         "weth": "0x4200000000000000000000000000000000000006",
         "usdc": "0x0b2C639c533813f4Aa9D7837CAf62653d097Ff85",
+    },
+    "unichain": {
+        "weth": "0x4200000000000000000000000000000000000006",
+        "usdc": "0x078D782b760474a361dDA0AF3839290b0EF57AD6",
+    },
+    "ink": {
+        "weth": "0x4200000000000000000000000000000000000006",
+        "usdc": "0x2D270e6886d130D724215A266106e6832161EAEd",
     },
 }
 
