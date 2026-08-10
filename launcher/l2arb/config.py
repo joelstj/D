@@ -16,6 +16,8 @@ placeholders and refuse to pretend the live stack is ready.
 
 from __future__ import annotations
 
+import re
+
 from .paths import Layout
 
 ENGINE_PORT = 8080
@@ -30,6 +32,29 @@ DASHBOARD_PORT = 8787
 
 # Substrings that mark an unfilled example config (placeholders, not real state).
 _PLACEHOLDER_MARKERS = ("YOUR_", "0xWETH", "0xUSDC", "0xWETH_USDC")
+
+# General net alongside the literal list above. `_PLACEHOLDER_MARKERS` is a fixed
+# snapshot of the placeholder spellings `config.example.toml` happened to use when
+# it was written; it silently misses any placeholder shape added later that
+# doesn't start with "YOUR_"/"0xWETH"/"0xUSDC" — e.g. Unichain's V4 infra fields
+# (`uniswap_v4_pool_manager = "0xUNICHAIN_V4_POOLMANAGER"`, `..._state_view =
+# "0xUNICHAIN_V4_STATEVIEW"`). A real on-chain address is always `0x` followed by
+# 40 hex digits and nothing else, so any `0x`-prefixed token containing a
+# non-hex-digit character (a letter outside a-f/A-F, or an underscore) cannot be
+# a real address — it can only be an unfilled placeholder. Without this, a user
+# who filled every named marker but missed a newer placeholder shape would be
+# told the config is live-ready and `run --live` would launch the live stack
+# against a fake address instead of falling back to paper mode — the same
+# "looks healthy, isn't" shape prior audits (§9/§11/§12) flagged elsewhere in
+# this repo, just for this config-readiness gate.
+_HEX_0X_TOKEN_RE = re.compile(r"0x[0-9A-Za-z_]+")
+_HEX_DIGITS = frozenset("0123456789abcdefABCDEF")
+
+
+def _has_non_hex_0x_token(text: str) -> bool:
+    return any(
+        any(ch not in _HEX_DIGITS for ch in match.group()[2:]) for match in _HEX_0X_TOKEN_RE.finditer(text)
+    )
 
 
 def ensure_config_toml(lo: Layout) -> str:
@@ -48,7 +73,9 @@ def config_is_live_ready(lo: Layout) -> bool:
     if not lo.config_toml.exists():
         return False
     text = lo.config_toml.read_text()
-    return not any(marker in text for marker in _PLACEHOLDER_MARKERS)
+    if any(marker in text for marker in _PLACEHOLDER_MARKERS):
+        return False
+    return not _has_non_hex_0x_token(text)
 
 
 def engine_cmd(lo: Layout) -> list[str]:
