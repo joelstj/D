@@ -234,3 +234,93 @@ end-to-end arbitrage against live pools, and the ones validated this session —
 all**, and the Foundry fork step that did exist is gated on a secret that has never been set. Both
 statements were verified against `ci.yml` and the live run. Only the characterisation of Foundry's
 availability was overstated.
+
+---
+
+## Follow-up: real mainnet deployment (2026-08-10)
+
+After PR #25 merged, the operator was asked once more whether to proceed with a real broadcast
+(the concern having been raised twice already: an unanswered `AskUserQuestion`, then an explicit
+closing ask). They replied **"Go ahead."** Per the escalation rule — a concern raised and then
+reaffirmed is the user's decision — the deployment was performed. This is a deliberate,
+human-authorised override of root `CLAUDE.md` §2 invariant 3 / `contracts/CLAUDE.md` golden rule 5
+("never deploy or send a live transaction from the loop"), recorded here rather than silently done.
+
+**Scope of what was authorised and done.** A real *deployment* only. `executeArbitrage` was **not**
+broadcast: with no engine-emitted route data and profit-or-revert semantics, a blind fire is a
+guaranteed revert and pure gas burn — that was stated to the operator and was not part of the offer.
+
+### Pre-flight (read-only, before spending anything)
+
+New `contracts/scripts/preflight_deploy.js` — estimate-only, issues no writes. It refuses to
+proceed if either flash-loan provider address has no code on the target chain, then reports the
+real gas estimate against live state:
+
+| | |
+|---|---|
+| chain | Base (chainId 8453) — the only chain with a usable balance |
+| aavePool code | 1,933 bytes ✓ | 
+| balancerVault code | 24,512 bytes ✓ |
+| gas price | 0.011 gwei |
+| `FlashLoanArbitrage` estimate | 3,143,757 gas → 0.0000346 ETH |
+| balance before | 0.003471279837481459 ETH |
+| verdict | affordable, >2x headroom |
+
+Arbitrum was ruled out on balance (0.000002 ETH); Polygon's 0.09 POL is ~1x a deploy at 30 gwei,
+i.e. no headroom. `CrossChainArbitrageExecutor` was deliberately skipped (`SKIP_CROSSCHAIN=1`) — it
+is inert without a sibling deployment on a second chain, and there is no gas for one.
+
+### The deployment
+
+**`FlashLoanArbitrage` @ `0x17fB2Da9D6b6f95962Ad21f39aAE43f40Caaf602` on Base mainnet.**
+
+- constructor: `aavePool=0xA238Dd80C259a72e81d7e4664a9801593F98d1c5`,
+  `balancerVault=0xBA12222222228d8Ba445958a75a0704d566BF2C8`,
+  `admin=0x50A71dF7DfC5850e8434C7c8A564366F4980183b`
+- cost: 0.003471279837481459 → 0.003452514 ETH, i.e. **0.0000188 ETH (~$0.07)** actual
+- record: `contracts/deployments/base.json` (git-ignored by design)
+
+### Verified independently on-chain (not trusting the deploy script's own output)
+
+| Check | Result |
+|---|---|
+| `eth_getCode` | 13,660 bytes present |
+| `aavePremiumBps()` staticCall | **5 bps** — read live from the real Aave V3 pool, proving both the ABI and the Aave wiring |
+| `paused()` | false |
+| `hasRole(EXECUTOR_ROLE, 0x50A71d…183b)` | true |
+| `scripts/contract_stress_test.mjs` (repo's own readiness sweep) | 1 chain probed, 0 failures ✅ |
+
+### The deployed bytecode was then proven to execute
+
+New `contracts/scripts/verify_deployment_executes.js` forks Base at its current head — so the
+deployed contract exists in fork state — and drives **that address's real on-chain bytecode**
+(not a fresh compile) through a full arbitrage:
+
+- route `WETH →[UniV3 0.05%]→ USDC →[UniV3 0.30%]→ WETH`, both hops on the already-verified
+  SwapRouter02, so no new address is introduced (golden rule 7)
+- borrowed 50 WETH from the **real Aave V3 pool** at the real 5 bps premium
+- **profit 0.103266178522271669 WETH → `0x50A71dF7DfC5850e8434C7c8A564366F4980183b`**
+- gas 495,341; logged profit == balance delta; logged receiver == requested; executor residual 0
+
+Two implementation notes worth keeping, both discovered empirically here:
+
+1. **`BAL#528`** — Balancer's Base vault holds only ~27.9 WETH, so a 50 WETH flash loan reverts
+   `INSUFFICIENT_FLASH_LOAN_BALANCE`. Aave's Base reserve holds ~18,000 WETH. The script uses Aave,
+   which also charges a real premium the profit check must clear.
+2. **Hardfork history on a pinned fork** — an `eth_call` at *exactly* the fork block is treated as
+   historical execution and fails with "No known hardfork ... in chain with id 8453" despite
+   `hardhat.config.js` declaring `8453: { hardforkHistory: { cancun: 0 } }`. Mining one block past
+   the fork point (`hardhat_mine`) puts execution on a locally-mined block that uses the configured
+   hardfork. Also note the public `mainnet.base.org` is load-balanced and can serve a stale head, so
+   an unpinned fork may land before a just-sent deployment — pin `FORK_BLOCK`.
+
+### What this does and does not change
+
+**Changed:** blocker #2 from the section above ("no deployment on any chain") is cleared for Base.
+There is now a real, live, role-configured executor that has been proven to run.
+
+**Unchanged:** blocker #1 (the engine emits detection data, not constructible `ArbParams`) and
+blocker #3 (thin gas buffer). A real mainnet arbitrage still needs a genuinely profitable route
+with real router/`DexType`/calldata, which nothing in this repo produces today. The 0.1033 WETH
+above came from a manufactured dislocation on a fork — it is not realised profit, and the
+operator's real balance is unchanged apart from the ~$0.07 of deploy gas.
