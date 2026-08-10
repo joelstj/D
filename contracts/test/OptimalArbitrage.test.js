@@ -106,4 +106,90 @@ describe("OptimalArbitrage library", () => {
       expect(expectedProfit).to.be.gte(profitAt(alt));
     }
   });
+
+  // ------------------------------------------------------------------ //
+  //          Asymmetric pool fees (two-fee closed form)                //
+  // ------------------------------------------------------------------ //
+
+  const rInA = e(180000, 6n);
+  const rOutA = e(100);
+  const rInB = e(100);
+  const rOutB = e(220000, 6n);
+
+  /** Realised profit for a given size when each pool charges its own fee. */
+  const profitWith = (x, feeBuy, feeSell) => {
+    const o1 = getAmountOut(x, rInA, rOutA, feeBuy);
+    const o2 = getAmountOut(o1, rInB, rOutB, feeSell);
+    return o2 > x ? o2 - x : 0n;
+  };
+
+  it("two-fee sizing reproduces the single-fee result exactly when both fees match", async () => {
+    const h = await deploy();
+    for (const fee of [0n, 5n, 30n, 100n, 3000n]) {
+      const [single, singleProfit] = await h.optimalV2Amount(rInA, rOutA, rInB, rOutB, fee);
+      const [twoFee, twoFeeProfit] = await h.optimalV2AmountTwoFee(rInA, rOutA, rInB, rOutB, fee, fee);
+      expect(twoFee, `size mismatch at fee ${fee}`).to.equal(single);
+      expect(twoFeeProfit, `profit mismatch at fee ${fee}`).to.equal(singleProfit);
+    }
+  });
+
+  it("two-fee sizing is locally optimal for an asymmetric pair (0.30% buy / 0.05% sell)", async () => {
+    const h = await deploy();
+    const feeBuy = 30n;
+    const feeSell = 5n;
+
+    const [amountIn, expectedProfit] = await h.optimalV2AmountTwoFee(rInA, rOutA, rInB, rOutB, feeBuy, feeSell);
+    expect(amountIn).to.be.gt(0n);
+    expect(profitWith(amountIn, feeBuy, feeSell)).to.equal(expectedProfit);
+
+    for (let pct = 50n; pct <= 150n; pct += 5n) {
+      if (pct === 100n) continue;
+      expect(expectedProfit).to.be.gte(profitWith((amountIn * pct) / 100n, feeBuy, feeSell));
+    }
+  });
+
+  // The defect this generalisation fixes: sizing with only the BUY pool's fee
+  // optimises for a pair that does not exist, so an asymmetric pairing is
+  // systematically mis-sized. Assert the correct size strictly out-earns the
+  // old one — not merely that it is different.
+  it("two-fee sizing strictly out-earns sizing that ignores the sell-pool fee", async () => {
+    const h = await deploy();
+    const cases = [
+      { feeBuy: 30n, feeSell: 5n },
+      { feeBuy: 5n, feeSell: 30n },
+      { feeBuy: 30n, feeSell: 100n },
+      { feeBuy: 1n, feeSell: 30n },
+    ];
+
+    for (const { feeBuy, feeSell } of cases) {
+      const label = `buy ${feeBuy}bps / sell ${feeSell}bps`;
+      // What the old code computed: the single-fee form fed only the buy fee.
+      const [buyFeeOnlySize] = await h.optimalV2Amount(rInA, rOutA, rInB, rOutB, feeBuy);
+      const [correctSize, correctProfit] = await h.optimalV2AmountTwoFee(
+        rInA,
+        rOutA,
+        rInB,
+        rOutB,
+        feeBuy,
+        feeSell
+      );
+
+      expect(correctSize, `${label}: sizes should differ`).to.not.equal(buyFeeOnlySize);
+      expect(correctProfit, `${label}: two-fee should out-earn buy-fee-only`).to.be.gt(
+        profitWith(buyFeeOnlySize, feeBuy, feeSell)
+      );
+    }
+  });
+
+  it("two-fee sizing rejects a degenerate or fee-saturated pair", async () => {
+    const h = await deploy();
+    // Either fee at/above 100% is not a tradable pool.
+    expect((await h.optimalV2AmountTwoFee(rInA, rOutA, rInB, rOutB, 10_000n, 30n))[0]).to.equal(0n);
+    expect((await h.optimalV2AmountTwoFee(rInA, rOutA, rInB, rOutB, 30n, 10_000n))[0]).to.equal(0n);
+    // A zero reserve on any leg.
+    expect((await h.optimalV2AmountTwoFee(0n, rOutA, rInB, rOutB, 30n, 5n))[0]).to.equal(0n);
+    expect((await h.optimalV2AmountTwoFee(rInA, rOutA, rInB, 0n, 30n, 5n))[0]).to.equal(0n);
+    // Aligned prices: no arbitrage in either direction.
+    expect((await h.optimalV2AmountTwoFee(rInA, rOutA, rOutA, rInA, 30n, 5n))[0]).to.equal(0n);
+  });
 });

@@ -5,8 +5,16 @@ name: CI
 # runs the component's documented "definition of done" from CLAUDE.md §5.
 #
 # The contracts job runs the deterministic offline suites by default; the live
-# Arbitrum mainnet-fork flash-loan tests run only when an ARBITRUM_RPC_URL secret
-# is configured (they self-skip otherwise), so CI is green with or without it.
+# mainnet-fork flash-loan tests run only when an RPC secret is configured (they
+# self-skip otherwise), so CI is green with or without one.
+#
+# Both fork toolchains are wired, deliberately:
+#   - the HARDHAT fork suites (test/fork/*.test.js) are the ones that actually
+#     execute today and are the repo's only end-to-end proof that the executor
+#     works against live Aave/Uniswap/Sushi/QuickSwap deployments;
+#   - the FOUNDRY mirror runs when `forge` is available.
+# Previously only the Foundry hook existed, so on any runner without a working
+# Foundry setup the live-execution proof had no coverage at all.
 
 on:
   push:
@@ -76,9 +84,10 @@ jobs:
     name: contracts (Solidity · Hardhat + Foundry)
     runs-on: ubuntu-latest
     env:
-      # Empty when the secret is unset; the fork step keys off this (secrets are
+      # Empty when the secret is unset; the fork steps key off these (secrets are
       # not available directly in a step `if`, but env is).
       ARBITRUM_RPC_URL: ${{ secrets.ARBITRUM_RPC_URL }}
+      POLYGON_RPC_URL: ${{ secrets.POLYGON_RPC_URL }}
     defaults:
       run:
         working-directory: contracts
@@ -96,6 +105,31 @@ jobs:
         run: npm run compile
       - name: Hardhat offline unit tests
         run: npm test
+      # The live-execution proof. These borrow from the real Aave V3 pool and
+      # swap through real DEX deployments at the fork's head block, so they are
+      # the only tests that exercise the contract against real infrastructure.
+      # They self-skip without an RPC, but gate the step anyway so a missing
+      # secret reads as "not run" rather than a silent pass.
+      - name: Hardhat Arbitrum mainnet-fork flash-loan suite (optional)
+        if: ${{ env.ARBITRUM_RPC_URL != '' }}
+        run: FORK_RPC_URL="$ARBITRUM_RPC_URL" npm run test:fork
+      - name: Hardhat Polygon mainnet-fork flash-loan suite (optional)
+        if: ${{ env.POLYGON_RPC_URL != '' }}
+        run: FORK_RPC_URL="$POLYGON_RPC_URL" npm run test:fork:polygon
+      # Two independently-forked chains in one run; needs both secrets.
+      - name: Hardhat cross-chain dual-fork suite (optional)
+        if: ${{ env.ARBITRUM_RPC_URL != '' && env.POLYGON_RPC_URL != '' }}
+        run: npm run test:fork:crosschain
+      # End-to-end operator path: one real flash loan on live state, profit
+      # routed to a named wallet. Nothing is broadcast (the script refuses any
+      # network but the in-process fork); the receiver is a burn-address
+      # placeholder so CI asserts routing without naming a real wallet.
+      - name: Live flash-loan execution against forked live state (optional)
+        if: ${{ env.ARBITRUM_RPC_URL != '' }}
+        run: |
+          FORK_RPC_URL="$ARBITRUM_RPC_URL" \
+          PROFIT_RECEIVER=0x000000000000000000000000000000000000dEaD \
+          npx hardhat run scripts/live_flash_loan_fork.js
       - name: Install Foundry
         # Pin the version: `forge fmt` output is version-sensitive and this tree
         # is formatted for Foundry 1.5.x. `stable` floats to newer releases whose

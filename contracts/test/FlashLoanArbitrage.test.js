@@ -161,6 +161,52 @@ describe("FlashLoanArbitrage (offline mechanics)", () => {
     expect(await f.usdc.balanceOf(f.arb.target)).to.equal(0n);
   });
 
+  // Companion to the test above, covering the LOG rather than the balances.
+  // Both assertions are needed: an earlier revision paid the signer correctly
+  // but emitted the raw `p.profitReceiver` (address(0)) in the event, so PnL
+  // attribution built on these logs — which is where this engine keeps its
+  // history, per the event's own docstring — credited 0x0 for every trade that
+  // used the connected-wallet default. The receiver field is `indexed`, so a
+  // topic filter for "arbitrage that paid me" matched nothing.
+  it("emits the EFFECTIVE profit receiver when profitReceiver=0, not the zero address", async () => {
+    const f = await deploy();
+    const amount = e(10000, 6n);
+    const params = {
+      ...twoHopParams(f, Provider.AAVE_V3, amount),
+      profitReceiver: ethers.ZeroAddress,
+    };
+
+    const tx = await f.arb.connect(f.bot).executeArbitrage(params);
+    const receipt = await tx.wait();
+    const event = receipt.logs
+      .filter((l) => l.address === f.arb.target)
+      .map((l) => f.arb.interface.parseLog(l))
+      .find((parsed) => parsed && parsed.name === "ArbitrageExecuted");
+
+    expect(event, "ArbitrageExecuted not emitted").to.not.equal(undefined);
+    expect(event.args.profitReceiver).to.equal(f.bot.address);
+    expect(event.args.profitReceiver).to.not.equal(ethers.ZeroAddress);
+    // And the logged profit matches what the signer actually received.
+    expect(event.args.profit).to.be.gt(0n);
+  });
+
+  // The explicit-receiver path must keep logging the address the caller named.
+  it("emits the explicit profit receiver unchanged when one is supplied", async () => {
+    const f = await deploy();
+    const params = twoHopParams(f, Provider.AAVE_V3, e(10000, 6n));
+    await expect(f.arb.connect(f.bot).executeArbitrage(params))
+      .to.emit(f.arb, "ArbitrageExecuted")
+      .withArgs(
+        f.usdc.target,
+        Provider.AAVE_V3,
+        f.receiver.address,
+        (v) => v > 0n,
+        (v) => v > 0n,
+        (v) => v > 0n,
+        2n
+      );
+  });
+
   it("executes a profitable 2-hop arb via Balancer V2 (0 fee)", async () => {
     const f = await deploy();
     const amount = e(10000, 6n);
@@ -509,5 +555,66 @@ describe("FlashLoanArbitrage (offline mechanics)", () => {
     // Perturbing the size by ±20% should not beat the quoted optimum.
     expect(pOpt).to.be.gte(profitAt((opt * 80n) / 100n));
     expect(pOpt).to.be.gte(profitAt((opt * 120n) / 100n));
+  });
+
+  // `quoteOptimalTwoHopV2` takes a fee for EACH pool and documents them as
+  // such, but an earlier revision forwarded only `feeBpsBuy` into the sizing
+  // math (the profit estimate already used both). Asymmetric pairs — a 0.30%
+  // V2 pool quoted against a 0.05% V3-style pool, the common real case — were
+  // therefore sized for a pair that doesn't exist. Uses real pools deployed at
+  // genuinely different fees so the quote path is exercised end to end.
+  it("quotes an asymmetric-fee pair using BOTH pools' fees", async () => {
+    const f = await deploy();
+    const FEE_SELL = 5n; // 0.05% sell pool vs the fixture's 0.30% buy pool
+
+    const Pool = await ethers.getContractFactory("MockUniV2");
+    const poolRichCheapFee = await Pool.deploy(f.usdc.target, f.weth.target, FEE_SELL);
+    await f.usdc.mint(poolRichCheapFee.target, e(220000, 6n));
+    await f.weth.mint(poolRichCheapFee.target, e(100));
+
+    const [opt] = await f.arb.quoteOptimalTwoHopV2(
+      f.poolCheap.target,
+      poolRichCheapFee.target,
+      f.usdc.target,
+      FEE_BPS,
+      FEE_SELL
+    );
+    expect(opt).to.be.gt(0n);
+
+    // Net-of-premium profit at a given size, charging each pool its own fee.
+    const profitAt = (amount) => {
+      const out1 = getAmountOut(amount, e(180000, 6n), e(100), FEE_BPS);
+      const generated = getAmountOut(out1, e(100), e(220000, 6n), FEE_SELL);
+      const owed = amount + (amount * AAVE_PREMIUM_BPS) / 10000n;
+      return generated - owed;
+    };
+
+    const pOpt = profitAt(opt);
+    expect(pOpt).to.be.gt(0n);
+    for (let pct = 60n; pct <= 140n; pct += 10n) {
+      if (pct === 100n) continue;
+      expect(pOpt).to.be.gte(profitAt((opt * pct) / 100n));
+    }
+
+    // And it must strictly beat the size the buy-fee-only quote would return.
+    const [buyFeeOnly] = await f.arb.quoteOptimalTwoHopV2(
+      f.poolCheap.target,
+      poolRichCheapFee.target,
+      f.usdc.target,
+      FEE_BPS,
+      FEE_BPS // the wrong sell fee the old sizing effectively assumed
+    );
+    expect(opt).to.not.equal(buyFeeOnly);
+    expect(pOpt).to.be.gt(profitAt(buyFeeOnly));
+
+    // Finally: the quoted size is genuinely executable against these pools.
+    const params = {
+      ...twoHopParams(f, Provider.AAVE_V3, opt),
+      steps: [
+        v2Step(f.poolCheap.target, f.usdc.target, f.weth.target),
+        v2Step(poolRichCheapFee.target, f.weth.target, f.usdc.target),
+      ],
+    };
+    await expect(f.arb.connect(f.bot).executeArbitrage(params)).to.emit(f.arb, "ArbitrageExecuted");
   });
 });
