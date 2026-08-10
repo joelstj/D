@@ -1,0 +1,41 @@
+# base pool registry — auto-discovered by scripts/discover_pools.py.
+# Factory 0x33128a8fC17869897dcE68Ed026d694621f6FDfD was fingerprinted on-chain before use (see the
+# module docstring); every entry below is re-proven on-chain again by the
+# startup validation gate (docs/ARCHITECTURE.md §7) before it enters the live
+# set. Curate freely — add, remove, or hand-edit entries.
+
+[[pool]]
+dex      = "uniswap_v3"
+kind     = "v3"
+address  = "0xb4cb800910b228ed3d0834cf79d697127bbb00e5"
+fee_pips = 100
+token0   = "0x4200000000000000000000000000000000000006"
+token1   = "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913"
+factory  = "0x33128a8fC17869897dcE68Ed026d694621f6FDfD"
+
+[[pool]]
+dex      = "uniswap_v3"
+kind     = "v3"
+address  = "0xd0b53d9277642d899df5c87a3966a349a798f224"
+fee_pips = 500
+token0   = "0x4200000000000000000000000000000000000006"
+token1   = "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913"
+factory  = "0x33128a8fC17869897dcE68Ed026d694621f6FDfD"
+
+[[pool]]
+dex      = "uniswap_v3"
+kind     = "v3"
+address  = "0x6c561b446416e1a00e8e93e221854d6ea4171372"
+fee_pips = 3000
+token0   = "0x4200000000000000000000000000000000000006"
+token1   = "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913"
+factory  = "0x33128a8fC17869897dcE68Ed026d694621f6FDfD"
+
+[[pool]]
+dex      = "uniswap_v3"
+kind     = "v3"
+address  = "0x0b1c2dcbbfa744ebd3fc17ff1a96a1e1eb4b2d69"
+fee_pips = 10000
+token0   = "0x4200000000000000000000000000000000000006"
+token1   = "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913"
+factory  = "0x33128a8fC17869897dcE68Ed026d694621f6FDfD"

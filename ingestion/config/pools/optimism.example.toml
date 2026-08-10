@@ -1,0 +1,41 @@
+# optimism pool registry — auto-discovered by scripts/discover_pools.py.
+# Factory 0x1F98431c8aD98523631AE4a59f267346ea31F984 was fingerprinted on-chain before use (see the
+# module docstring); every entry below is re-proven on-chain again by the
+# startup validation gate (docs/ARCHITECTURE.md §7) before it enters the live
+# set. Curate freely — add, remove, or hand-edit entries.
+
+[[pool]]
+dex      = "uniswap_v3"
+kind     = "v3"
+address  = "0xeb0d8d9e19b749efb20c67d71ee50b46dfe5755f"
+fee_pips = 100
+token0   = "0x0b2c639c533813f4aa9d7837caf62653d097ff85"
+token1   = "0x4200000000000000000000000000000000000006"
+factory  = "0x1F98431c8aD98523631AE4a59f267346ea31F984"
+
+[[pool]]
+dex      = "uniswap_v3"
+kind     = "v3"
+address  = "0x1fb3cf6e48f1e7b10213e7b6d87d4c073c7fdb7b"
+fee_pips = 500
+token0   = "0x0b2c639c533813f4aa9d7837caf62653d097ff85"
+token1   = "0x4200000000000000000000000000000000000006"
+factory  = "0x1F98431c8aD98523631AE4a59f267346ea31F984"
+
+[[pool]]
+dex      = "uniswap_v3"
+kind     = "v3"
+address  = "0xc1738d90e2e26c35784a0d3e3d8a9f795074bca4"
+fee_pips = 3000
+token0   = "0x0b2c639c533813f4aa9d7837caf62653d097ff85"
+token1   = "0x4200000000000000000000000000000000000006"
+factory  = "0x1F98431c8aD98523631AE4a59f267346ea31F984"
+
+[[pool]]
+dex      = "uniswap_v3"
+kind     = "v3"
+address  = "0xd4cb5566b5c16ef2f4a08b1438052013171212a2"
+fee_pips = 10000
+token0   = "0x0b2c639c533813f4aa9d7837caf62653d097ff85"
+token1   = "0x4200000000000000000000000000000000000006"
+factory  = "0x1F98431c8aD98523631AE4a59f267346ea31F984"
