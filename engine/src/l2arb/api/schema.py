@@ -71,9 +71,13 @@ class BridgeSpec(BaseModel):
     symbol: str
     from_chain: int
     to_chain: int
-    fee_bps: float = 0.0
-    fixed_fee: int = 0
-    settle_seconds: int = 0
+    # Non-negative: a negative fee would make the bridge "pay" the trader (see
+    # BridgeQuote's own __post_init__ guard in detect/cross_chain.py) — reject a
+    # malformed quote here too so the request fails loud at the API boundary
+    # rather than 500ing deeper inside BridgeQuote construction.
+    fee_bps: float = Field(default=0.0, ge=0)
+    fixed_fee: int = Field(default=0, ge=0)
+    settle_seconds: int = Field(default=0, ge=0)
 
 
 class CrossChainConfig(BaseModel):
