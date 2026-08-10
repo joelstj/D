@@ -92,6 +92,17 @@ export interface ReadinessResult {
   premiumBps: number | null;
   /** Cross-chain executor bytecode present (when a cross-chain address is on record). */
   crossChainHasCode: boolean | null;
+  /**
+   * Live `paused()` staticCall on the atomic executor — the operator-facing
+   * kill-switch state (root `CLAUDE.md` §12 finding O2). `null` when there is
+   * no code to read (not deployed / probe unavailable) or the view reverted;
+   * never guessed at or defaulted to `false`, since "not paused" is a safety
+   * claim that must be genuinely read, not assumed.
+   */
+  paused: boolean | null;
+  /** Same as {@link paused}, for the cross-chain executor — `null` whenever
+   *  {@link crossChainHasCode} isn't `true` (nothing deployed to read). */
+  crossChainPaused: boolean | null;
   healthy: boolean;
   error: string | null;
 }
@@ -105,6 +116,10 @@ export interface ChainProbe {
   getCodeSize(chainKey: string, address: string): Promise<number>;
   /** `staticCall` of `aavePremiumBps()`; rejects if the address isn't an executor. */
   premiumBps(chainKey: string, address: string): Promise<number>;
+  /** `staticCall` of `paused()` (OpenZeppelin `Pausable`); rejects if the ABI
+   *  doesn't match. Shared by both `FlashLoanArbitrage` and
+   *  `CrossChainArbitrageExecutor` — same inherited function. */
+  paused(chainKey: string, address: string): Promise<boolean>;
 }
 
 export interface ContractServiceOptions {
@@ -408,8 +423,10 @@ export class ContractService {
 
   /**
    * Read-only deployment stress test: for every chain with a recorded deployment,
-   * confirm bytecode is actually present and `aavePremiumBps()` staticCalls
-   * cleanly. Pure observability — no signer, no broadcast (invariant 3).
+   * confirm bytecode is actually present, `aavePremiumBps()` staticCalls
+   * cleanly, and read the live `paused()` kill-switch state for both contracts
+   * (root `CLAUDE.md` §12 finding O2 — the operator-facing pause indicator).
+   * Pure observability — no signer, no broadcast (invariant 3).
    */
   async runReadiness(): Promise<{ results: ReadinessResult[]; probed: boolean }> {
     const probe = this.chainProbe;
@@ -427,6 +444,8 @@ export class ContractService {
         hasCode: false,
         premiumBps: null,
         crossChainHasCode: dep.crossChainAddress ? false : null,
+        paused: null,
+        crossChainPaused: null,
         healthy: false,
         error: null,
       };
@@ -438,6 +457,7 @@ export class ContractService {
         const size = await probe.getCodeSize(n.key, dep.address);
         const hasCode = size > 0;
         let premiumBps: number | null = null;
+        let paused: boolean | null = null;
         if (hasCode) {
           try {
             premiumBps = await probe.premiumBps(n.key, dep.address);
@@ -446,16 +466,34 @@ export class ContractService {
             premiumBps = null;
             base.error = `aavePremiumBps() reverted: ${String(err)}`;
           }
+          try {
+            paused = await probe.paused(n.key, dep.address);
+          } catch (err) {
+            // Same discipline as premiumBps above: never guess "not paused" —
+            // an unreadable pause state must surface as unknown, not false.
+            paused = null;
+            base.error = base.error ?? `paused() reverted: ${String(err)}`;
+          }
         }
         let crossChainHasCode: boolean | null = null;
+        let crossChainPaused: boolean | null = null;
         if (dep.crossChainAddress) {
           crossChainHasCode = (await probe.getCodeSize(n.key, dep.crossChainAddress)) > 0;
+          if (crossChainHasCode) {
+            try {
+              crossChainPaused = await probe.paused(n.key, dep.crossChainAddress);
+            } catch {
+              crossChainPaused = null;
+            }
+          }
         }
         results.push({
           ...base,
           hasCode,
           premiumBps,
           crossChainHasCode,
+          paused,
+          crossChainPaused,
           healthy: hasCode && (premiumBps !== null),
           error: base.error,
         });

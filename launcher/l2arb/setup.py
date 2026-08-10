@@ -92,7 +92,15 @@ def _toml_str(value: str) -> str:
     Windows absolute path (``C:\\Users\\...\\arbitrum.toml``) is not read as a run
     of invalid TOML escape sequences (``\\U``, ``\\A``, ...) that make the entire
     generated ``config.toml`` unparseable — silently breaking the live path on the
-    flagship ``.exe`` distribution."""
+    flagship ``.exe`` distribution.
+
+    Every field built from *unvalidated user input* — not just the pool registry
+    path — must go through this, not an f-string. ``ws_url``/``http_url`` are
+    pasted by the operator (from a provider dashboard, a script, or a shell
+    history) and can just as easily carry a stray ``"`` or ``\\`` (e.g. a
+    copy-paste that grabbed surrounding quotes); left raw, that one character
+    corrupts the whole generated ``config.toml`` in exactly the same way an
+    unescaped Windows path used to."""
     escaped = value.replace("\\", "\\\\").replace('"', '\\"')
     return f'"{escaped}"'
 
@@ -152,8 +160,8 @@ name          = "arbitrum"
 chain_id      = 42161
 enabled       = true
 # Your RPC endpoints. Comma-separate a primary + backup(s) for auto-failover.
-ws_url        = "{ws_url}"
-http_url      = "{http_url}"
+ws_url        = {_toml_str(ws_url)}
+http_url      = {_toml_str(http_url)}
 block_time_ms = 250
 gas_model     = "arbitrum"
 min_profit_bps        = 5.0

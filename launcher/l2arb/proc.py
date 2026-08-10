@@ -66,8 +66,21 @@ def run(cmd: list[str], cwd: Path | None = None, env: dict | None = None, prefix
         console.err(f"{tag}failed to start: {exc}")
         return 127
     assert proc.stdout is not None
-    for line in proc.stdout:
-        sys.stdout.write(f"{tag}{line}")
+    try:
+        for line in proc.stdout:
+            sys.stdout.write(f"{tag}{line}")
+    finally:
+        # Deterministic close instead of leaving it to GC: `Popen(stdout=PIPE)`
+        # hands back a real TextIOWrapper the caller owns and is expected to
+        # close. Left implicit, cpython's refcounting GC does eventually close
+        # it (this was not a real fd pileup), but it fires a ResourceWarning
+        # and leaves cleanup to GC timing rather than this function's own
+        # control flow — including on the exception path (e.g. Ctrl-C while a
+        # `pnpm install`/`cargo build` is streaming output), where nothing
+        # previously closed it at all. Closing here is safe on every path: the
+        # happy path already reads the pipe to EOF first, so there is nothing
+        # left unread.
+        proc.stdout.close()
     return proc.wait()
 
 

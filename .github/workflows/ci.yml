@@ -130,6 +130,15 @@ jobs:
           FORK_RPC_URL="$ARBITRUM_RPC_URL" \
           PROFIT_RECEIVER=0x000000000000000000000000000000000000dEaD \
           npx hardhat run scripts/live_flash_loan_fork.js
+      # Same operator path as above, for the two-leg cross-chain executor:
+      # Polygon source leg -> (simulated bridge) -> Arbitrum destination leg,
+      # swept to a named wallet. Needs both secrets (two independently-forked
+      # chains in one run, matching the dual-fork suite above).
+      - name: Live cross-chain execution against forked live state (optional)
+        if: ${{ env.ARBITRUM_RPC_URL != '' && env.POLYGON_RPC_URL != '' }}
+        run: |
+          PROFIT_RECEIVER=0x000000000000000000000000000000000000dEaD \
+          npx hardhat run scripts/live_cross_chain_fork.js
       - name: Install Foundry
         # Pin the version: `forge fmt` output is version-sensitive and this tree
         # is formatted for Foundry 1.5.x. `stable` floats to newer releases whose

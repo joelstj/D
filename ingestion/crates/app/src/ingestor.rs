@@ -27,7 +27,7 @@ use l2i_v4::event::{
 };
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio::sync::watch;
 
 /// Extra blocks below a detected reorg's reported common ancestor to invalidate.
@@ -40,6 +40,50 @@ const REORG_SAFETY_DEPTH: u64 = 2;
 /// Verified pools reconciled per reconcile tick (a rotating window, to spread the
 /// independent `eth_call` load rather than re-reading everything at once).
 const RECONCILE_BATCH: usize = 16;
+
+/// How often the liveness watchdog checks for a stalled `heads` subscription.
+const WATCHDOG_TICK: Duration = Duration::from_secs(5);
+
+/// Floor under [`stale_after`]'s multiplier, so a fast chain (e.g. Arbitrum's
+/// ~250ms blocks) isn't declared stalled after a few seconds of ordinary jitter.
+const STALE_HEAD_FLOOR: Duration = Duration::from_secs(30);
+
+/// How many block periods of complete silence on `heads` (zero new blocks, not
+/// just zero trading activity) before treating the subscription as stalled
+/// rather than healthy-but-quiet.
+const STALE_HEAD_MULTIPLIER: u32 = 20;
+
+/// How long a chain's `heads` subscription may go without a new block before its
+/// silence is treated as a stall rather than a healthy quiet period — the
+/// liveness watchdog for the CRITICAL, previously-recorded gap: an upstream
+/// node's WS can go quiet **without ever erroring** (distinct from a clean
+/// disconnect/dropped-stream, which the loop already handles), so the old
+/// `select!` had no branch that could ever notice — nothing timed out, the
+/// supervisor never saw an `Err`, and `mark_all_unverified()`/reconnect never
+/// fired. A silently-stalled subscription then left the mirror `verified:true`
+/// forever, unbounded, violating the `verified` honesty invariant.
+///
+/// Deliberately gated on **`heads` alone**, not `logs`: every configured chain
+/// produces a new block on a roughly fixed cadence regardless of trading
+/// activity, so "no head for a long time" is a reliable staleness signal. Logs
+/// are event-driven and can be legitimately silent for a long time on a quiet
+/// pool — gating on log silence too would false-positive on a perfectly healthy,
+/// just-quiet chain.
+///
+/// A pure function so the threshold logic is unit-testable without a live
+/// socket. Chosen to be conservative by design: the two failure directions are
+/// not symmetric. A false positive costs one extra reconnect, which
+/// self-heals via the supervisor's existing, already-tested backoff/reseed
+/// path (`pipeline.rs::supervise_chain`) — a bounded, cheap, self-correcting
+/// cost. A false negative (threshold too loose) leaves the exact unbounded
+/// staleness this function exists to close. `block_time_ms` is a per-chain
+/// config hint, not a guarantee (`config/config.example.toml`), so it is
+/// clamped before use — the same clamp `context_refresh_loop`'s period already
+/// applies.
+fn stale_after(block_time_ms: u64) -> Duration {
+    STALE_HEAD_FLOOR
+        .max(Duration::from_millis(block_time_ms.clamp(200, 10_000)) * STALE_HEAD_MULTIPLIER)
+}
 
 /// A spawned task that is aborted when this guard drops — ties a background worker's
 /// lifetime to the connection that spawned it (so a reconnect doesn't leak the old
@@ -79,8 +123,10 @@ pub struct ChainIngestor<P: ChainProvider> {
 
 impl<P: ChainProvider + 'static> ChainIngestor<P> {
     /// Run the live loop until `shutdown` fires. Returns `Err` on a fatal transport
-    /// failure **or when a subscription stream ends** (a dropped WS), so the
-    /// supervisor can mark the chain unverified and reconnect with backoff.
+    /// failure, **when a subscription stream ends** (a dropped WS), or **when
+    /// `heads` has gone silent for too long** (a stalled-but-not-errored WS — see
+    /// [`stale_after`]), so the supervisor can mark the chain unverified and
+    /// reconnect with backoff.
     pub async fn run(&self, mut shutdown: watch::Receiver<bool>) -> l2i_rpc::Result<()> {
         let mut reorg = ReorgTracker::new(64);
         let mut heads = self.provider.subscribe_heads().await?;
@@ -110,6 +156,15 @@ impl<P: ChainProvider + 'static> ChainIngestor<P> {
 
         tracing::info!(chain_id = self.chain_id, "ingestor live");
 
+        // Liveness watchdog (see `stale_after`): the clock starts now, right as
+        // the subscription is freshly established, so a WS that connects but
+        // never pushes a single head is caught too, not just one that goes
+        // quiet mid-session.
+        let stale_after = stale_after(self.cfg.block_time_ms);
+        let mut last_head_at = Instant::now();
+        let mut watchdog = tokio::time::interval(WATCHDOG_TICK);
+        watchdog.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+
         use futures::StreamExt;
         loop {
             tokio::select! {
@@ -127,6 +182,7 @@ impl<P: ChainProvider + 'static> ChainIngestor<P> {
                     let Some(head) = head else {
                         return Err(RpcError::Transport("newHeads subscription ended".into()));
                     };
+                    last_head_at = Instant::now();
                     self.on_head(&mut reorg, head);
                 }
                 log = logs.next() => {
@@ -134,6 +190,24 @@ impl<P: ChainProvider + 'static> ChainIngestor<P> {
                         return Err(RpcError::Transport("logs subscription ended".into()));
                     };
                     apply_log(self.chain_id, &self.mirror, &self.v4_declared_fees, &log);
+                }
+                _ = watchdog.tick() => {
+                    let idle = last_head_at.elapsed();
+                    if idle > stale_after {
+                        // The socket never errored — it just went quiet. Nothing
+                        // else in this loop would ever notice on its own, so this
+                        // is the only path that can end the silence: return `Err`
+                        // to reuse the exact same, already-tested recovery the
+                        // "stream ended" branches above use (the supervisor marks
+                        // the mirror unverified and reconnects with backoff).
+                        tracing::warn!(
+                            chain_id = self.chain_id,
+                            idle_secs = idle.as_secs(),
+                            stale_after_secs = stale_after.as_secs(),
+                            "no new head for too long — treating WS as stalled"
+                        );
+                        return Err(RpcError::Timeout(idle));
+                    }
                 }
             }
         }
@@ -597,6 +671,60 @@ mod apply_log_tests {
                 assert_eq!(reserve1, U256::from(222u64));
             }
             LiveState::V3 { .. } => panic!("expected V2 state"),
+        }
+    }
+}
+
+#[cfg(test)]
+mod watchdog_tests {
+    use super::*;
+
+    // Regression coverage for the CRITICAL finding: a chain's WS `heads`
+    // subscription could go silent without ever erroring, and nothing in the
+    // old `select!` loop could ever notice — no timer branch existed at all,
+    // so the supervisor's reconnect/mark-unverified path never fired.
+    // `stale_after` is the pure threshold decision this watchdog runs on;
+    // exercised here without a live socket.
+
+    #[test]
+    fn fast_chain_is_governed_by_the_floor_not_the_multiplier() {
+        // Arbitrum-like: 250ms blocks. 20x that is only 5s — far too
+        // aggressive for real-world jitter — so the 30s floor must dominate.
+        assert_eq!(stale_after(250), STALE_HEAD_FLOOR);
+    }
+
+    #[test]
+    fn slower_chain_scales_with_the_multiplier_above_the_floor() {
+        // OP-Stack-like: 2000ms blocks. 20x = 40s, above the 30s floor.
+        assert_eq!(stale_after(2_000), Duration::from_secs(40));
+    }
+
+    #[test]
+    fn boundary_block_time_lands_exactly_on_the_floor() {
+        // 1500ms * 20 = 30_000ms, exactly the floor — proves `.max` doesn't
+        // accidentally pick the smaller side at the crossover.
+        assert_eq!(stale_after(1_500), STALE_HEAD_FLOOR);
+    }
+
+    #[test]
+    fn extreme_config_is_clamped_before_use() {
+        // Mirrors the same clamp `context_refresh_loop`'s block period
+        // already applies, so a misconfigured 0 or a huge value can't produce
+        // a nonsensical (too-tight or too-loose) threshold.
+        assert_eq!(stale_after(0), STALE_HEAD_FLOOR); // clamped up to 200ms -> floor wins
+        assert_eq!(
+            stale_after(1_000_000),
+            Duration::from_millis(10_000) * STALE_HEAD_MULTIPLIER, // clamped down to 10s
+        );
+    }
+
+    #[test]
+    fn threshold_is_never_shorter_than_the_floor_across_realistic_configs() {
+        // No real `block_time_ms` in `config/config.example.toml` (250, 1000,
+        // 2000) can ever produce a threshold an operator would consider
+        // trigger-happy.
+        for block_time_ms in [250, 1_000, 2_000] {
+            assert!(stale_after(block_time_ms) >= STALE_HEAD_FLOOR);
         }
     }
 }

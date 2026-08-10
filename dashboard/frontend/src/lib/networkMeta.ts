@@ -6,6 +6,8 @@ export const NETWORK_COLORS: Record<string, string> = {
   arbitrum: "var(--color-net-arbitrum)",
   optimism: "var(--color-net-optimism)",
   polygon: "var(--color-net-polygon)",
+  unichain: "var(--color-net-unichain)",
+  ink: "var(--color-net-ink)",
 };
 
 export function networkColor(key: string): string {

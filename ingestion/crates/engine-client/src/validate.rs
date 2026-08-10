@@ -488,4 +488,153 @@ mod tests {
             "only the legitimately-verified opportunity survives"
         );
     }
+
+    /// A genuinely cross-chain, two-leg opportunity: leg 0's pool lives on the
+    /// source chain, leg 1's on the destination chain. Every prior test in this
+    /// file uses `is_cross_chain: false` with a single leg — this exercises the
+    /// shape `docs/notes-cross-chain-flash-loan-gaps.md` (ingestion §) actually
+    /// cares about: does per-leg, chain-scoped verification (the fix for I2)
+    /// generalize to a real multi-chain route, or was it only ever proven
+    /// against two *separate* single-chain opportunities colliding on address?
+    fn cross_chain_opp(
+        src_chain: u64,
+        src_pool: u8,
+        dst_chain: u64,
+        dst_pool: u8,
+        net_profit: u64,
+        src_block: (u64, B256),
+    ) -> Opportunity {
+        let src_token = |b: u8| Token::with_symbol(src_chain, Address::from([b; 20]), 18, "A");
+        let dst_token = |b: u8| Token::with_symbol(dst_chain, Address::from([b; 20]), 18, "B");
+        Opportunity {
+            strategy: "cross_chain_two_hop".into(),
+            numeraire: src_token(1),
+            input_amount: DecU256(U256::from(100u64)),
+            output_amount: DecU256(U256::from(110u64)),
+            gross_profit: DecU256(U256::from(net_profit + 5)),
+            gas_cost: DecU256(U256::from(3u64)),
+            bridge_cost: DecU256(U256::from(2u64)),
+            net_profit: DecU256(U256::from(net_profit)),
+            profit_bps: 10.0,
+            expected_net: DecU256(U256::from(net_profit)),
+            score: 1.0,
+            hops: 2,
+            chain_ids: vec![src_chain, dst_chain],
+            is_cross_chain: true,
+            settle_seconds: 600,
+            verified: true,
+            block: Block {
+                chain_id: src_chain,
+                number: src_block.0,
+                hash: src_block.1,
+                timestamp: src_block.0,
+            },
+            risk: Risk {
+                success_probability: 0.7,
+                capture_ratio: 0.6,
+                frontrun_risk: 0.1,
+                notes: vec![],
+            },
+            legs: vec![
+                Leg {
+                    pool: PoolAddress::Contract(Address::from([src_pool; 20])),
+                    token_in: src_token(1),
+                    token_out: src_token(2),
+                    amount_in: DecU256(U256::from(100u64)),
+                    amount_out: DecU256(U256::from(105u64)),
+                },
+                Leg {
+                    pool: PoolAddress::Contract(Address::from([dst_pool; 20])),
+                    token_in: dst_token(1),
+                    token_out: dst_token(2),
+                    amount_in: DecU256(U256::from(105u64)),
+                    amount_out: DecU256(U256::from(110u64)),
+                },
+            ],
+        }
+    }
+
+    #[test]
+    fn cross_chain_two_leg_opportunity_survives_when_both_legs_are_verified_on_their_own_chain() {
+        let src_hash = B256::from([7; 32]);
+        let dst_hash = B256::from([8; 32]);
+        let req = DetectRequest {
+            top_n: 10,
+            max_hops: 4,
+            incremental: false,
+            chains: vec![],
+            pools: vec![
+                pool_on_chain(8453, 0xAA, 500, src_hash, true), // source leg, verified
+                pool_on_chain(10, 0xBB, 900, dst_hash, true),   // dest leg, verified
+            ],
+            cross_chain: None,
+        };
+        let opp = cross_chain_opp(8453, 0xAA, 10, 0xBB, 42, (500, src_hash));
+        let resp = DetectResponse {
+            count: 1,
+            opportunities: vec![opp.clone()],
+            timing: None,
+        };
+
+        let issues = validate_response(&req, &resp);
+        assert!(
+            issues.is_empty(),
+            "both legs verified on their own chain: {issues:?}"
+        );
+        let (clean, _) = retain_valid(&req, &resp);
+        assert_eq!(clean.opportunities, vec![opp]);
+    }
+
+    #[test]
+    fn cross_chain_opportunity_is_dropped_whole_when_only_the_destination_leg_is_unverified() {
+        // The source leg's pool IS verified (and, to prove the check is truly
+        // per-leg and not just "was anything in this request verified", a
+        // same-address pool is ALSO verified — but on a third, unrelated
+        // chain, so it must not leak into the destination chain's check any
+        // more than I2's single-leg regression proved for same-chain opps).
+        // A real detector bug here — e.g. validating a cross-chain opp's legs
+        // against a single collapsed "any chain" set instead of per-leg — is
+        // exactly the "silently starved of data" shape this session's audit
+        // brief calls out: it would either wrongly drop legitimate cross-chain
+        // opportunities or, worse, wrongly admit ones whose destination leg was
+        // never actually verified.
+        let src_hash = B256::from([7; 32]);
+        let unrelated_hash = B256::from([9; 32]);
+        let req = DetectRequest {
+            top_n: 10,
+            max_hops: 4,
+            incremental: false,
+            chains: vec![],
+            pools: vec![
+                pool_on_chain(8453, 0xAA, 500, src_hash, true), // source leg, verified
+                pool_on_chain(10, 0xBB, 900, B256::from([8; 32]), false), // dest leg, NOT verified
+                pool_on_chain(42161, 0xBB, 300, unrelated_hash, true), // same addr as dest leg, different chain, verified
+            ],
+            cross_chain: None,
+        };
+        let opp = cross_chain_opp(8453, 0xAA, 10, 0xBB, 42, (500, src_hash));
+        let resp = DetectResponse {
+            count: 1,
+            opportunities: vec![opp],
+            timing: None,
+        };
+
+        let issues = validate_response(&req, &resp);
+        assert_eq!(
+            issues,
+            vec![ResponseIssue::LegPoolNotVerified {
+                index: 0,
+                pool: PoolAddress::Contract(Address::from([0xBB; 20])),
+            }],
+            "destination leg must be checked against its OWN chain's verified set: {issues:?}"
+        );
+
+        // retain_valid must drop the WHOLE opportunity — not forward it with
+        // its unverified destination leg intact.
+        let (clean, _) = retain_valid(&req, &resp);
+        assert!(
+            clean.opportunities.is_empty(),
+            "a cross-chain opportunity with one unverified leg must not be forwarded at all"
+        );
+    }
 }

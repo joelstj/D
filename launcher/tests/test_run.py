@@ -8,6 +8,7 @@ engine/ingestion/dashboard process holding its port for the next `l2arb run`.
 
 from __future__ import annotations
 
+import signal
 import sys
 import unittest
 from pathlib import Path
@@ -145,6 +146,42 @@ class RunServiceCleanupTest(unittest.TestCase):
         engine = next(s for s in FakeService.instances if s.name == "engine")
         self.assertTrue(engine.started)
         self.assertTrue(engine.stopped, "Ctrl-C mid-startup must not orphan the engine process")
+
+
+class SigtermHandlerTest(unittest.TestCase):
+    """`kill`/`docker stop` send SIGTERM, not SIGINT — Python installs a raising
+    handler for SIGINT by default but leaves SIGTERM at the OS default (immediate
+    terminate), which would skip run()'s cleanup entirely and orphan the child
+    services (they live in their own process group and don't get the launcher's
+    SIGTERM). `_install_sigterm_handler` closes that gap by routing SIGTERM
+    through the same graceful KeyboardInterrupt path as Ctrl-C. Previously
+    unexercised by any test (only reachable via an actual signal delivery) —
+    covered directly here so a future refactor can't silently drop it.
+    """
+
+    def setUp(self):
+        # A process signal handler is global state; always restore whatever was
+        # registered before this test touched it, pass or fail.
+        self._original = signal.getsignal(signal.SIGTERM)
+        self.addCleanup(signal.signal, signal.SIGTERM, self._original)
+
+    def test_on_sigterm_raises_keyboard_interrupt(self):
+        with self.assertRaises(KeyboardInterrupt):
+            run_mod._on_sigterm(signal.SIGTERM, None)
+
+    def test_install_wires_sigterm_to_on_sigterm(self):
+        run_mod._install_sigterm_handler()
+        self.assertIs(signal.getsignal(signal.SIGTERM), run_mod._on_sigterm)
+
+    def test_a_delivered_sigterm_is_caught_as_keyboard_interrupt(self):
+        # End-to-end within this process: install the handler, then actually
+        # raise SIGTERM against ourselves and confirm it surfaces as the same
+        # KeyboardInterrupt run()'s cleanup already knows how to handle.
+        import os
+
+        run_mod._install_sigterm_handler()
+        with self.assertRaises(KeyboardInterrupt):
+            os.kill(os.getpid(), signal.SIGTERM)
 
 
 if __name__ == "__main__":

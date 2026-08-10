@@ -93,7 +93,7 @@ npm install
 # 2. Compile (downloads solc 0.8.20 on first run)
 npm run compile
 
-# 3. Offline unit tests (no RPC needed) — 66 tests
+# 3. Offline unit tests (no RPC needed) — 73 tests
 npm test
 
 # 4. Live mainnet-fork tests against real contracts
@@ -111,6 +111,14 @@ ARBITRUM_RPC_URL=https://arb1.arbitrum.io/rpc \
 FORK_RPC_URL=https://arb1.arbitrum.io/rpc \
 PROFIT_RECEIVER=0xYourMetaMaskAddress \
   npx hardhat run scripts/live_flash_loan_fork.js
+
+# 7. Execute ONE real two-leg CROSS-CHAIN arbitrage on live state (both
+#    chains), sweeping the settled value to a wallet you name. Same broadcast
+#    guard as above, doubled: refuses every real network on both legs.
+POLYGON_RPC_URL=https://polygon.gateway.tenderly.co \
+ARBITRUM_RPC_URL=https://arb1.arbitrum.io/rpc \
+PROFIT_RECEIVER=0xYourMetaMaskAddress \
+  npx hardhat run scripts/live_cross_chain_fork.js
 ```
 
 `scripts/live_flash_loan_fork.js` is the end-to-end operator proof: it deploys
@@ -122,10 +130,22 @@ the executor retained nothing. Recent runs: **1621.94 WMATIC** profit on a
 3442.05 WMATIC loan (Polygon) and **0.0489 WETH** on a 0.0396 WETH loan
 (Arbitrum).
 
-Like the fork suites, it manufactures the dislocation it captures. It proves
-the pipeline is operational and pays the right wallet — **not** that this
-profit is sitting on mainnet. Real execution stays a human-signed MetaMask
-action.
+`scripts/live_cross_chain_fork.js` is the same proof for the non-atomic,
+two-transaction cross-chain model (see "How the four modes map to one
+contract" below): it buys the target asset on a real, momentarily-dislocated
+Polygon pool, bridges it (simulated — no real `IBridgeAdapter` exists yet, see
+`docs/notes-cross-chain-flash-loan-gaps.md` finding C1), sells it at
+Arbitrum's real, untouched price, and sweeps the settled numeraire to the
+named wallet via the guardian-gated rescue path. A recent run bought WETH with
+3790.54 USDC.e on the dislocated Polygon pool and delivered 4074.86 USDC.e
+from the Arbitrum sale — **net +284.32 USDC.e**, with the report explicitly
+quantifying how much of that is attributable to the manufactured dislocation
+versus an undisturbed pool.
+
+Like the fork suites, both scripts manufacture the dislocation they capture.
+They prove the pipeline is operational and pays the right wallet — **not**
+that this profit is sitting on mainnet. Real execution stays a human-signed
+MetaMask action.
 
 > A handful of free public RPCs (e.g. `polygon-rpc.com`) rate-limit or block
 > the bulk archival-style calls a mainnet fork makes. If a fork test fails
@@ -271,13 +291,15 @@ contracts/
   interfaces/                     # Aave, Balancer, DEX, bridge interfaces
   mocks/                          # test doubles (offline suite; incl. MockUniV3Router, DexRouterHarness)
 test/
-  *.test.js                       # offline Hardhat suites (48 tests)
+  *.test.js                       # offline Hardhat suites (73 tests)
   fork/ArbitrumFork.test.js       # live Arbitrum mainnet-fork suite (4 tests)
   fork/PolygonFork.test.js        # live Polygon mainnet-fork suite (5 tests)
   fork/CrossChainDualFork.test.js # live dual-fork cross-chain execution proof (1 test)
   foundry/*.t.sol                 # Foundry mirrors of the fork suites (written; see docs/DEPLOYMENT.md)
 script/Deploy.s.sol               # Foundry deploy script (FlashLoanArbitrage + CrossChainArbitrageExecutor)
 scripts/deploy.js                 # Hardhat deploy script (same two contracts)
+scripts/live_flash_loan_fork.js       # live same-chain execution proof, pays a named wallet
+scripts/live_cross_chain_fork.js      # live two-leg cross-chain execution proof, pays a named wallet
 config/addresses.js               # per-chain address book (VERIFY before use)
 addresses/addresses.json          # same, language-agnostic
 integration/

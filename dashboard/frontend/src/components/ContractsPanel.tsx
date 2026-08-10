@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { useAccount, useDeployContract, useSwitchChain } from "wagmi";
+import { useAccount, useDeployContract, useSwitchChain, useWriteContract } from "wagmi";
 import { waitForTransactionReceipt } from "wagmi/actions";
 import type { Abi } from "viem";
 import {
@@ -10,6 +10,8 @@ import {
   Hammer,
   Link2,
   Loader2,
+  Pause,
+  Play,
   Rocket,
   ShieldCheck,
 } from "lucide-react";
@@ -41,7 +43,7 @@ export interface ContractsPanelViewProps {
   loading: boolean;
   error: string | null;
   wallet: { address?: string; chainKey?: string; connected: boolean };
-  busy: { compiling: boolean; deploying: string | null; readiness: boolean };
+  busy: { compiling: boolean; deploying: string | null; readiness: boolean; pausing: string | null };
   readiness: ReadinessResult[] | null;
   notice: { kind: "ok" | "err"; text: string } | null;
   onCompile: () => void;
@@ -49,6 +51,18 @@ export interface ContractsPanelViewProps {
   /** Deploy `CrossChainArbitrageExecutor` on `network` (D4). */
   onDeployCrossChain: (network: NetworkContractStatus) => void;
   onRunReadiness: () => void;
+  /**
+   * Pause or unpause the kill switch on `target`'s executor for `r.network`
+   * (root `CLAUDE.md` §12 finding O2). Same MetaMask-signed pattern as
+   * deploy: the backend never signs, it only re-probes the resulting public
+   * state on the next readiness sweep.
+   */
+  onPauseToggle: (r: ReadinessResult, target: "atomic" | "crosschain", pause: boolean) => void;
+}
+
+/** `busy.pausing` sentinel key for one network+contract's pause/unpause action. */
+function pauseBusyKey(network: string, target: "atomic" | "crosschain"): string {
+  return `${network}:pause:${target}`;
 }
 
 /** `busy.deploying` sentinel for the cross-chain deploy action on a network,
@@ -195,6 +209,18 @@ export function ContractsPanelView(props: ContractsPanelViewProps) {
                         </span>
                       )}
                     </div>
+                    {/* Kill switch (O2): only offered once we've actually read
+                        bytecode at the address, so there's a real contract to
+                        pause/unpause and a real paused() value was attempted. */}
+                    {r.hasCode && (
+                      <PauseControl
+                        paused={r.paused}
+                        busy={props.busy.pausing === pauseBusyKey(r.network, "atomic")}
+                        disabled={!props.wallet.connected}
+                        onPause={() => props.onPauseToggle(r, "atomic", true)}
+                        onUnpause={() => props.onPauseToggle(r, "atomic", false)}
+                      />
+                    )}
                     {/* Cross-chain executor readiness — plumbed by the backend
                         (ReadinessResult.crossChainHasCode) but previously never
                         rendered anywhere (D4). Only shown once a cross-chain
@@ -215,8 +241,24 @@ export function ContractsPanelView(props: ContractsPanelViewProps) {
                         )}
                       </div>
                     )}
+                    {r.crossChainHasCode && (
+                      <div className="pl-3">
+                        <PauseControl
+                          paused={r.crossChainPaused}
+                          busy={props.busy.pausing === pauseBusyKey(r.network, "crosschain")}
+                          disabled={!props.wallet.connected}
+                          onPause={() => props.onPauseToggle(r, "crosschain", true)}
+                          onUnpause={() => props.onPauseToggle(r, "crosschain", false)}
+                        />
+                      </div>
+                    )}
                   </div>
                 ))}
+                <p className="pt-1 text-[10.5px] leading-relaxed text-ink-faint">
+                  Pause/Unpause is signed in your wallet and requires the GUARDIAN_ROLE granted at
+                  deploy time. Pausing blocks new trades — it does not recover funds already in
+                  flight on a cross-chain leg (see the executor's own rescue path for that).
+                </p>
               </div>
             )}
           </div>
@@ -357,6 +399,63 @@ function NetworkRow({
   );
 }
 
+/**
+ * Kill-switch control (root `CLAUDE.md` §12 finding O2): shown next to a
+ * readiness-sweep result once bytecode is confirmed present. `paused` is the
+ * freshly-probed on-chain state, never guessed — `null` means "unknown, run
+ * (or re-run) the readiness sweep," and in that case both actions stay
+ * available rather than blocking on missing information; once a state IS
+ * known, the button that would be a same-state no-op is disabled so an
+ * operator isn't tempted to fire a guaranteed-revert transaction.
+ */
+function PauseControl({
+  paused,
+  busy,
+  disabled,
+  onPause,
+  onUnpause,
+}: {
+  paused: boolean | null;
+  busy: boolean;
+  disabled: boolean;
+  onPause: () => void;
+  onUnpause: () => void;
+}) {
+  return (
+    <div className="flex items-center justify-between text-[11px]">
+      <span
+        className={`tabular flex items-center gap-1 ${
+          paused === true ? "text-warn" : paused === false ? "text-ink-faint" : "text-ink-faint"
+        }`}
+      >
+        {paused === true ? "PAUSED" : paused === false ? "active" : "pause state unknown"}
+      </span>
+      <div className="flex items-center gap-1">
+        <button
+          type="button"
+          onClick={onPause}
+          disabled={disabled || busy || paused === true}
+          title={disabled ? "Connect your wallet to pause" : "Pause new trades (signs in your wallet)"}
+          className="focusable inline-flex items-center gap-1 rounded-md border border-border bg-surface-2 px-1.5 py-0.5 text-[10.5px] text-ink-muted hover:text-warn disabled:cursor-not-allowed disabled:opacity-30"
+        >
+          {busy ? <Loader2 size={10} className="animate-spin" /> : <Pause size={10} />}
+          Pause
+        </button>
+        <button
+          type="button"
+          onClick={onUnpause}
+          disabled={disabled || busy || paused === false}
+          title={disabled ? "Connect your wallet to unpause" : "Resume trades (signs in your wallet)"}
+          className="focusable inline-flex items-center gap-1 rounded-md border border-border bg-surface-2 px-1.5 py-0.5 text-[10.5px] text-ink-muted hover:text-pos disabled:cursor-not-allowed disabled:opacity-30"
+        >
+          {busy ? <Loader2 size={10} className="animate-spin" /> : <Play size={10} />}
+          Unpause
+        </button>
+      </div>
+    </div>
+  );
+}
+
 /* ------------------------------------------------------------- container --- */
 
 /**
@@ -370,14 +469,21 @@ export function ContractsPanel() {
   const { address, chainId, isConnected } = useAccount();
   const { switchChainAsync } = useSwitchChain();
   const { deployContractAsync } = useDeployContract();
+  const { writeContractAsync } = useWriteContract();
 
   const [status, setStatus] = useState<ContractsStatus | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [busy, setBusy] = useState<{ compiling: boolean; deploying: string | null; readiness: boolean }>({
+  const [busy, setBusy] = useState<{
+    compiling: boolean;
+    deploying: string | null;
+    readiness: boolean;
+    pausing: string | null;
+  }>({
     compiling: false,
     deploying: null,
     readiness: false,
+    pausing: null,
   });
   const [readiness, setReadiness] = useState<ReadinessResult[] | null>(null);
   const [notice, setNotice] = useState<{ kind: "ok" | "err"; text: string } | null>(null);
@@ -452,7 +558,7 @@ export function ContractsPanel() {
       setNotice({ kind: "ok", text: `Deployed on ${n.name}: ${deployed} — recorded to .env` });
       await refresh();
     } catch (e) {
-      setNotice({ kind: "err", text: deployErrorMessage(e) });
+      setNotice({ kind: "err", text: walletErrorMessage(e) });
     } finally {
       setBusy((b) => ({ ...b, deploying: null }));
     }
@@ -513,7 +619,7 @@ export function ContractsPanel() {
       });
       await refresh();
     } catch (e) {
-      setNotice({ kind: "err", text: deployErrorMessage(e) });
+      setNotice({ kind: "err", text: walletErrorMessage(e) });
     } finally {
       setBusy((b) => ({ ...b, deploying: null }));
     }
@@ -527,6 +633,50 @@ export function ContractsPanel() {
       setNotice({ kind: "err", text: String(e) });
     } finally {
       setBusy((b) => ({ ...b, readiness: false }));
+    }
+  };
+
+  /**
+   * Pause/unpause the kill switch on `r`'s atomic or cross-chain executor
+   * (root `CLAUDE.md` §12 finding O2). Same sanctioned pattern as deploy: the
+   * ABI is the already-compiled artifact, the call is signed entirely in
+   * MetaMask, and the backend is never involved beyond serving that read-only
+   * artifact — there is nothing to "record" afterward (unlike a deploy
+   * address, `paused()` is live on-chain state, so we simply re-probe it via
+   * the existing readiness sweep once the tx confirms).
+   */
+  const onPauseToggle = async (r: ReadinessResult, target: "atomic" | "crosschain", pause: boolean) => {
+    const targetAddress = target === "atomic" ? r.address : r.crossChainAddress;
+    if (!address) {
+      setNotice({ kind: "err", text: "Connect your wallet first" });
+      return;
+    }
+    if (!targetAddress) {
+      setNotice({ kind: "err", text: "No deployed address on record for this contract" });
+      return;
+    }
+    const contractName = target === "atomic" ? "FlashLoanArbitrage" : "CrossChainArbitrageExecutor";
+    setBusy((b) => ({ ...b, pausing: pauseBusyKey(r.network, target) }));
+    setNotice(null);
+    try {
+      if (chainId !== r.chainId) {
+        await switchChainAsync({ chainId: r.chainId as ConfiguredChainId });
+      }
+      const artifact = await api.contracts.artifact(contractName);
+      // Signed + broadcast entirely in MetaMask — same as deploy, the backend
+      // never sees a key and never builds this call itself.
+      const hash = await writeContractAsync({
+        address: targetAddress as `0x${string}`,
+        abi: artifact.abi as Abi,
+        functionName: pause ? "pause" : "unpause",
+      });
+      await waitForTransactionReceipt(wagmiConfig, { hash });
+      setNotice({ kind: "ok", text: `${pause ? "Paused" : "Unpaused"} ${contractName} on ${r.network}` });
+      await onRunReadiness(); // re-probe the live paused() state, don't assume it
+    } catch (e) {
+      setNotice({ kind: "err", text: walletErrorMessage(e) });
+    } finally {
+      setBusy((b) => ({ ...b, pausing: null }));
     }
   };
 
@@ -547,13 +697,19 @@ export function ContractsPanel() {
       onDeploy={onDeploy}
       onDeployCrossChain={onDeployCrossChain}
       onRunReadiness={onRunReadiness}
+      onPauseToggle={onPauseToggle}
     />
   );
 }
 
-/** Turn common wallet-rejection errors into a short, human message. */
-function deployErrorMessage(e: unknown): string {
+/**
+ * Turn common wallet-rejection errors into a short, human message. Shared by
+ * every MetaMask-signed action this panel offers (deploy, deploy-cross-chain,
+ * pause/unpause) — kept action-agnostic so a rejected *pause* doesn't
+ * misreport itself as a cancelled "deployment".
+ */
+function walletErrorMessage(e: unknown): string {
   const msg = String((e as Error)?.message ?? e);
-  if (/user rejected|denied/i.test(msg)) return "Deployment cancelled in wallet";
+  if (/user rejected|denied/i.test(msg)) return "Cancelled in wallet";
   return msg;
 }

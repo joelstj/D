@@ -253,6 +253,13 @@ export interface ReadinessResult {
   hasCode: boolean;
   premiumBps: number | null;
   crossChainHasCode: boolean | null;
+  /** Live `paused()` kill-switch state for the atomic executor. `null` when
+   *  unreadable (not deployed, no probe, or the view reverted) — never
+   *  defaulted to `false`, since "not paused" is a safety claim that must be
+   *  genuinely read (root `CLAUDE.md` §12 finding O2). */
+  paused: boolean | null;
+  /** Same as {@link paused}, for the cross-chain executor. */
+  crossChainPaused: boolean | null;
   healthy: boolean;
   error: string | null;
 }

@@ -14,6 +14,7 @@ from l2arb.detect.cross_chain import (
     cross_chain_two_hop,
 )
 from l2arb.detect.profit import ProfitContext
+from l2arb.errors import DataError
 from l2arb.graph.rategraph import RateGraph
 from l2arb.model.canonical_asset import AssetRegistry, AssetRepresentation, CanonicalAsset
 from l2arb.model.opportunity import Opportunity, StrategyKind
@@ -377,3 +378,43 @@ def test_bridge_quote_math() -> None:
 def test_base_bridge_model_is_abstract() -> None:
     with pytest.raises(NotImplementedError):
         BridgeModel().quote("WETH", ARB, BASE, 1)
+
+
+# ------------------------- phantom-profit regression ----------------------- #
+# A negative fee_bps/fixed_fee makes BridgeQuote.cost() negative, which makes
+# net_after() return *more* than the bridged amount -- bridging would manufacture
+# free money out of a config typo or a malicious quote. Mirrors how
+# PoolState.fee_pips/Blockstamp/Token already fail loud on out-of-range fields
+# rather than silently trusting them (CLAUDE.md §3/§5).
+def test_bridge_quote_rejects_negative_fee_bps() -> None:
+    with pytest.raises(DataError):
+        BridgeQuote(fee_bps=-500.0, fixed_fee=0, settle_seconds=60)
+
+
+def test_bridge_quote_rejects_negative_fixed_fee() -> None:
+    with pytest.raises(DataError):
+        BridgeQuote(fee_bps=0.0, fixed_fee=-1, settle_seconds=60)
+
+
+def test_bridge_quote_rejects_negative_settle_seconds() -> None:
+    with pytest.raises(DataError):
+        BridgeQuote(fee_bps=0.0, fixed_fee=0, settle_seconds=-1)
+
+
+def test_bridge_quote_never_returns_more_than_the_input_once_constructible() -> None:
+    # A property-shaped confirmation of the invariant the guard above protects:
+    # for any BridgeQuote that *can* be constructed (all fields non-negative),
+    # net_after(amount) never exceeds amount -- bridging only ever costs, never pays.
+    from hypothesis import given
+    from hypothesis import strategies as st
+
+    @given(
+        fee_bps=st.floats(min_value=0, max_value=10_000, allow_nan=False, allow_infinity=False),
+        fixed_fee=st.integers(min_value=0, max_value=10**24),
+        amount=st.integers(min_value=0, max_value=10**30),
+    )
+    def _check(fee_bps: float, fixed_fee: int, amount: int) -> None:
+        q = BridgeQuote(fee_bps=fee_bps, fixed_fee=fixed_fee, settle_seconds=60)
+        assert q.net_after(amount) <= amount
+
+    _check()
