@@ -831,9 +831,139 @@ unchanged apart from the deploy gas.
 
 ---
 
-## 15. Compile/deploy GUI hardening, cross-chain token expansion, pool registries (2026-08-10)
+## 15. Cross-chain arbitrage stress test + live execution proof (2026-08-10)
 
-A 7th session (`claude/arbitrage-gui-compile-deploy-0cvfjn`). Task, verbatim: make the dashboard's
+A 7th audit pass (`claude/cross-chain-arbitrage-stress-test-psxjbh`), the 2nd focused specifically on
+cross-chain (after §12). Task: *"Run a comprehensive stress test and report any gaps or problems we
+have that need to be filled and try to execute one cross chain arbitrage flash loan smart contract
+successfully."* Baseline reconfirmed green across every gate **independently, by this session directly
+— before and after every fix**, not just trusted from a sub-agent's report (contracts 66, engine 460,
+ingestion 204, dashboard 171, launcher 80 — 884 tests). Method: four parallel fresh-eyes audits
+(engine, ingestion, dashboard, launcher), each briefed with the exact findings of every prior session
+so they hunt for *new* gaps instead of rediscovering old ones; contracts handled directly by this
+session, since the cross-chain execution decision is safety-critical. Full ledger, including the
+corrected build design for the new execution script and a sanity check on the reported profit number:
+`docs/notes-cross-chain-arbitrage-stress-test.md`.
+
+**Live environment re-verified fresh, not assumed from notes.** The Base `FlashLoanArbitrage`
+deployment from §14 (`0x17fB2Da9D6b6f95962Ad21f39aAE43f40Caaf602`) is confirmed still live
+(`aavePremiumBps()`→5, `paused()`→false). Balances unchanged in kind from §13/§14: Base ~0.00345 ETH,
+Polygon ~0.091 POL, Arbitrum dust (0.0000023 ETH), Optimism 0. `contracts/deployments/` is absent in
+this fresh container (git-ignored by design — expected, not a defect). Foundry got further than any
+prior session — `foundryup` downloaded all binaries at 100% for the first time — but failed attestation
+verification; declined `--force` (skips SHA verification, labelled insecure by the tool itself) given
+this container holds a real operator private key, so `forge` remains BLOCKED locally, recorded with
+this more precise detail rather than faked.
+
+**14 confirmed defects fixed**, each with a regression test, every gate independently re-run green
+both before and after (884 → 954 tests):
+
+1. **Engine, HIGH (data-integrity) — phantom profit via an unvalidated bridge fee.** `BridgeQuote`'s
+   `fee_bps`/`fixed_fee`/`settle_seconds` had zero validation, unlike every sibling domain object. A
+   negative `fee_bps` made `net_after()` return *more* than the bridged amount — manufactured,
+   `verified:true`-reported profit from a config typo, reachable since the ingestion-side field has no
+   lower-bound check either. Fixed with `__post_init__` validation (mirroring `PoolState`/`Blockstamp`)
+   plus a Hypothesis property test (`net_after(amount) <= amount` for any constructible quote) and a
+   schema-level `Field(ge=0)` so a malformed HTTP request 422s at the boundary.
+2. **Engine, HIGH — cross-chain dedup collision across chains.** `ranking.py`'s dedup key built a
+   `frozenset` of bare pool-address strings with no chain tag — the same shape as the already-fixed
+   ingestion bug (§12/I2), never checked on the engine side. Fixed: key now pairs `(chain_id,
+   pool_address)` per leg.
+3. **Engine, MEDIUM — cross-chain `min_profit_bps` ignored the destination chain's stricter
+   threshold.** Only the buy-chain's per-chain override was ever applied. Fixed: now
+   `max(buy_ctx.min_profit_bps, sell_ctx.min_profit_bps)`, strictly more conservative than either side
+   alone.
+4. **Ingestion, CRITICAL (core property closed) — no liveness watchdog on a chain's WS `heads`
+   subscription.** The single most significant open finding carried across *two* prior audit cycles
+   (§11 recorded it CRITICAL and live-reproduced; §12 didn't re-attempt it). An upstream node's WS
+   could go quiet without ever erroring, so nothing in the old `select!` loop could ever notice —
+   `verified:true` could go stale indefinitely with zero signal, a direct violation of the `verified`
+   honesty invariant (§2 item 7). Especially costly for cross-chain trades, which are exposed to two
+   chains' staleness risk over a multi-minute non-atomic settle window. Fixed: a new `stale_after()`
+   threshold (30s floor, 20×block-time above it) plus a watchdog branch in the `select!` loop that
+   returns `Err` to reuse the existing, already-tested supervisor reconnect path. Deliberately *not*
+   covered: `/health` and the `CHAINS_LIVE` gauge still don't reflect a stalled-then-reconnecting chain
+   in real time — needs restructuring `pipeline.rs::run()`'s startup order, recorded as a follow-up
+   rather than rushed on a safety-relevant path.
+5. **Ingestion, HIGH — HTTP endpoint failover never actually triggered for a genuinely dead
+   endpoint,** its primary documented use case (recorded in §11, not fixed until now). Every RPC read
+   method collapsed any transport error straight to a generic call-error variant, so a raw connection
+   failure was never recognised as failover-worthy. Fixed with a `classify()` helper using `alloy`'s
+   own `is_transport_error()`; proven with an empirical test that connects to a closed local port and
+   confirms the real production path now fails over.
+6. **Dashboard — MetaMask-signed Pause/Unpause kill-switch panel**, closing §12's O2 recommendation
+   now that a real contract is actually deployed on Base (§14) to make it concrete rather than
+   speculative. Same sanctioned pattern as deploy: the backend only serves the read-only compiled ABI
+   and re-probes `paused()` after the tx confirms; it never signs. A live-state `paused: boolean |
+   null` is now part of the readiness sweep, never guessed `false` when unreadable.
+7. **Dashboard, MEDIUM (misleading-honesty class) — cross-chain opportunities were indistinguishable
+   from same-chain ones in the opportunities table**, and the Execute button's tooltip claimed a
+   simulated fill or live broadcast that a cross-chain row never actually performs (it's always
+   recorded `"skipped"`, per §12's D2). Fixed: destination chain + settle time now shown (or an honest
+   "unresolved" when ambiguous — never guessed), tooltip corrected.
+8. **Dashboard, LOW — `NETWORK_COLORS` missing `unichain`/`ink`**, undermining fix #7 (a cross-chain
+   row touching either chain rendered indistinguishable gray dots). Fixed.
+9. **Launcher, HIGH — the same TOML-injection class §9/§10 already fixed for `pool_registry` was never
+   applied to `ws_url`/`http_url` in `l2arb setup`** — the two fields an operator actually hand-pastes
+   from an RPC dashboard. Verified exploitable through the real CLI before fixing.
+10. **Launcher, HIGH — `config_is_live_ready()`'s placeholder-marker list missed the shipped example's
+    Unichain V4 fields**, so a user who filled every other placeholder was told the config was
+    live-ready and `run --live` would launch against a fake address. Fixed with a principled check (any
+    `0x`-prefixed token containing a non-hex character can only be a placeholder), defending future
+    placeholder shapes too.
+11. **Launcher, MEDIUM — `payload.ensure_payload()` not safe under a concurrent double-launch of the
+    `.exe`.** Fixed (already caught by the crash net, but a needless scary traceback for a non-failure).
+12. **Launcher, LOW — `proc.run()` never explicitly closed its subprocess pipe.** Fixed.
+
+**Contracts — no defects found; HEAD re-verified clean.** `allowedBridgeAdapters`, `siblingExecutor`,
+route contiguity, the `GENERIC` allowlist, and profit-receiver-to-event-log consistency all re-checked
+directly against source, all still correct. This session's contracts work was entirely about **proving
+execution**, not fixing bugs.
+
+**Cross-chain execution — what was run.** The existing dual-fork proof
+(`test/fork/CrossChainDualFork.test.js`) re-confirmed passing live against real Polygon+Arbitrum state.
+Beyond that, a new script, `contracts/scripts/live_cross_chain_fork.js`, extends the §13
+`live_flash_loan_fork.js` precedent to the two-leg cross-chain model: the executor spends real,
+organically-funded USDC.e inventory to buy WETH on a real, momentarily-and-honestly-dislocated Polygon
+QuickSwap pool, bridges it (simulated — no real `IBridgeAdapter` exists, see §12/C1), sells it at
+Arbitrum's real, untouched Uniswap V3 price, and sweeps the result to the real operator wallet via the
+guardian-gated rescue path. Result: bought 2.185768 WETH with 3,790.54 USDC.e on the dislocated pool,
+sold it for 4,074.86 USDC.e at Arbitrum's real price — **net +284.32 USDC.e delivered to
+`0x50A71dF7DfC5850e8434C7c8A564366F4980183b`**. Sanity-checked before accepting: the script's own
+honest counterfactual (pre-dump reserves, same input, no external price feed) shows the undislocated
+round trip would have netted roughly *−45 USDC.e* — confirming the reported profit is genuinely
+attributable to the disclosed manufactured dislocation, not a measurement artifact. Wired into CI
+alongside the same-chain script, behind the same RPC secrets.
+
+**Why a REAL (broadcast) cross-chain execution was not attempted — not a judgment call, a hard
+technical fact.** `MockBridgeAdapter`, the only `IBridgeAdapter` implementation anywhere in this repo,
+"pulls tokens, emits an event, delivers nothing cross-chain" by design. A real broadcast through it
+would pull real funds on the source chain with **no delivery mechanism on the other side** — not a
+revert-and-lose-gas outcome like the same-chain case (§13), a **permanent, irreversible loss**. That
+alone rules out any real attempt regardless of gas or deployment state; compounding it,
+`CrossChainArbitrageExecutor` is deployed on zero chains, Arbitrum/Optimism gas remains
+dust-to-nothing, and no off-chain orchestrator exists (§12/C3, correctly Phase-9-gated). The new
+fork-based proof above is the strongest safe alternative; a real bridge integration is real,
+substantial, security-sensitive scope that deserves its own explicit conversation with the operator,
+not a speculative same-session build.
+
+**Net result:** 14 confirmed defects fixed (4 engine, 2 ingestion — including closing the core safety
+property of this repo's longest-standing recorded CRITICAL finding, 4 dashboard, 4 launcher); one
+further ingestion gap (degenerate-zero pool seeding across V2/V3/V4, broader than previously scoped)
+recorded rather than rushed. All five gates re-run green throughout (884 → 954 tests). The cross-chain
+dual-fork proof now has a stronger, wallet-targeted sibling proving genuine, honestly-disclosed profit
+capture end-to-end on two live chains — the first time this repo has demonstrated that. What remains
+before a *real* mainnet cross-chain trade is possible is unchanged in kind from §12 but sharper in its
+most important particular: the blocker isn't just "the orchestrator is Phase 9" — it's that attempting
+one today, even with a perfect route, would strand real funds in a bridge adapter that delivers
+nothing. That single fact should anchor whichever future session picks up the real bridge integration.
+
+---
+
+## 16. Compile/deploy GUI hardening, cross-chain token expansion, pool registries (2026-08-10)
+
+A parallel 7th session (`claude/arbitrage-gui-compile-deploy-0cvfjn`), merged after §15. Task,
+verbatim: make the dashboard's
 compile/deploy buttons fully functional and error-free for both contracts; add a GUI wallet-private-
 key prompt for "pre-authorized" automatic signing so trade profits deposit to the connected
 MetaMask wallet, not the contract; ensure all contracts are Yul-optimized; make a real `.exe` launch
@@ -943,3 +1073,17 @@ from, not just a TODO.
 offline Hardhat tests, unchanged — the Yul attempt was verified then reverted before it could touch
 this count); ingestion (`cargo fmt --check` + `clippy -D warnings` + full workspace test suite, +1
 new permanent test); launcher (87 tests, +7 from this session); engine untouched, reconfirmed green.
+
+**Post-merge reconciliation with §15.** This branch and `claude/cross-chain-arbitrage-stress-test-
+psxjbh` (§15) were developed in parallel from the same base and both touched `ContractsPanel.tsx`,
+`launcher/l2arb/config.py`/`setup.py`, and this file — merged by hand, not auto-resolved. The one
+substantive overlap: §15 added a `busy.pausing: string | null` field for its new Pause/Unpause
+panel, the exact single-shared-string shape this section's own `busy.deploying` fix (above) had
+just closed for deploys — so `pausing` was folded into the same `Set<string>`-based, per-
+(network,contract) tracking as part of reconciling the two, rather than merging it in with the bug
+still present. `launcher/l2arb/config.py`'s two changes (this section's pool-registry rewriting,
+§15's stricter non-hex-placeholder detection) touch different functions and merged with no logical
+overlap. All five gates re-verified green **after** the merge, not just before it: engine 469
+(untouched by either session, reconfirmed), contracts 73 (66 + §15's 7 new cross-chain-fork-script
+tests), ingestion (`fmt` + `clippy -D warnings` + full workspace suite, all green), dashboard
+(typecheck + 67 frontend + backend + build, all green), launcher 97 (this section's 87 + §15's ~10).

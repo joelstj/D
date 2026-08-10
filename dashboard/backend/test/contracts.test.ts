@@ -82,6 +82,9 @@ const stubProbe: ChainProbe = {
   async premiumBps() {
     return 5;
   },
+  async paused() {
+    return false;
+  },
 };
 
 describe("ContractService.status", () => {
@@ -260,6 +263,84 @@ describe("ContractService.runReadiness (read-only stress test)", () => {
     const arb = (await svc.runReadiness()).results.find((r) => r.network === "arbitrum")!;
     expect(arb.hasCode).toBe(false);
     expect(arb.healthy).toBe(false);
+  });
+
+  describe("paused()/crossChainPaused kill-switch reporting (O2)", () => {
+    it("reports the live paused() state for the atomic executor", async () => {
+      const { paths } = makeFixture({ deployed: true });
+      const pausedProbe: ChainProbe = { ...stubProbe, async paused() { return true; } };
+      const svc = new ContractService({ paths, rpcUrls: { arbitrum: "https://rpc" }, chainProbe: pausedProbe });
+      const arb = (await svc.runReadiness()).results.find((r) => r.network === "arbitrum")!;
+      expect(arb.hasCode).toBe(true);
+      expect(arb.paused).toBe(true);
+    });
+
+    it("reports paused:false distinctly from paused:null (never guesses 'not paused')", async () => {
+      const { paths } = makeFixture({ deployed: true });
+      const svc = new ContractService({ paths, rpcUrls: { arbitrum: "https://rpc" }, chainProbe: stubProbe });
+      const arb = (await svc.runReadiness()).results.find((r) => r.network === "arbitrum")!;
+      expect(arb.paused).toBe(false);
+    });
+
+    it("reports paused:null (not false, not a thrown error) when the view reverts", async () => {
+      const { paths } = makeFixture({ deployed: true });
+      const revertingProbe: ChainProbe = {
+        ...stubProbe,
+        async paused() {
+          throw new Error("execution reverted");
+        },
+      };
+      const svc = new ContractService({ paths, rpcUrls: { arbitrum: "https://rpc" }, chainProbe: revertingProbe });
+      const { results } = await svc.runReadiness();
+      const arb = results.find((r) => r.network === "arbitrum")!;
+      // The read-only sweep must not throw just because one view reverted —
+      // it degrades that one field to "unknown", same discipline as premiumBps.
+      expect(arb.paused).toBeNull();
+      expect(arb.hasCode).toBe(true); // the rest of the probe still succeeded
+    });
+
+    it("reports crossChainPaused only when a cross-chain address is deployed and has code", async () => {
+      const { paths } = makeFixture({ deployed: true });
+      writeFileSync(
+        join(paths.deploymentsDir, "arbitrum.json"),
+        JSON.stringify({
+          network: "arbitrum",
+          chainId: 42161,
+          address: "0x1111111111111111111111111111111111111111",
+          crossChainAddress: "0x2222222222222222222222222222222222222299",
+          deployedAt: "x",
+        }),
+      );
+      const probe: ChainProbe = {
+        async getCodeSize(_c, address) {
+          return address.toLowerCase() === "0x2222222222222222222222222222222222222299".toLowerCase() ||
+            address === "0x1111111111111111111111111111111111111111"
+            ? 9000
+            : 0;
+        },
+        async premiumBps() {
+          return 5;
+        },
+        async paused(_c, address) {
+          // Distinguish the two contracts' pause state so the test proves they
+          // aren't accidentally sharing one result.
+          return address === "0x1111111111111111111111111111111111111111";
+        },
+      };
+      const svc = new ContractService({ paths, rpcUrls: { arbitrum: "https://rpc" }, chainProbe: probe });
+      const arb = (await svc.runReadiness()).results.find((r) => r.network === "arbitrum")!;
+      expect(arb.paused).toBe(true); // atomic contract, per the probe above
+      expect(arb.crossChainHasCode).toBe(true);
+      expect(arb.crossChainPaused).toBe(false); // cross-chain contract, per the probe above
+    });
+
+    it("leaves crossChainPaused null when no cross-chain address is on record at all", async () => {
+      const { paths } = makeFixture({ deployed: true }); // fixture's arbitrum.json has crossChainAddress: null
+      const svc = new ContractService({ paths, rpcUrls: { arbitrum: "https://rpc" }, chainProbe: stubProbe });
+      const arb = (await svc.runReadiness()).results.find((r) => r.network === "arbitrum")!;
+      expect(arb.crossChainAddress).toBeNull();
+      expect(arb.crossChainPaused).toBeNull();
+    });
   });
 });
 

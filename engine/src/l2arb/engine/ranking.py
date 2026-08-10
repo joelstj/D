@@ -16,13 +16,22 @@ from l2arb.model.opportunity import Opportunity
 __all__ = ["rank_opportunities"]
 
 # Two opportunities are "the same" if they trade the same pool set in the same
-# numeraire — regardless of which detector or hop ordering surfaced them.
-_DedupKey = tuple[frozenset[str], int, str]
+# numeraire — regardless of which detector or hop ordering surfaced them. Each
+# pool is qualified by the chain it lives on (not just its bare address string):
+# a cross-chain opportunity's two legs live on two different chains, and several
+# of this engine's shipped chains are OP-Stack siblings that legitimately share
+# identical predeploy addresses (root CLAUDE.md §12 finding I2 hit the same shape
+# of bug in ingestion's own pool-verification set). Without the chain tag, a
+# genuine cross-chain opportunity whose remote leg's address happens to coincide
+# with an unrelated same-chain opportunity's pool would collide in this key and
+# one would be silently dropped as a "duplicate" of the other.
+_DedupKey = tuple[frozenset[tuple[int, str]], int, str]
 
 
 def _dedup_key(opp: Opportunity) -> _DedupKey:
     chain, address = opp.numeraire.key
-    return (frozenset(opp.pool_addresses), chain, address)
+    pools = frozenset((leg.token_in.chain_id, leg.pool_address) for leg in opp.legs)
+    return (pools, chain, address)
 
 
 def rank_opportunities(opportunities: Iterable[Opportunity], top_n: int) -> list[Opportunity]:

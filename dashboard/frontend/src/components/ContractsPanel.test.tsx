@@ -14,9 +14,10 @@ import type { ContractsStatus, NetworkContractStatus } from "../lib/types";
 // reads eagerly (rather than through a closure invoked later, at render/call
 // time) must therefore come from `vi.hoisted`, which Vitest guarantees is
 // initialized before every `vi.mock` factory regardless of import order.
-const { deployContractAsync, switchChainAsync, waitForTransactionReceipt, apiContracts, mockWallet } = vi.hoisted(() => ({
+const { deployContractAsync, switchChainAsync, writeContractAsync, waitForTransactionReceipt, apiContracts, mockWallet } = vi.hoisted(() => ({
   deployContractAsync: vi.fn(),
   switchChainAsync: vi.fn(),
+  writeContractAsync: vi.fn(),
   waitForTransactionReceipt: vi.fn(),
   apiContracts: {
     status: vi.fn(),
@@ -44,6 +45,7 @@ vi.mock("wagmi", async (importOriginal) => {
     }),
     useSwitchChain: () => ({ switchChainAsync }),
     useDeployContract: () => ({ deployContractAsync }),
+    useWriteContract: () => ({ writeContractAsync }),
   };
 });
 
@@ -90,13 +92,14 @@ function props(over: Partial<ContractsPanelViewProps> = {}): ContractsPanelViewP
     loading: false,
     error: null,
     wallet: { connected: false },
-    busy: { compiling: false, deploying: new Set(), readiness: false },
+    busy: { compiling: false, deploying: new Set(), readiness: false, pausing: new Set() },
     readiness: null,
     notice: null,
     onCompile: vi.fn(),
     onDeploy: vi.fn(),
     onDeployCrossChain: vi.fn(),
     onRunReadiness: vi.fn(),
+    onPauseToggle: vi.fn(),
     ...over,
   };
 }
@@ -167,8 +170,8 @@ describe("ContractsPanelView", () => {
       <ContractsPanelView
         {...props({
           readiness: [
-            { network: "arbitrum", chainId: 42161, address: "0x1", crossChainAddress: null, configured: true, hasCode: true, premiumBps: 5, crossChainHasCode: null, healthy: true, error: null },
-            { network: "base", chainId: 8453, address: "0x2", crossChainAddress: null, configured: true, hasCode: false, premiumBps: null, crossChainHasCode: null, healthy: false, error: "no code" },
+            { network: "arbitrum", chainId: 42161, address: "0x1", crossChainAddress: null, configured: true, hasCode: true, premiumBps: 5, crossChainHasCode: null, paused: false, crossChainPaused: null, healthy: true, error: null },
+            { network: "base", chainId: 8453, address: "0x2", crossChainAddress: null, configured: true, hasCode: false, premiumBps: null, crossChainHasCode: null, paused: null, crossChainPaused: null, healthy: false, error: "no code" },
           ],
         })}
       />,
@@ -295,6 +298,8 @@ describe("ContractsPanelView", () => {
                 hasCode: true,
                 premiumBps: 5,
                 crossChainHasCode: true,
+                paused: false,
+                crossChainPaused: true,
                 healthy: true,
                 error: null,
               },
@@ -307,6 +312,8 @@ describe("ContractsPanelView", () => {
                 hasCode: true,
                 premiumBps: 5,
                 crossChainHasCode: false,
+                paused: true,
+                crossChainPaused: null,
                 healthy: true,
                 error: null,
               },
@@ -327,12 +334,132 @@ describe("ContractsPanelView", () => {
         <ContractsPanelView
           {...props({
             readiness: [
-              { network: "arbitrum", chainId: 42161, address: "0x1", crossChainAddress: null, configured: true, hasCode: true, premiumBps: 5, crossChainHasCode: null, healthy: true, error: null },
+              { network: "arbitrum", chainId: 42161, address: "0x1", crossChainAddress: null, configured: true, hasCode: true, premiumBps: 5, crossChainHasCode: null, paused: false, crossChainPaused: null, healthy: true, error: null },
             ],
           })}
         />,
       );
       expect(screen.queryByText(/↳ cross-chain/i)).not.toBeInTheDocument();
+    });
+  });
+
+  // Pause/Unpause kill switch (root CLAUDE.md §12 finding O2) — same
+  // MetaMask-signed pattern as deploy, added once a real contract existed to
+  // pause (root CLAUDE.md §14: FlashLoanArbitrage live on Base).
+  describe("Pause/Unpause kill switch (O2)", () => {
+    function readinessRow(over: Partial<import("../lib/types").ReadinessResult> = {}) {
+      return {
+        network: "arbitrum",
+        chainId: 42161,
+        address: "0x1111111111111111111111111111111111111111",
+        crossChainAddress: null,
+        configured: true,
+        hasCode: true,
+        premiumBps: 5,
+        crossChainHasCode: null,
+        paused: false,
+        crossChainPaused: null,
+        healthy: true,
+        error: null,
+        ...over,
+      };
+    }
+
+    it("shows 'active' and an enabled Pause button when paused:false", () => {
+      render(<ContractsPanelView {...props({ wallet: CONNECTED_WALLET, readiness: [readinessRow({ paused: false })] })} />);
+      expect(screen.getByText("active")).toBeInTheDocument();
+      const pauseBtn = screen.getByRole("button", { name: /^Pause$/i });
+      const unpauseBtn = screen.getByRole("button", { name: /^Unpause$/i });
+      expect((pauseBtn as HTMLButtonElement).disabled).toBe(false);
+      expect((unpauseBtn as HTMLButtonElement).disabled).toBe(true); // already not paused — no-op guarded
+    });
+
+    it("shows 'PAUSED' and an enabled Unpause button when paused:true", () => {
+      render(<ContractsPanelView {...props({ wallet: CONNECTED_WALLET, readiness: [readinessRow({ paused: true })] })} />);
+      expect(screen.getByText("PAUSED")).toBeInTheDocument();
+      const pauseBtn = screen.getByRole("button", { name: /^Pause$/i });
+      const unpauseBtn = screen.getByRole("button", { name: /^Unpause$/i });
+      expect((pauseBtn as HTMLButtonElement).disabled).toBe(true); // already paused — no-op guarded
+      expect((unpauseBtn as HTMLButtonElement).disabled).toBe(false);
+    });
+
+    it("never guesses 'active' when the state is unknown — shows both actions available instead", () => {
+      render(<ContractsPanelView {...props({ wallet: CONNECTED_WALLET, readiness: [readinessRow({ paused: null })] })} />);
+      expect(screen.getByText(/pause state unknown/i)).toBeInTheDocument();
+      expect(screen.queryByText("active")).not.toBeInTheDocument();
+      expect(screen.queryByText("PAUSED")).not.toBeInTheDocument();
+      const pauseBtn = screen.getByRole("button", { name: /^Pause$/i });
+      const unpauseBtn = screen.getByRole("button", { name: /^Unpause$/i });
+      expect((pauseBtn as HTMLButtonElement).disabled).toBe(false);
+      expect((unpauseBtn as HTMLButtonElement).disabled).toBe(false);
+    });
+
+    it("disables both actions while the wallet is disconnected", () => {
+      render(<ContractsPanelView {...props({ wallet: { connected: false }, readiness: [readinessRow({ paused: false })] })} />);
+      expect((screen.getByRole("button", { name: /^Pause$/i }) as HTMLButtonElement).disabled).toBe(true);
+      expect((screen.getByRole("button", { name: /^Unpause$/i }) as HTMLButtonElement).disabled).toBe(true);
+    });
+
+    it("fires onPauseToggle(row, 'atomic', true) when Pause is clicked (active state, so Pause is the enabled action)", () => {
+      const onPauseToggle = vi.fn();
+      render(
+        <ContractsPanelView
+          {...props({ wallet: CONNECTED_WALLET, readiness: [readinessRow({ paused: false })], onPauseToggle })}
+        />,
+      );
+      fireEvent.click(screen.getByRole("button", { name: /^Pause$/i }));
+      expect(onPauseToggle).toHaveBeenCalledOnce();
+      expect(onPauseToggle).toHaveBeenCalledWith(readinessRow({ paused: false }), "atomic", true);
+    });
+
+    it("fires onPauseToggle(row, 'atomic', false) when Unpause is clicked (paused state, so Unpause is the enabled action)", () => {
+      const onPauseToggle = vi.fn();
+      render(
+        <ContractsPanelView
+          {...props({ wallet: CONNECTED_WALLET, readiness: [readinessRow({ paused: true })], onPauseToggle })}
+        />,
+      );
+      fireEvent.click(screen.getByRole("button", { name: /^Unpause$/i }));
+      expect(onPauseToggle).toHaveBeenCalledOnce();
+      expect(onPauseToggle).toHaveBeenCalledWith(readinessRow({ paused: true }), "atomic", false);
+    });
+
+    it("renders an independent kill switch for the cross-chain executor, keyed separately from the atomic one", () => {
+      const onPauseToggle = vi.fn();
+      const row = readinessRow({
+        paused: false,
+        crossChainAddress: "0x9999999999999999999999999999999999999999",
+        crossChainHasCode: true,
+        crossChainPaused: true,
+      });
+      render(<ContractsPanelView {...props({ wallet: CONNECTED_WALLET, readiness: [row], onPauseToggle })} />);
+
+      // Both rows render: "active" for the atomic contract, "PAUSED" for cross-chain.
+      expect(screen.getByText("active")).toBeInTheDocument();
+      expect(screen.getByText("PAUSED")).toBeInTheDocument();
+
+      const unpauseButtons = screen.getAllByRole("button", { name: /^Unpause$/i });
+      expect(unpauseButtons).toHaveLength(2);
+      // The cross-chain row's Unpause button is the enabled one (state is PAUSED there).
+      const crossChainUnpause = unpauseButtons.find((b) => !(b as HTMLButtonElement).disabled)!;
+      fireEvent.click(crossChainUnpause);
+      expect(onPauseToggle).toHaveBeenCalledWith(row, "crosschain", false);
+    });
+
+    it("omits pause controls entirely when hasCode is false (nothing real to pause)", () => {
+      render(
+        <ContractsPanelView
+          {...props({ wallet: CONNECTED_WALLET, readiness: [readinessRow({ hasCode: false, paused: null })] })}
+        />,
+      );
+      expect(screen.queryByRole("button", { name: /^Pause$/i })).not.toBeInTheDocument();
+      expect(screen.queryByRole("button", { name: /^Unpause$/i })).not.toBeInTheDocument();
+    });
+
+    it("shows the GUARDIAN_ROLE / non-recovery safety disclosure once results are present", () => {
+      render(<ContractsPanelView {...props({ wallet: CONNECTED_WALLET, readiness: [readinessRow()] })} />);
+      expect(screen.getByText(/GUARDIAN_ROLE/)).toBeInTheDocument();
+      expect(screen.getByText(/does not recover funds already in flight/i)).toBeInTheDocument();
     });
   });
 });
@@ -360,6 +487,7 @@ describe("ContractsPanel (wagmi-wired container)", () => {
   beforeEach(() => {
     deployContractAsync.mockReset();
     switchChainAsync.mockReset().mockResolvedValue(undefined);
+    writeContractAsync.mockReset();
     waitForTransactionReceipt.mockReset().mockResolvedValue({ contractAddress: "0xdeployed00000000000000000000000000000000" });
     Object.values(apiContracts).forEach((m) => m.mockReset());
     apiContracts.status.mockResolvedValue(twoNetworkStatus());

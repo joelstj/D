@@ -4,7 +4,13 @@ from __future__ import annotations
 
 import pytest
 
-from l2arb.api.schema import ChainConfig, DetectRequest, opportunity_to_dict, token_to_output
+from l2arb.api.schema import (
+    BridgeSpec,
+    ChainConfig,
+    DetectRequest,
+    opportunity_to_dict,
+    token_to_output,
+)
 from l2arb.config import get_settings
 from l2arb.model.blockstamp import Blockstamp
 from l2arb.model.opportunity import Leg, Opportunity, RiskAssessment, StrategyKind
@@ -60,6 +66,23 @@ def test_omitted_chain_config_thresholds_defer_to_operator_settings(
         assert explicit.gas_safety_multiplier == pytest.approx(1.1)
     finally:
         get_settings.cache_clear()
+
+
+# A negative bridge fee/settlement time fabricates profit (BridgeQuote.net_after
+# would return more than it was given) or is simply nonsensical -- reject it at
+# the request boundary rather than let it reach the pure math (see the matching
+# BridgeQuote.__post_init__ guard in detect/cross_chain.py; this pins the
+# boundary layer fails loud too, not just the domain object it feeds).
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [("fee_bps", -1.0), ("fixed_fee", -1), ("settle_seconds", -1)],
+)
+def test_bridge_spec_rejects_negative_fields(field: str, value: float) -> None:
+    from pydantic import ValidationError
+
+    kwargs = {"symbol": "WETH", "from_chain": 42161, "to_chain": 8453, field: value}
+    with pytest.raises(ValidationError):
+        BridgeSpec(**kwargs)
 
 
 def test_token_to_output() -> None:

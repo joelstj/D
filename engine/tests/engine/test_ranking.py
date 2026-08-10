@@ -76,3 +76,70 @@ def test_tie_broken_by_net_profit_deterministically() -> None:
     b = _opp(("p3", "p4"), score=10.0, net=200)
     ranked = rank_opportunities([a, b], top_n=10)
     assert ranked[0].net_profit == 200  # higher net wins the tie
+
+
+# ------------------------- cross-chain dedup regression -------------------- #
+# The dedup key used to be built from bare pool-address strings with no chain
+# tag. Several of this engine's shipped chains are OP-Stack siblings that
+# legitimately share identical predeploy addresses (root CLAUDE.md §12 finding
+# I2 hit the exact same shape of bug in ingestion's own pool-verification set).
+# So a cross-chain opportunity's remote (other-chain) leg could coincide, in bare
+# address, with an unrelated same-chain opportunity's pool -- silently dropping
+# one of two genuinely distinct, real opportunities as a "duplicate" of the
+# other. Blockstamp reuse below is deliberate: dedup never inspects it.
+CHAIN_B = 8453
+
+
+def test_cross_chain_leg_address_is_not_confused_with_an_unrelated_same_chain_pool() -> None:
+    shared_addr = "0x" + "ab" * 20  # e.g. a predeploy-style address shared across chains
+    remote_token = Token(chain_id=CHAIN_B, address="0x" + "33" * 20, decimals=18, symbol="C")
+    local_token = Token(chain_id=CHAIN, address="0x" + "44" * 20, decimals=18, symbol="D")
+
+    cross_chain = Opportunity(
+        strategy=StrategyKind.CROSS_CHAIN_TWO_HOP,
+        numeraire=A,
+        input_amount=1000,
+        output_amount=1200,
+        gross_profit=200,
+        gas_cost=0,
+        net_profit=200,
+        profit_bps=200.0,
+        legs=(
+            Leg(shared_addr, A, B, 1000, 500),  # on CHAIN (buy leg)
+            Leg("p2", remote_token, A, 500, 1200),  # on CHAIN_B (sell leg)
+        ),
+        blockstamp=BS,
+        chain_ids=(CHAIN, CHAIN_B),
+        risk=RiskAssessment(0.9, 0.7, 0.1),
+        score=140.0,
+    )
+    same_chain = Opportunity(
+        strategy=StrategyKind.TWO_HOP,
+        numeraire=A,
+        input_amount=5000,
+        output_amount=5900,
+        gross_profit=900,
+        gas_cost=0,
+        net_profit=900,
+        profit_bps=900.0,
+        legs=(
+            Leg(shared_addr, A, local_token, 5000, 3000),  # same address, same chain (CHAIN)
+            # Same literal address string as cross_chain's CHAIN_B leg ("p2"),
+            # but THIS leg's token genuinely lives on CHAIN -- an unrelated,
+            # real same-chain pool that merely happens to share the string.
+            Leg("p2", local_token, A, 3000, 5900),
+        ),
+        blockstamp=BS,
+        chain_ids=(CHAIN,),
+        risk=RiskAssessment(0.9, 0.7, 0.1),
+        score=900.0,
+    )
+
+    ranked = rank_opportunities([cross_chain, same_chain], top_n=10)
+    # Both are real, distinct opportunities on different chain combinations --
+    # neither may be silently dropped as a "duplicate" of the other.
+    assert len(ranked) == 2
+    assert {o.strategy for o in ranked} == {
+        StrategyKind.CROSS_CHAIN_TWO_HOP,
+        StrategyKind.TWO_HOP,
+    }

@@ -16,7 +16,7 @@ from unittest import mock
 # Make the launcher package importable when run from the repo root.
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from l2arb import cli, config, console, prereqs, proc, setup, state  # noqa: E402
+from l2arb import cli, config, console, payload, prereqs, proc, setup, state  # noqa: E402
 from l2arb.paths import Layout, workspace_root  # noqa: E402
 from l2arb.prereqs import _VERSION_RE, _ge, merge_path  # noqa: E402
 from l2arb.proc import _resolve  # noqa: E402
@@ -57,6 +57,72 @@ class StateTest(unittest.TestCase):
         self.assertIn("--live", state.next_step(full, True))  # built + configured
 
 
+class PayloadTest(unittest.TestCase):
+    """`ensure_payload` unpacks the frozen exe's bundled component sources on
+    first run. Previously untested (only exercised end-to-end by an actual
+    frozen build), so a regression here (e.g. the concurrent-double-launch
+    race below) had no unit-level guard at all.
+    """
+
+    def _frozen_layout_with_bundle(self, components: tuple[str, ...] = ("engine",)):
+        bundle = Path(tempfile.mkdtemp())
+        src = bundle / "payload"
+        for comp in components:
+            d = src / comp
+            d.mkdir(parents=True)
+            (d / "marker.txt").write_text(comp)
+        root = Path(tempfile.mkdtemp())
+        lo = Layout(root)
+        return lo, bundle
+
+    def test_dev_checkout_is_a_no_op(self):
+        # Not frozen (a plain `python -m l2arb ...` dev invocation): must not
+        # touch the filesystem or raise, regardless of bundle_dir()'s value.
+        lo = Layout(Path(tempfile.mkdtemp()))
+        with mock.patch.object(payload, "is_frozen", return_value=False):
+            payload.ensure_payload(lo)  # must not raise
+        self.assertFalse((lo.root / "engine").exists())
+
+    def test_unpacks_each_bundled_component_once(self):
+        lo, bundle = self._frozen_layout_with_bundle(("engine", "dashboard"))
+        with mock.patch.object(payload, "is_frozen", return_value=True), mock.patch.object(
+            payload, "bundle_dir", return_value=bundle
+        ):
+            payload.ensure_payload(lo)
+        self.assertEqual((lo.root / "engine" / "marker.txt").read_text(), "engine")
+        self.assertEqual((lo.root / "dashboard" / "marker.txt").read_text(), "dashboard")
+
+    def test_already_unpacked_component_is_left_alone(self):
+        lo, bundle = self._frozen_layout_with_bundle(("engine",))
+        (lo.root / "engine").mkdir(parents=True)
+        (lo.root / "engine" / "marker.txt").write_text("already installed, do not touch")
+        with mock.patch.object(payload, "is_frozen", return_value=True), mock.patch.object(
+            payload, "bundle_dir", return_value=bundle
+        ):
+            payload.ensure_payload(lo)
+        self.assertEqual((lo.root / "engine" / "marker.txt").read_text(), "already installed, do not touch")
+
+    def test_concurrent_double_launch_race_does_not_raise(self):
+        # Regression: double-clicking the .exe twice starts two processes that
+        # can both pass the `not d.exists()` check before either finishes
+        # copytree — the loser used to crash with an uncaught FileExistsError
+        # (payload unpack runs before main()'s own try/except) instead of
+        # quietly deferring to the winner.
+        lo, bundle = self._frozen_layout_with_bundle(("engine",))
+
+        def racing_copytree(_s, d):
+            # Simulate the other instance having just won the race by actually
+            # creating the destination, then fail exactly as the real
+            # shutil.copytree would against a pre-existing directory.
+            Path(d).mkdir(parents=True)
+            raise FileExistsError(17, "File exists", str(d))
+
+        with mock.patch.object(payload, "is_frozen", return_value=True), mock.patch.object(
+            payload, "bundle_dir", return_value=bundle
+        ), mock.patch.object(payload.shutil, "copytree", racing_copytree):
+            payload.ensure_payload(lo)  # must not raise
+
+
 class ConfigTest(unittest.TestCase):
     def _layout_with_config(self, text: str) -> Layout:
         d = tempfile.mkdtemp()
@@ -71,6 +137,34 @@ class ConfigTest(unittest.TestCase):
 
     def test_filled_config_is_live_ready(self):
         lo = self._layout_with_config('ws_url = "wss://arb1.example.com"\naddr = "0x1234"\n')
+        self.assertTrue(config.config_is_live_ready(lo))
+
+    def test_non_hex_0x_token_is_not_live_ready(self):
+        # Regression: config.example.toml's Unichain V4 addresses
+        # (uniswap_v4_pool_manager/_state_view = "0xUNICHAIN_V4_...") don't start
+        # with "YOUR_"/"0xWETH"/"0xUSDC", so the literal _PLACEHOLDER_MARKERS list
+        # alone missed them: a user who filled every RPC endpoint and every
+        # WETH/USDC placeholder but left Unichain's V4 infra addresses untouched
+        # was told the config was live-ready, and `run --live` would have launched
+        # ingestion against a fake address instead of falling back to paper mode.
+        lo = self._layout_with_config(
+            'ws_url = "wss://real-arb.example.com"\n'
+            'weth = "0x82aF49447D8a07e3bd95BD0d56f35241523fBab1"\n'
+            'usdc = "0xaf88d065e77c8cC2239327C5EDb3A432268e5831"\n'
+            'uniswap_v4_pool_manager = "0xUNICHAIN_V4_POOLMANAGER"\n'
+            'uniswap_v4_state_view   = "0xUNICHAIN_V4_STATEVIEW"\n'
+        )
+        self.assertFalse(config.config_is_live_ready(lo))
+
+    def test_pure_hex_0x_tokens_do_not_false_positive(self):
+        # The general net must not flag genuine addresses/infra constants (which
+        # are always pure hex) as placeholders, else a real filled config would
+        # wrongly be refused live-ready.
+        lo = self._layout_with_config(
+            'weth = "0x82aF49447D8a07e3bd95BD0d56f35241523fBab1"\n'
+            'multicall3 = "0xcA11bde05977b3631167028862bE2a173976CA11"\n'
+            'zero = "0x0"\n'
+        )
         self.assertTrue(config.config_is_live_ready(lo))
 
     def test_missing_config_is_not_live_ready(self):
@@ -291,10 +385,23 @@ class ProcRunUtf8Test(unittest.TestCase):
     def test_run_pins_utf8_and_replace_on_the_subprocess_pipe(self):
         captured = {}
 
+        class FakeStdout:
+            """Mimics the bits of a real Popen(stdout=PIPE)'s TextIOWrapper that
+            proc.run() actually uses: iterable, and closeable exactly once."""
+
+            def __init__(self):
+                self.closed = False
+
+            def __iter__(self):
+                return iter(())
+
+            def close(self):
+                self.closed = True
+
         class FakePopen:
             def __init__(self, *args, **kwargs):
                 captured.update(kwargs)
-                self.stdout = iter(())
+                self.stdout = FakeStdout()
 
             def wait(self):
                 return 0

@@ -34,6 +34,8 @@
   --color-net-arbitrum: #199e70;
   --color-net-optimism: #d55181;
   --color-net-polygon: #9085e9;
+  --color-net-unichain: #2bb8c4;
+  --color-net-ink: #d4a72c;
 
   --font-sans: "Inter", system-ui, -apple-system, "Segoe UI", sans-serif;
   --font-mono: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, monospace;

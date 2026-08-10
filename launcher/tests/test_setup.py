@@ -118,6 +118,26 @@ class ArbitrumQuickstartTest(unittest.TestCase):
         parsed = tomllib.loads(cfg)  # must not raise TOMLDecodeError
         self.assertEqual(parsed["chains"][0]["pool_registry"], win_path)
 
+    @unittest.skipUnless(sys.version_info >= (3, 11), "tomllib needs 3.11+")
+    def test_pasted_rpc_url_with_a_stray_quote_produces_parseable_toml(self):
+        # Regression: ws_url/http_url are pasted by the operator (from a provider
+        # dashboard, a script, shell history, ...) and were interpolated raw into
+        # the TOML basic string, same as the pool path used to be. A stray `"` or
+        # `\` in the paste — e.g. surrounding quotes grabbed by accident — broke
+        # out of the string and made the whole generated config.toml unparseable,
+        # exactly the "silently breaking the live path" failure mode the pool-path
+        # fix above already covers for a different field.
+        import tomllib
+
+        http_with_quote = 'https://arb-mainnet.g.alchemy.com/v2/abc"; evil = true #'
+        ws_with_backslash = r"wss://arb\evil"
+        cfg = setup.arbitrum_quickstart_config(
+            ws_url=ws_with_backslash, http_url=http_with_quote, pool_registry="/tmp/pools/arbitrum.toml"
+        )
+        parsed = tomllib.loads(cfg)  # must not raise TOMLDecodeError
+        self.assertEqual(parsed["chains"][0]["ws_url"], ws_with_backslash)
+        self.assertEqual(parsed["chains"][0]["http_url"], http_with_quote)
+
     def test_toml_str_escapes_backslashes_and_quotes(self):
         self.assertEqual(setup._toml_str(r"C:\a\b"), '"C:\\\\a\\\\b"')
         self.assertEqual(setup._toml_str('a"b'), '"a\\"b"')

@@ -30,6 +30,7 @@ from dataclasses import dataclass
 
 from l2arb.amm import quote, sizing
 from l2arb.detect.profit import ProfitContext, input_capacity
+from l2arb.errors import DataError
 from l2arb.graph.rategraph import RateGraph
 from l2arb.model.canonical_asset import AssetRegistry
 from l2arb.model.opportunity import Leg, Opportunity, StrategyKind
@@ -45,11 +46,33 @@ class BridgeQuote:
 
     ``fee_bps`` is proportional (basis points); ``fixed_fee`` is a flat cost in the
     asset's base units; ``settle_seconds`` is the (non-atomic) time to finality.
+
+    All three are validated non-negative at construction, mirroring how
+    :class:`~l2arb.model.pool.PoolState` validates its own ``fee_pips`` and
+    :class:`~l2arb.model.blockstamp.Blockstamp`/:class:`~l2arb.model.token.Token`
+    validate their own fields (CLAUDE.md §5 — "fail loud on bad data"). This is not
+    a cosmetic check: a negative ``fee_bps`` or ``fixed_fee`` makes :meth:`cost`
+    negative, so :meth:`net_after` would return *more* than the bridged amount,
+    fabricating bridge-conjured profit out of a config typo or a malicious quote —
+    exactly the phantom-profit shape CLAUDE.md §3 forbids ("reject or flag", never
+    emit a fabricated number). A negative ``settle_seconds`` is nonsensical for the
+    same reason ``Blockstamp.timestamp``/``number`` are rejected rather than
+    silently clamped.
     """
 
     fee_bps: float
     fixed_fee: int
     settle_seconds: int
+
+    def __post_init__(self) -> None:
+        if self.fee_bps < 0:
+            raise DataError(f"BridgeQuote.fee_bps must be non-negative, got {self.fee_bps}")
+        if self.fixed_fee < 0:
+            raise DataError(f"BridgeQuote.fixed_fee must be non-negative, got {self.fixed_fee}")
+        if self.settle_seconds < 0:
+            raise DataError(
+                f"BridgeQuote.settle_seconds must be non-negative, got {self.settle_seconds}"
+            )
 
     def cost(self, amount: int) -> int:
         return self.fixed_fee + int(amount * self.fee_bps / 10_000.0)

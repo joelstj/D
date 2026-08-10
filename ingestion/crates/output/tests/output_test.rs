@@ -214,6 +214,45 @@ fn with_latency_serializes_and_round_trips() {
 }
 
 #[test]
+fn cross_chain_opportunity_fields_survive_the_envelope_losslessly() {
+    // `Envelope::opportunities` serializes the whole `DetectResponse` struct via
+    // `serde_json::to_value` (no field allowlist/projection), so there is no
+    // code path that *can* drop a field — but nothing previously asserted the
+    // cross-chain-specific fields (`is_cross_chain`, `settle_seconds`,
+    // `chain_ids` spanning 2 chains) actually land in the wire JSON with the
+    // right values; every existing fixture in this file hardcodes
+    // `is_cross_chain: false` / a single-entry `chain_ids`. This proves the
+    // WS frame the dashboard's `ExternalProvider`/`engineMap.ts` consumes
+    // genuinely carries what a real cross-chain engine response would send.
+    let mut o = opp();
+    o.is_cross_chain = true;
+    o.chain_ids = vec![8453, 10];
+    o.settle_seconds = 600;
+    o.bridge_cost = DecU256(U256::from(7u64));
+    let resp = DetectResponse {
+        count: 1,
+        opportunities: vec![o],
+        timing: None,
+    };
+
+    let env = Envelope::opportunities(&resp, BTreeMap::new()).unwrap();
+    let v: Value = serde_json::from_str(&env.to_ndjson().unwrap()).unwrap();
+    let wire_opp = &v["payload"]["opportunities"][0];
+    assert_eq!(wire_opp["is_cross_chain"], true);
+    assert_eq!(wire_opp["settle_seconds"], 600);
+    assert_eq!(wire_opp["chain_ids"], serde_json::json!([8453, 10]));
+    assert_eq!(wire_opp["bridge_cost"], "7");
+
+    // Round-trips back into a typed DetectResponse with every field intact —
+    // not just present-and-truthy in raw JSON, but correctly typed on the way
+    // back in (what the ingestion side itself would do if it ever needed to
+    // re-parse its own envelope, and proof the shape is genuinely lossless,
+    // not merely "renders these keys").
+    let back: DetectResponse = serde_json::from_value(v["payload"].clone()).unwrap();
+    assert_eq!(back, resp);
+}
+
+#[test]
 fn engine_timing_is_relayed_verbatim_in_payload() {
     // The engine's internal stage timing rides through the ingestion layer untouched
     // so the dashboard can attribute latency to build/detect/rank/serialize.

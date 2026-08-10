@@ -177,6 +177,7 @@ class ArbitrageEngine:
         configured = [c for c in self._graphs if c in self._contexts]
         out: list[Opportunity] = []
         for buy_chain, sell_chain in permutations(configured, 2):
+            buy_ctx, sell_ctx = self._contexts[buy_chain], self._contexts[sell_chain]
             for asset_symbol, numeraire_symbol in self._xchain_pairs:
                 opp = cross_chain_two_hop(
                     self._graphs[buy_chain],
@@ -185,10 +186,19 @@ class ArbitrageEngine:
                     numeraire_symbol=numeraire_symbol,
                     registry=self._registry,
                     bridge=self._bridge,
-                    buy_ctx=self._contexts[buy_chain],
-                    sell_ctx=self._contexts[sell_chain],
-                    min_profit_bps=self._contexts[buy_chain].min_profit_bps,
-                    price_drift_bps_per_minute=self._contexts[buy_chain].price_drift_bps_per_minute,
+                    buy_ctx=buy_ctx,
+                    sell_ctx=sell_ctx,
+                    # The stricter (larger) of the two chains' operator-configured
+                    # minimums always applies — a per-chain override on the
+                    # request (ChainConfig.min_profit_bps) is real and can differ
+                    # between the buy and sell chain, and honouring only the
+                    # buy-chain's threshold would silently let a cross-chain
+                    # opportunity slip past a stricter minimum the operator set
+                    # specifically for the sell (destination) chain. Using max()
+                    # can only make the gate more conservative than either side
+                    # alone, never less.
+                    min_profit_bps=max(buy_ctx.min_profit_bps, sell_ctx.min_profit_bps),
+                    price_drift_bps_per_minute=buy_ctx.price_drift_bps_per_minute,
                 )
                 if opp is not None:
                     out.append(opp)

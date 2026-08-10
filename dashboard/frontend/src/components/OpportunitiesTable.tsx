@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { ArrowRight, Loader2, Zap } from "lucide-react";
+import { ArrowRight, Link2, Loader2, Zap } from "lucide-react";
 import { useLive } from "../hooks/useLiveData";
 import { useNow } from "../hooks/useNow";
 import { formatAmount, formatBps, formatPct, timeAgo } from "../lib/format";
@@ -86,7 +86,10 @@ export function OpportunitiesTable() {
   );
 }
 
-function Row({
+/** Exported for direct testing (mirrors `ContractsPanelView`'s pure-component
+ *  pattern) — a table row has no meaningful identity outside a `<table>`, but
+ *  it needs no live hook, so it's tested standalone with plain props. */
+export function Row({
   o,
   now,
   executing,
@@ -112,6 +115,28 @@ function Row({
           <span className="h-2 w-2 rounded-full" style={{ background: networkColor(o.network) }} />
           <span className="text-ink capitalize">{o.network}</span>
         </div>
+        {/* Cross-chain opportunities are otherwise indistinguishable from a
+         *  same-chain row here — the only structural signal was `o.isCrossChain`
+         *  on the raw object, never surfaced in this table. Shown honestly: a
+         *  destination is rendered only when engineMap could unambiguously
+         *  resolve one (root CLAUDE.md invariant 1 — never guess at a chain). */}
+        {o.isCrossChain && (
+          <div className="mt-0.5 flex items-center gap-1 text-[10px] text-ink-faint">
+            <Link2 size={10} />
+            {o.destNetwork ? (
+              <>
+                <span
+                  className="h-1.5 w-1.5 rounded-full"
+                  style={{ background: networkColor(o.destNetwork) }}
+                />
+                <span className="capitalize">{o.destNetwork}</span>
+              </>
+            ) : (
+              <span>cross-chain (destination unresolved)</span>
+            )}
+            {typeof o.settleSeconds === "number" && <span>· ~{o.settleSeconds}s settle</span>}
+          </div>
+        )}
       </td>
       <td className="px-3 py-2.5">
         <div className="flex items-center gap-1.5 text-ink">
@@ -163,7 +188,18 @@ function Row({
           type="button"
           onClick={onExecute}
           disabled={executing}
-          title={paper ? "Simulated fill (paper mode)" : "Broadcast live transaction"}
+          title={
+            o.isCrossChain
+              ? // Honest regardless of mode: PaperExecutor never models a cross-chain
+                // opportunity as a fill/revert (D2) and LiveExecutor refuses
+                // everything uniformly — so "Execute" here always resolves to a
+                // recorded skip, never a simulated or real fill. Distinct from the
+                // same-chain tooltip so an operator isn't led to expect one.
+                "Cross-chain: non-atomic two-leg trade — recorded as skipped, never simulated as a fill"
+              : paper
+                ? "Simulated fill (paper mode)"
+                : "Broadcast live transaction"
+          }
           className="focusable inline-flex items-center gap-1.5 rounded-lg border border-accent/40 bg-accent-soft px-2.5 py-1 text-xs font-medium text-accent-2 transition-opacity hover:opacity-90 disabled:opacity-50"
         >
           {executing ? <Loader2 size={12} className="spin" /> : <Zap size={12} />}
