@@ -312,12 +312,36 @@ fn is_absolute_http_url(s: &str) -> bool {
         || (s.starts_with("https://") && s.len() > "https://".len())
 }
 
+/// Whether `s` is an absolute `ws(s)://` URL (a bare host or empty string is not).
+fn is_absolute_ws_url(s: &str) -> bool {
+    let s = s.trim();
+    (s.starts_with("ws://") && s.len() > "ws://".len())
+        || (s.starts_with("wss://") && s.len() > "wss://".len())
+}
+
 /// Count the comma-separated, non-empty endpoints in a URL field. `ws_url`/`http_url`
 /// may list a primary plus failover backups; this is how many real endpoints remain
 /// after trimming — `0` means the field is effectively empty.
 fn endpoint_count(s: &str) -> usize {
     s.split(',').filter(|p| !p.trim().is_empty()).count()
 }
+
+/// The first comma-separated, non-empty segment of `s` that fails `check`, if any.
+fn first_invalid_endpoint(s: &str, check: impl Fn(&str) -> bool) -> Option<&str> {
+    s.split(',')
+        .map(str::trim)
+        .filter(|p| !p.is_empty())
+        .find(|p| !check(p))
+}
+
+/// Substring marking an unfilled template endpoint. `config.example.toml` spells
+/// every placeholder endpoint this way (`wss://YOUR_ARBITRUM_WS`,
+/// `https://YOUR_ARBITRUM_ARCHIVE`, ...) — mirrors `_PLACEHOLDER_MARKERS` in
+/// `launcher/l2arb/config.py`, but enforced here too because `l2-ingest
+/// --check-config` (and a live `l2-ingest` invoked directly, per this crate's own
+/// `CLAUDE.md` "Build, test, run") must not depend on the Python launcher to catch
+/// a still-templated config.
+const PLACEHOLDER_ENDPOINT_MARKER: &str = "YOUR_";
 
 /// A config error.
 #[derive(Debug, thiserror::Error)]
@@ -506,6 +530,35 @@ impl Config {
             if endpoint_count(&c.ws_url) == 0 {
                 return invalid(format!("chain '{}' has no ws_url endpoint", c.name));
             }
+            // Catch a still-templated config *before* it can pretend to be live-ready.
+            // Without this, `AlloyProvider::connect` accepts a placeholder host at
+            // face value (HTTP client construction is lazy; the WS side just logs a
+            // warn and falls back to no subscription) and the failure only surfaces
+            // later as an opaque connect/DNS error deep in the first real RPC call —
+            // then the supervisor retries forever with a generic "chain ingestor
+            // exited — reconnecting" warning that never says *why*. A config this
+            // broken must not pass `--check-config`, let alone reach that point.
+            if c.http_url.contains(PLACEHOLDER_ENDPOINT_MARKER)
+                || c.ws_url.contains(PLACEHOLDER_ENDPOINT_MARKER)
+            {
+                return invalid(format!(
+                    "chain '{}' still has a placeholder endpoint (contains '{}') — fill in a \
+                     real RPC URL (see config/config.example.toml, or run `l2arb setup`)",
+                    c.name, PLACEHOLDER_ENDPOINT_MARKER
+                ));
+            }
+            if let Some(bad) = first_invalid_endpoint(&c.http_url, is_absolute_http_url) {
+                return invalid(format!(
+                    "chain '{}' http_url endpoint '{}' must be an absolute http(s):// URL",
+                    c.name, bad
+                ));
+            }
+            if let Some(bad) = first_invalid_endpoint(&c.ws_url, is_absolute_ws_url) {
+                return invalid(format!(
+                    "chain '{}' ws_url endpoint '{}' must be an absolute ws(s):// URL",
+                    c.name, bad
+                ));
+            }
             if c.reconcile_interval_ms == 0 {
                 return invalid(format!(
                     "chain '{}' reconcile_interval_ms must be > 0",
@@ -528,14 +581,7 @@ mod tests {
 
     #[test]
     fn parses_the_example_config() {
-        let path = concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../../config/config.example.toml"
-        );
-        let cfg = Config::load(path).expect("config.example.toml loads");
-        cfg.validate()
-            .expect("config.example.toml is structurally valid");
-
+        let cfg = example();
         assert_eq!(cfg.schema_version, 1);
         assert_eq!(cfg.engine.transport, "http");
         assert_eq!(cfg.chains.len(), 5);
@@ -544,6 +590,56 @@ mod tests {
         assert_eq!(cfg.infra.multicall3, l2i_chains_multicall3());
         // Cross-chain is present.
         assert!(cfg.cross_chain.as_ref().unwrap().enabled);
+    }
+
+    #[test]
+    fn rejects_placeholder_endpoints_on_enabled_chains() {
+        // config.example.toml ships every enabled chain with template endpoints
+        // (`wss://YOUR_ARBITRUM_WS`, `https://YOUR_ARBITRUM_ARCHIVE`, ...) — a
+        // regression test against the *actual shipped file*, not a synthetic one,
+        // so it proves `--check-config` genuinely catches an unfilled config
+        // instead of silently accepting template text as a real endpoint.
+        let cfg = example();
+        let err = cfg.validate().unwrap_err().to_string();
+        assert!(
+            err.contains("placeholder"),
+            "expected a placeholder-endpoint error, got: {err}"
+        );
+    }
+
+    #[test]
+    fn example_config_is_structurally_valid_once_endpoints_are_filled() {
+        // Substituting real-shaped endpoints for the shipped placeholders proves
+        // the rest of the example's structure (addresses, cadence, gas models,
+        // cross-chain wiring) is genuinely valid — isolating the placeholder check
+        // above from every other validation rule.
+        example_live_ready()
+            .validate()
+            .expect("config.example.toml is structurally valid once endpoints are real");
+    }
+
+    #[test]
+    fn rejects_malformed_endpoint_scheme() {
+        // A ws_url/http_url that isn't even shaped like a URL (e.g. the two fields
+        // pasted into the wrong place) must be caught here too, not just the
+        // literal shipped placeholder spelling. Starts from `example_live_ready()`
+        // so the *other* chains' already-real endpoints don't mask this chain's
+        // deliberately-broken one behind their own placeholder errors.
+        let mut cfg = example_live_ready();
+        cfg.chains[0].ws_url = "not-a-url-at-all".into();
+        let err = cfg.validate().unwrap_err().to_string();
+        assert!(
+            err.contains("ws_url"),
+            "expected a ws_url error, got: {err}"
+        );
+
+        let mut cfg = example_live_ready();
+        cfg.chains[0].http_url = "ftp://wrong-scheme.example".into();
+        let err = cfg.validate().unwrap_err().to_string();
+        assert!(
+            err.contains("http_url"),
+            "expected an http_url error, got: {err}"
+        );
     }
 
     fn l2i_chains_multicall3() -> Address {
@@ -556,6 +652,20 @@ mod tests {
             "/../../config/config.example.toml"
         ))
         .unwrap()
+    }
+
+    /// `example()` with every chain's shipped placeholder `ws_url`/`http_url`
+    /// replaced by realistic (but fake) non-placeholder endpoints. Tests that
+    /// target a *different* validation rule use this as their base so they aren't
+    /// tripped up by the shipped example's own placeholder endpoints on chains
+    /// they never touch.
+    fn example_live_ready() -> Config {
+        let mut cfg = example();
+        for c in &mut cfg.chains {
+            c.ws_url = format!("wss://{}.example-rpc.test/v2/KEY", c.name);
+            c.http_url = format!("https://{}.example-rpc.test/v2/KEY", c.name);
+        }
+        cfg
     }
 
     #[test]
@@ -581,7 +691,7 @@ mod tests {
 
     #[test]
     fn rejects_gas_model_mismatch() {
-        let mut cfg = example();
+        let mut cfg = example_live_ready();
         // Base (id 8453) is op_stack in the registry; declaring arbitrum must fail.
         let base = cfg.chains.iter_mut().find(|c| c.chain_id == 8453).unwrap();
         base.gas_model = "arbitrum".into();
@@ -605,7 +715,7 @@ mod tests {
 
     #[test]
     fn accepts_a_config_where_only_some_chains_are_disabled() {
-        let mut cfg = example();
+        let mut cfg = example_live_ready();
         cfg.chains[0].enabled = false;
         assert!(cfg.validate().is_ok());
         assert_eq!(cfg.enabled_chains().count(), cfg.chains.len() - 1);
@@ -620,7 +730,7 @@ mod tests {
 
     #[test]
     fn accepts_comma_separated_failover_endpoints() {
-        let mut cfg = example();
+        let mut cfg = example_live_ready();
         cfg.chains[0].http_url = "https://primary.example , https://backup.example".into();
         cfg.chains[0].ws_url = "wss://primary.example,wss://backup.example".into();
         assert!(
@@ -660,10 +770,13 @@ mod tests {
 
     #[test]
     fn disabled_chain_may_hold_placeholders() {
-        // A disabled chain is skipped by the runnable-chain checks.
-        let mut cfg = example();
+        // A disabled chain is skipped by the runnable-chain checks — including the
+        // new placeholder/scheme checks. Base is `example_live_ready()` so the
+        // *other*, still-enabled chains don't themselves fail validation.
+        let mut cfg = example_live_ready();
         cfg.chains[0].enabled = false;
         cfg.chains[0].http_url = "".into();
+        cfg.chains[0].ws_url = "wss://YOUR_ARBITRUM_WS".into(); // placeholder, but disabled → tolerated
         cfg.chains[0].chain_id = 123_456; // unknown, but disabled → tolerated
         assert!(cfg.validate().is_ok());
     }
