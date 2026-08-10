@@ -242,15 +242,27 @@ under the §8 budget; live HTTP smoke green on all 5 chains). See `ralph/PROGRES
 for the authoritative checklist and per-iteration log.
 
 **NOT `RALPH-COMPLETE`** — the sentinel additionally requires the two Tier-B gates,
-both **BLOCKED** in this environment and recorded honestly (never faked green):
+both **BLOCKED** in *some* dev sandboxes and recorded honestly (never faked green):
 1. the real `l2arb` engine (not on PyPI here) → blocks the M8 real-engine contract
    test + M10 e2e;
-2. a WebSocket L2 endpoint (public RPCs are HTTP-only here) → blocks the M1
-   `newHeads`/`logs`-over-WS smoke + the sustained soak.
+2. a WebSocket L2 endpoint → blocks the M1 `newHeads`/`logs`-over-WS smoke + the
+   sustained soak. **Refined 2026-08-10** (`claude/ingestion-engine-endpoints-rx9h18`,
+   `docs/notes-ingestion-engine-endpoints.md`): the blocker is not necessarily "no WS
+   endpoint exists" — a real, working `wss://` credential from a normal provider
+   (Alchemy/QuikNode/dRPC/...) is exactly as configurable as the HTTP side via
+   `l2arb setup --all-chains` (§5 below) or a hand-filled `config.toml`. What's
+   specifically blocked in a sandboxed agent session with a TLS-terminating egress
+   proxy is the **WS upgrade handshake itself** — confirmed live: three unrelated
+   providers all failed identically with a TLS `UnknownIssuer` error, while the same
+   session's plain HTTPS to the same three providers worked and seeded real pool
+   state successfully. The sandbox's own proxy documentation lists WebSocket
+   upgrades as explicitly unsupported ("report, do not work around"). On a normal
+   deployment with direct internet access this is not a factor at all.
 
-To close them, provide the engine (`[engine].http_url`/`subprocess_cmd`) and an
-`L2I_WS_<chain_id>` endpoint, run the e2e + `scripts/soak.sh`, and only then append
-the `RALPH-COMPLETE` line with an evidence summary.
+To close them in an environment where WS genuinely works end-to-end, provide the
+engine (`[engine].http_url`/`subprocess_cmd`) and a real chain's `ws_url`, run the
+e2e + `scripts/soak.sh`, and only then append the `RALPH-COMPLETE` line with an
+evidence summary.
 
 ---
 

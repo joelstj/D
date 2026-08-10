@@ -145,6 +145,8 @@ python3 -m l2arb doctor      # check toolchains + install state (+ next-step gui
 python3 -m l2arb install     # build engine venv + dashboard + ingestion binary
 python3 -m l2arb run         # paper mode, opens the dashboard at :8787
 python3 -m l2arb setup       # guided live setup — paste one Arbitrum RPC URL
+python3 -m l2arb setup --all-chains  # every chain: auto-detects env RPC creds, prompts
+                                      # individually for the rest, auto-discovers pools
 python3 -m l2arb run --live  # full stack (setup writes a live-ready .l2arb/config.toml)
 ```
 
@@ -957,3 +959,83 @@ before a *real* mainnet cross-chain trade is possible is unchanged in kind from 
 most important particular: the blocker isn't just "the orchestrator is Phase 9" — it's that attempting
 one today, even with a perfect route, would strand real funds in a bridge adapter that delivers
 nothing. That single fact should anchor whichever future session picks up the real bridge integration.
+
+---
+
+## 16. Ingestion engine endpoint/pool loading + multi-chain guided setup (2026-08-10)
+
+An 8th pass (`claude/ingestion-engine-endpoints-rx9h18`), task: *"debug and fix the ingestion
+engine and ensure it is loading up websocket and RPC endpoints, or at least [prompt] the user to
+individually add all ingestion routes and endpoints and also pools if not automatically
+generated."* Tier-A reconfirmed green before any change — the gap was operational, not a broken
+build. Full detail: `docs/notes-ingestion-engine-endpoints.md`.
+
+**The real bug.** `Config::validate()` checked that `ws_url`/`http_url` were non-empty for every
+enabled chain but never checked *what* they were — so a config still carrying the shipped
+`config.example.toml`'s literal template text (`wss://YOUR_ARBITRUM_WS`, ...) passed
+`--check-config` clean. At runtime, `AlloyProvider::connect`'s HTTP side is lazy (no round-trip
+at construction) and a failing WS candidate just logs a warning and falls back to no subscription
+— so the failure only ever surfaced as an opaque connect/DNS error on the first real RPC call,
+then looped forever with a generic "chain ingestor exited — reconnecting" that never explained
+why. The same "looks valid, isn't ready" shape §9/§11/§12 already found and fixed elsewhere in
+this repo, just never previously found for endpoints. Fixed: `validate()` now rejects, for every
+*enabled* chain, an endpoint containing the shipped placeholder marker or not shaped like an
+absolute `ws(s)://`/`http(s)://` URL — enforced at the Rust layer itself, not just the Python
+launcher's pre-existing heuristic. Regression-tested against the *actual* shipped example file
+(config crate 12 → 16 tests).
+
+**Pools were the other half of "not loading."** Only Arbitrum had a real, committed pool
+registry; `config/pools/README.md` had said since inception "a discovery script can seed them,"
+with none existing. Built `ingestion/scripts/discover_pools.py` (stdlib-only Python): fingerprints
+a candidate Uniswap V3 factory on-chain before trusting it (never by reputation/memory alone),
+then calls `getPool()` directly per fee tier — one cheap read, not a millions-of-blocks log crawl
+— and independently re-verifies every result. The two extra ABI selectors it needs are pinned
+against alloy's real, tested Keccak256 in a new `crates/registry/src/abi.rs` assertion rather than
+trusted from memory. Run live against this session's real RPC credentials: found and verified 4
+real WETH/USDC pools (every standard fee tier) each on **Base** and **Optimism** — now committed
+as `config/pools/{base,optimism}.example.toml`, closing 2 of the 4 missing-registry gaps this repo
+has carried since inception. (Unichain — native V4, a different discovery mechanism entirely — and
+Ink — no confidently-known factory anywhere in this repo — are honestly left for the fallback
+below rather than guessed at.) A real bug found building it: some RPC gateways 403 the stdlib
+default `Python-urllib` User-Agent as bot traffic — fixed by sending a normal one, confirmed live.
+16 offline tests, including an end-to-end replay of the real, already-committed Arbitrum pool as a
+fixture.
+
+**The literal fallback the task asked for: `l2arb setup --all-chains`.** Generalizes the existing
+Arbitrum-only quick-start (kept unchanged, still the default) to every target chain: auto-detects
+an RPC endpoint already in the environment (`RPC_URL_<CHAIN>`, `<CHAIN>_RPC_URL`, the engine's
+existing `L2ARB__CHAINS__<CHAIN>__{HTTP,WSS}` convention) before ever prompting; anything not
+found is asked for individually, skippable. Pools: live discovery first, then a shipped example,
+then — never a guess — the chain is written **disabled with the endpoint preserved** and the exact
+next command spelled out in the file itself, never silently dropped. 29 new launcher tests (90 →
+119), all offline/deterministic.
+
+**Live-proven, this session's real environment, not just unit-tested.** Built the release binary
+and ran the real CLI against this container's actual credentials: all 5 chains auto-detected from
+the environment with zero prompts; Base + Optimism got live-discovered pools; Arbitrum fell back
+to its shipped example (rate-limited at the time — the honest fallback path working as designed,
+not a failure); Unichain/Ink correctly landed disabled. The real built `l2-ingest --check-config`
+passed cleanly against the real generated config. Running the real binary live: `/health`/`/metrics`
+responded, and **the validation gate + mirror-seeding completed successfully for Base and Optimism
+against real, live on-chain state** — genuine, live proof the HTTP RPC + pool-loading path works
+end-to-end.
+
+**What didn't get proven live — an environment limit, not a code defect.** Every WS connection
+attempt (three unrelated providers — dRPC, QuikNode, Alchemy) failed identically with a TLS
+`UnknownIssuer` error. This sandbox's own agent-proxy documentation (`/root/.ccr/README.md`) lists
+**WebSocket upgrades** explicitly under "not supported through the proxy — report, do not work
+around." Plain HTTPS to the same three providers worked fine in the same run (proof above); only
+the WS upgrade handshake specifically isn't supported by this sandbox's egress proxy. The
+ingestion engine's own behavior was correct throughout: it attempted every WS endpoint, logged a
+specific error, and retried through the existing tested backoff/supervisor path without crashing —
+exactly the designed degrade path. On a real deployment with direct internet access these are the
+same publicly-trusted-CA endpoints already proven to work for HTTP in this run, so WS would connect
+the same way. Recorded rather than worked around, per this sandbox's own instructions.
+
+**Net result:** ingestion config crate 12→16 tests, registry crate +3, full workspace 221 tests —
+Tier-A green throughout, re-run after every change. 8 real, independently-verified, on-chain pools
+newly shipped (Base + Optimism). Launcher 90→119 tests. Every one of the 5 target chains now has a
+working, tested path to a real config: automatic wherever this session could verify real data
+on-chain, and an explicit, individually-prompted, never-fabricating fallback everywhere it
+couldn't — with a config that's still template text now failing loudly at `--check-config` time
+instead of degrading into a silent, unexplained reconnect loop.
