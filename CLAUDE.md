@@ -957,3 +957,133 @@ before a *real* mainnet cross-chain trade is possible is unchanged in kind from 
 most important particular: the blocker isn't just "the orchestrator is Phase 9" — it's that attempting
 one today, even with a perfect route, would strand real funds in a bridge adapter that delivers
 nothing. That single fact should anchor whichever future session picks up the real bridge integration.
+
+---
+
+## 16. Compile/deploy GUI hardening, cross-chain token expansion, pool registries (2026-08-10)
+
+A parallel 7th session (`claude/arbitrage-gui-compile-deploy-0cvfjn`), merged after §15. Task,
+verbatim: make the dashboard's
+compile/deploy buttons fully functional and error-free for both contracts; add a GUI wallet-private-
+key prompt for "pre-authorized" automatic signing so trade profits deposit to the connected
+MetaMask wallet, not the contract; ensure all contracts are Yul-optimized; make a real `.exe` launch
+produce a `config.toml` with complete pool data; expand cross-chain arbitrage from 2 tokens to
+15-20. Full research notes and every sourced address: `docs/notes-arbitrage-gui-compile-deploy.md`.
+
+**Declined, not built: the private-key GUI prompt.** A field for users to paste a raw private key
+so the app can sign transactions without per-transaction confirmation is hot-key custody in a web
+backend — precisely the architecture §2 invariant 3, §10, §12, and §13 have deliberately built
+*against*, six times over. Per §2's own instruction ("stop, do not implement it, and record the
+concern"), this was declined rather than built. The underlying goal was already true without it:
+`profitReceiver` defaults to the transaction signer, so profit already lands in the connected
+wallet automatically inside the same atomic transaction MetaMask signs — no key custody needed, and
+none was added anywhere in `dashboard/` this session (grep-verified clean, as in every prior audit).
+
+**Dashboard — compile/deploy were already architecturally correct; two real bugs fixed.** Both
+contracts already had working, independent, MetaMask-signed compile+deploy flows (§10, §12 item 4).
+Fixed: (1) `ContractsPanel.tsx`'s `busy.deploying` was a single shared `string | null` — deploying
+on one network while another was still mid-transaction silently cleared the first row's spinner and
+re-enabled its button, a real double-deploy risk; now a `Set<string>` keyed per (network, contract)
+pair. (2) The real wagmi-wired deploy/compile handlers (`onDeploy`/`onDeployCrossChain`/`onCompile`)
+had zero test coverage — only the pure-props view was tested; 5 new tests added (happy paths,
+wallet-rejection messaging, and a concurrency regression test proving two networks can deploy
+simultaneously without clobbering each other). Also fixed in passing: `dashboard/backend/test/
+api.test.ts`'s execution-health test assumed a clean ambient environment (`configured: false`) but
+this sandbox carries real operator RPC env vars from prior live-execution sessions (§13/§14) — the
+test now explicitly isolates `rpcUrls`/`executorAddress`/`executionProbeChain` instead of trusting
+ambient state, so it passes identically in any environment rather than depending on what happens to
+be (or not be) set.
+
+**Yul — investigated, measured, correctly *not* shipped.** The one real gap (`CrossChainArbitrage
+Executor.sol` had zero Yul) was traced to `_walkRoute`'s per-hop `SwapStep memory step = steps[i]` —
+a genuine calldata-to-memory struct decode, unlike `FlashLoanArbitrage._runRoute`'s identical-
+looking line (a free pointer copy, since its route is already memory-resident from `abi.decode`).
+Concretely implemented: refactored `DexRouter.execute` from one `SwapStep memory` parameter to
+twelve scalar parameters so each caller passes only the fields it already has. Measured via `git
+stash` A/B on a real 2-hop `executeDestinationLeg` call, run twice each way: **161,240 gas before,
+162,209 after — a reproducible +969 gas regression**, not a win (marshalling twelve stack arguments
+across the internal-call boundary cost more than the avoided struct-decode saved, for the common
+empty-`data` case). Reverted per the project's own rule (`contracts/docs/specs/07-gas-and-yul.md`:
+"optimize against a benchmark, never on vibes"). The attempt and its measured result are recorded in
+`CrossChainArbitrageExecutor.sol`'s own NatSpec so a future session doesn't re-derive and re-attempt
+the same losing change. Net: no Yul was added or removed anywhere; the existing 10 hand-optimised
+functions in `DexRouter.sol`/`FlashLoanArbitrage.sol` are untouched.
+
+**Cross-chain tokens: 2 (placeholder, actually 0 usable) → 14 (real, individually verified).** The
+shipped `[cross_chain]` config's every address was a literal placeholder string (`"0xWETH_ARB"`,
+not hex) — `filter_cross_chain` was silently pruning it to **zero** usable assets, worse than the
+"2 tokens" framing suggested. Replaced with 14 symbols (WETH, USDC, USDT, DAI, WBTC, LINK, UNI,
+AAVE, wstETH, cbETH, rETH, CRV, FRAX, LDO) across the 5 supported chains where each is genuinely
+deployed (2-5 chains per symbol depending on real availability — Unichain and Ink are honestly
+thinner ecosystems, not padded to look uniform), every address individually sourced and cross-
+verified (official docs, Circle's/Chainlink's/Lido's own deployment pages, the Uniswap official
+token list, block explorers) with confidence notes, catching and rejecting along the way: an active
+scam token squatting the "OP" symbol on Arbitrum, an aToken mistaken for the underlying AAVE, and
+several search-summary-hallucinated addresses caught by cross-checking a primary source before use.
+ARB and OP are deliberately excluded (no genuine canonical presence outside their home chain); Ink's
+USDT-equivalent (USDT0) is deliberately *not* merged into the plain "USDT" asset (a different
+contract, would misrepresent two tokens as fungible). `--check-config` confirms **14/14 assets
+usable** post-filter (up from 0). Landed at 14, short of the requested 15-20 floor, because that is
+where rigorously-verifiable data honestly ran out for this specific 5-chain set — one candidate
+(SNX) was checked and rejected mid-session for conflicting addresses rather than guessed; widening
+further is a safe, well-scoped follow-up (repeat the same sourcing discipline for more candidates),
+not a design gap. `contracts/config/addresses.js` mirrors the same verified tokens (plus real
+Uniswap V3 factory + native V2-DEX-factory addresses per chain) for deploy-params reuse.
+
+**Pool registries: 1 of 5 chains (2 pools) → 5 of 5 chains (23 pools, all on-chain-verified).**
+Real Uniswap V3 factory addresses (individually verified, Base/Unichain each have their *own*
+deployment — not the cross-chain-default address) were queried live via `getPool()` directly against
+Arbitrum/Base/Optimism/Unichain/Ink RPC (this container has real, reachable RPC for all five,
+inherited from §13) for WETH/USDC/USDT/DAI pairs; every returned pool's `token0`/`token1`/
+`liquidity()` was read back on-chain before being written to a registry, and zero-liquidity results
+were dropped. New `config/pools/{base,optimism,unichain,ink}.example.toml`; `arbitrum.example.toml`
+grew from 2 to 4 real pools. A new permanent test (`l2i-registry::schema::
+every_shipped_example_pool_registry_parses_and_is_canonically_ordered`) parses all 5 files under the
+real schema and asserts canonical `token0 < token1` ordering on every entry — the same rule the
+on-chain startup gate enforces, checked here at zero cost. Solidly-style DEXes (Aerodrome, Velodrome)
+are deliberately excluded — out of scope per `docs/ENGINE_CONTRACT.md` §1 (not a plain
+constant-product/concentrated-liquidity shape the engine can price).
+
+**Launcher: pool materialisation was Arbitrum-only from every code path — now all 5 chains.**
+`ensure_config_toml()` (the default `install`/`ingestion_cmd` path, not just the quick-start wizard)
+previously copied `config.example.toml` verbatim, leaving every chain's `pool_registry` pointing at
+a relative path (`config/pools/<chain>.toml`) that no automated path had ever created except
+Arbitrum's — the exact "4 of 5 chains get zero pools" gap this session's task named. New
+`setup.materialize_pool_registries()` copies every shipped `<chain>.example.toml` into the writable
+state dir; `ensure_config_toml()` now rewrites each `pool_registry` line to the materialised
+absolute path (through the same Windows-backslash-safe `_toml_str` escaping already fixed once for
+the quick-start path, §9 item 4 — regression-tested again here for this new call site). The
+single-endpoint Arbitrum quick-start wizard itself is unchanged by design (still the deliberately
+minimal "paste one RPC URL" hero path); it now simply inherits 4 real pools instead of 2, since it
+copies the same, now-larger, `arbitrum.example.toml`.
+
+**Not done, deliberately:** per-chain `hubs`/`numeraires`/`weth`/`native_price_pools` fields in
+`config.example.toml`'s `[[chains]]` blocks still carry their original placeholders (e.g.
+`hubs = ["0xWETH", "0xUSDC", "0xUSDT"]`) — this session's research covers most of what filling them
+in for real would need (verified WETH/USDC/USDT per chain, verified WETH/USDC pools per chain), but
+wiring it in is a distinct, mechanical piece of work that would have meant rushing it against this
+session's own time budget; recorded here rather than done partially. A full dynamic on-chain
+pool-discovery engine (querying factories automatically at setup-time, beyond this session's
+one-off discovery script) remains the ingestion README's own long-standing aspirational follow-up,
+now with a proven, working query pattern (this session's throwaway `getPool()` script) to build it
+from, not just a TODO.
+
+**Gates, all re-run green after every change (not just at the end):** dashboard `pnpm verify`
+(typecheck + 126 backend + 50 frontend, +5 from this session + build); contracts (compile + 66
+offline Hardhat tests, unchanged — the Yul attempt was verified then reverted before it could touch
+this count); ingestion (`cargo fmt --check` + `clippy -D warnings` + full workspace test suite, +1
+new permanent test); launcher (87 tests, +7 from this session); engine untouched, reconfirmed green.
+
+**Post-merge reconciliation with §15.** This branch and `claude/cross-chain-arbitrage-stress-test-
+psxjbh` (§15) were developed in parallel from the same base and both touched `ContractsPanel.tsx`,
+`launcher/l2arb/config.py`/`setup.py`, and this file — merged by hand, not auto-resolved. The one
+substantive overlap: §15 added a `busy.pausing: string | null` field for its new Pause/Unpause
+panel, the exact single-shared-string shape this section's own `busy.deploying` fix (above) had
+just closed for deploys — so `pausing` was folded into the same `Set<string>`-based, per-
+(network,contract) tracking as part of reconciling the two, rather than merging it in with the bug
+still present. `launcher/l2arb/config.py`'s two changes (this section's pool-registry rewriting,
+§15's stricter non-hex-placeholder detection) touch different functions and merged with no logical
+overlap. All five gates re-verified green **after** the merge, not just before it: engine 469
+(untouched by either session, reconfirmed), contracts 73 (66 + §15's 7 new cross-chain-fork-script
+tests), ingestion (`fmt` + `clippy -D warnings` + full workspace suite, all green), dashboard
+(typecheck + 67 frontend + backend + build, all green), launcher 97 (this section's 87 + §15's ~10).

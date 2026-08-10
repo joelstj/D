@@ -8,9 +8,11 @@ fn loads_example_arbitrum_registry() {
         "/../../config/pools/arbitrum.example.toml"
     );
     let reg = load_registry_file(path).expect("example registry loads");
-    assert_eq!(reg.pools.len(), 2);
+    assert_eq!(reg.pools.len(), 4);
     assert!(matches!(reg.pools[0], PoolEntry::V3(_)));
     assert!(matches!(reg.pools[1], PoolEntry::V2(_)));
+    assert!(matches!(reg.pools[2], PoolEntry::V3(_)));
+    assert!(matches!(reg.pools[3], PoolEntry::V3(_)));
     // Canonical token order (token0 < token1) in both entries.
     for p in &reg.pools {
         let (t0, t1) = p.tokens();

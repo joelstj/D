@@ -271,6 +271,38 @@ def materialize_arbitrum_pools(lo: Layout, source: Path | None = None) -> Path |
     return dst
 
 
+# Every chain the ingestion layer supports (root CLAUDE.md §1) — kept in sync
+# with `config.example.toml`'s `[[chains]]` blocks and `config/pools/*.example.toml`.
+POOL_CHAINS: tuple[str, ...] = ("arbitrum", "base", "optimism", "unichain", "ink")
+
+
+def materialize_pool_registries(lo: Layout, source_dir: Path | None = None) -> dict[str, Path]:
+    """Copy every shipped, real per-chain pool registry into the state dir and
+    return ``{chain: absolute path}``, so a generated config's `pool_registry`
+    references resolve regardless of the ingestion binary's cwd — or whether
+    the ingestion source tree is even writable (e.g. bundled inside the .exe).
+
+    Previously only Arbitrum's registry was ever materialised anywhere
+    automated (`materialize_arbitrum_pools`, used solely by the quick-start
+    wizard); the other 4 chains' `pool_registry` paths pointed at files that
+    were never created by any code path. Chains whose shipped example is
+    missing are simply omitted from the result, not an error — a caller that
+    requires one checks for it.
+    """
+    src_dir = source_dir or (lo.ingestion / "config" / "pools")
+    dst_dir = lo.state_dir / "pools"
+    dst_dir.mkdir(parents=True, exist_ok=True)
+    out: dict[str, Path] = {}
+    for chain in POOL_CHAINS:
+        src = src_dir / f"{chain}.example.toml"
+        if not src.exists():
+            continue
+        dst = dst_dir / f"{chain}.toml"
+        shutil.copyfile(src, dst)
+        out[chain] = dst
+    return out
+
+
 def write_arbitrum_quickstart(lo: Layout, ws_url: str, http_url: str) -> Path | None:
     """Materialise the Arbitrum pool registry and write a complete live-ready
     ``config.toml`` from the user's endpoints. Returns the config path, or None if

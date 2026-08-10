@@ -1,0 +1,46 @@
+# Base pool registry.
+#
+# Real, on-chain-verified pools: each was confirmed live via a direct eth_call
+# to the Uniswap V3 factory's getPool() (not a search/summary), reading
+# token0/token1/liquidity() at the time of writing. The startup validation gate
+# (docs/ARCHITECTURE.md §7) re-proves every entry on-chain before it enters the
+# live set regardless — a stale entry is rejected loudly, never silently trusted.
+# See config/pools/README.md for the full schema.
+
+# Uniswap V3 — WETH/USDC 0.01% (deepest of the three tiers checked here).
+[[pool]]
+dex      = "uniswap_v3"
+kind     = "v3"
+address  = "0xb4CB800910B228ED3d0834cF79D697127BBB00e5"
+fee_pips = 100
+token0   = "0x4200000000000000000000000000000000000006"  # WETH
+token1   = "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913"  # USDC (native)
+factory  = "0x33128a8fC17869897dcE68Ed026d694621f6FDfD"  # Uniswap V3 factory (Base has its own deployment)
+
+# Uniswap V3 — WETH/USDC 0.05%.
+[[pool]]
+dex      = "uniswap_v3"
+kind     = "v3"
+address  = "0xd0b53D9277642d899DF5C87A3966A349A798F224"
+fee_pips = 500
+token0   = "0x4200000000000000000000000000000000000006"  # WETH
+token1   = "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913"  # USDC (native)
+factory  = "0x33128a8fC17869897dcE68Ed026d694621f6FDfD"
+
+# Uniswap V3 — WETH/USDC 1.00%.
+[[pool]]
+dex      = "uniswap_v3"
+kind     = "v3"
+address  = "0x0b1C2DCbBfA744ebD3fC17fF1A96A1E1Eb4B2d69"
+fee_pips = 10000
+token0   = "0x4200000000000000000000000000000000000006"  # WETH
+token1   = "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913"  # USDC (native)
+factory  = "0x33128a8fC17869897dcE68Ed026d694621f6FDfD"
+
+# NOT included: Base's deepest DEX by liquidity, Aerodrome, is Solidly-style
+# (variable stable/volatile curve selection per pool) — out of scope per
+# docs/ENGINE_CONTRACT.md §1 ("stableswap/Solidly-stable... out of scope").
+# BaseSwap (a plain constant-product v2 fork, config/addresses.js
+# baseSwapV2Factory) is a real v2-shaped candidate but no specific pair
+# address was verified this session — add one via the same getPool()/
+# getPair() pattern once curated, rather than guessing.

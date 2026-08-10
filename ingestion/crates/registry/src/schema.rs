@@ -169,6 +169,46 @@ mod tests {
         assert!(reg.pools.is_empty());
     }
 
+    /// Every shipped `config/pools/*.example.toml` must actually parse under
+    /// this schema, and every V2/V3 entry's declared `token0`/`token1` must be
+    /// in canonical byte order — the same rule `gate.rs` enforces on-chain at
+    /// startup (a mismatch there is rejected loudly), checked here at zero
+    /// cost so a curation mistake in one of these files is a test failure, not
+    /// a runtime surprise. Non-empty on top of merely parsing: a chain whose
+    /// `.example.toml` accidentally shipped with zero `[[pool]]` entries would
+    /// still "parse", but is exactly the silently-empty-registry shape this
+    /// repo's own history (root CLAUDE.md §9/§11) has repeatedly flagged as a
+    /// healthy-looking total outage — so this test treats it as a failure too.
+    #[test]
+    fn every_shipped_example_pool_registry_parses_and_is_canonically_ordered() {
+        let pools_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../config/pools");
+        let mut checked = 0usize;
+        for chain in ["arbitrum", "base", "optimism", "unichain", "ink"] {
+            let path = pools_dir.join(format!("{chain}.example.toml"));
+            let src = std::fs::read_to_string(&path)
+                .unwrap_or_else(|e| panic!("failed to read {}: {e}", path.display()));
+            let reg = parse_registry(&src).unwrap_or_else(|e| panic!("{chain}.example.toml: {e}"));
+            assert!(
+                !reg.pools.is_empty(),
+                "{chain}.example.toml has zero [[pool]] entries"
+            );
+            for entry in &reg.pools {
+                if let PoolEntry::V2(e) | PoolEntry::V3(e) = entry {
+                    assert!(
+                        e.token0 < e.token1,
+                        "{chain}.example.toml: pool {:?} has token0 >= token1 (not canonical order)",
+                        e.address
+                    );
+                }
+            }
+            checked += 1;
+        }
+        assert_eq!(
+            checked, 5,
+            "expected to check all 5 chains' example pool registries"
+        );
+    }
+
     #[test]
     fn unknown_kind_rejected() {
         let src = r#"

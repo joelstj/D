@@ -25,3 +25,24 @@ fee_pips = 3000
 token0   = "0x82aF49447D8a07e3bd95BD0d56f35241523fBab1"  # WETH
 token1   = "0xaf88d065e77c8cC2239327C5EDb3A432268e5831"  # USDC (native)
 factory  = "0x6EcCab422D763aC031210895C81787E87B43A652"  # Camelot V2 factory
+
+# Uniswap V3 — WETH/USDC 0.30%.
+[[pool]]
+dex      = "uniswap_v3"
+kind     = "v3"
+address  = "0xC473e2aEE3441BF9240Be85eb122aBB059A3B57C"
+fee_pips = 3000
+token0   = "0x82aF49447D8a07e3bd95BD0d56f35241523fBab1"  # WETH
+token1   = "0xaf88d065e77c8cC2239327C5EDb3A432268e5831"  # USDC (native)
+factory  = "0x1F98431c8aD98523631AE4a59f267346ea31F984"  # Uniswap V3 factory
+
+# Uniswap V3 — WETH/USDC.e 0.05% (bridged legacy USDC — a genuinely different,
+# lower-liquidity pair from the native-USDC pool above; do not conflate them).
+[[pool]]
+dex      = "uniswap_v3"
+kind     = "v3"
+address  = "0xC31E54c7A869B9FcBEcc14363CF510D1c41FA443"
+fee_pips = 500
+token0   = "0x82aF49447D8a07e3bd95BD0d56f35241523fBab1"  # WETH
+token1   = "0xFF970A61A04b1cA14834A43f5dE4533eBDDB5CC8"  # USDC.e (bridged)
+factory  = "0x1F98431c8aD98523631AE4a59f267346ea31F984"  # Uniswap V3 factory
