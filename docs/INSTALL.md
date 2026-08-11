@@ -65,30 +65,65 @@ truly needed it tells you to close and reopen, rather than failing cryptically.
 
 ---
 
-## 2. Going live — one RPC URL (`setup`)
+## 2. Going live — the guided setup (`setup`)
 
 Paper mode needs no configuration. To watch **real** on-chain data you need a
 read-only **RPC endpoint** — a free one from e.g. [alchemy.com](https://alchemy.com)
-or [infura.io](https://infura.io) works. Then run the guided setup:
+or [infura.io](https://infura.io) works.
+
+**You do not have to know that in advance.** Every launch runs a full health
+check over everything the stack needs — each RPC endpoint, WebSocket URL, API
+key, wallet address and tuning value — scores it out of 100%, and walks you
+through whatever is missing:
 
 ```
-L2ArbBot.exe setup        # or:  python3 -m l2arb setup   (dev checkout)
+L2ArbBot.exe             # the health check runs automatically on every launch
+L2ArbBot.exe setup       # or start the guided walk-through explicitly
+L2ArbBot.exe health      # just the report, no prompts (exit 0 when at 100%)
 ```
 
-It asks for **one** thing — your Arbitrum HTTPS RPC URL — and writes a complete,
-valid, live-ready configuration for you. Everything else (the WETH/USDC token and
-pool addresses) is filled in from **real, on-chain-verified** values shipped with
-the app; the startup validation gate re-proves every one on-chain, so nothing is
-taken on trust. The WebSocket URL is derived from your HTTPS URL automatically for
-the common providers.
+For each missing value the app prints **what it is**, **why it needs it**,
+**where to get it** (with the actual dashboard URLs and click-path), and **what a
+correct answer looks like**, then gives you a box to paste it into. Answers are
+validated as you type — and endpoints are *proved*, not just parsed: the check
+makes a real `eth_chainId` call, so a dead endpoint or one pasted into the wrong
+chain's box is caught immediately rather than turning into a silently empty feed.
+
+Everything you enter is stored in a local SQLite database at
+`.l2arb/credentials.db` (created on first use, owner-read/write only,
+git-ignored), so you are asked once and never again.
+
+Most of it is filled in for you:
+
+* **WebSocket URLs** are derived from the HTTPS endpoint you paste — you only see
+  that box if the derivation fails.
+* **Token, DEX and pool addresses** are never prompted for. They are on-chain
+  facts, shipped verified and re-proven on-chain by the startup gate; the health
+  check materialises them and moves on. (Hand-typing a pool address is how
+  fabricated market data gets into a bot — see `CLAUDE.md` §2.)
+* **Tuning values** all have safe defaults; `setup --optional` prompts for them.
+
+> **No private key is ever requested, anywhere.** The detection stack holds no
+> keys and signs nothing, so none is needed to reach 100%. The only wallet value
+> collected is your **public** address, for profit to be paid to. Any tool asking
+> you to type a seed phrase is stealing your funds.
 
 Non-interactive (scriptable) forms:
 
 ```
-l2arb setup --http "https://arb-mainnet.g.alchemy.com/v2/YOUR_KEY"
-l2arb setup --provider alchemy --key YOUR_KEY
-l2arb setup --http "https://primary/..." --backup "https://backup/..."   # rate-limit failover
+l2arb setup --quick --http "https://arb-mainnet.g.alchemy.com/v2/YOUR_KEY"
+l2arb setup --quick --provider alchemy --key YOUR_KEY
+l2arb setup --quick --http "https://primary/..." --backup "https://backup/..."   # rate-limit failover
+l2arb setup --all-chains          # per-chain endpoint walk (auto-detects from your env)
+l2arb health --no-probe           # offline check: formats only, no network calls
+l2arb --no-setup                  # launch without the guided gate
 ```
+
+The health check also reads plain environment variables
+(`L2ARB__CHAINS__ARBITRUM__HTTP`, `PROFIT_RECEIVER`, …), which take precedence
+over the stored database — so CI and container deployments can supply everything
+without ever running the wizard, and the report shows which source each value
+came from.
 
 The `--backup` URL (or a comma-separated `ws_url`/`http_url` in the config) is a
 second endpoint the app **fails over to automatically** if the first is

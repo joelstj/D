@@ -38,7 +38,7 @@ import sys
 from pathlib import Path
 from typing import Callable
 
-from . import console, proc
+from . import console, proc, textio
 from .paths import Layout
 
 # ── Real, on-chain-verified Arbitrum One addresses ───────────────────────────
@@ -325,7 +325,7 @@ def write_arbitrum_quickstart(lo: Layout, ws_url: str, http_url: str) -> Path | 
         console.err("shipped Arbitrum pool registry not found; cannot build a live config")
         return None
     cfg = arbitrum_quickstart_config(ws_url, http_url, str(pool_path))
-    lo.config_toml.write_text(cfg)
+    textio.write_text(lo.config_toml, cfg)
     return lo.config_toml
 
 
@@ -527,7 +527,7 @@ def materialize_chain_pools(
 
     result = _discover_pools_json(lo, chain, http_url, runner)
     if result and result.get("pools") and result.get("toml"):
-        dst.write_text(result["toml"])
+        textio.write_text(dst, result["toml"])
         return dst, f"discovered {len(result['pools'])} real pool(s) on-chain", result
 
     shipped = lo.ingestion / "config" / "pools" / f"{chain}.example.toml"
@@ -654,6 +654,56 @@ arb_gas_info        = "0x000000000000000000000000000000000000006C"
     return header + "".join(chain_blocks) + "[cross_chain]\nenabled = false\n"
 
 
+def write_config_from_store(lo: Layout, store, chains: list[str]) -> Path | None:
+    """Render a complete live ``config.toml`` from the credential database.
+
+    This is the write path for the guided health-check setup
+    (:mod:`l2arb.wizard`): every endpoint has already been collected, validated
+    and — for HTTPS — proved against the real chain id, so this only assembles
+    them. It reuses the exact same block renderers as ``setup --all-chains`` so
+    there is one definition of what a chain block looks like, and it is written
+    through :mod:`l2arb.textio` so the result is always UTF-8 (the Rust binary
+    cannot read anything else).
+
+    A chain whose endpoints aren't in the store, or that has no pool registry,
+    is written **disabled with its endpoint preserved** rather than dropped or
+    guessed at — the same honest fallback the all-chains wizard already uses.
+    Returns the config path, or ``None`` if not one chain could be assembled.
+    """
+    lo.ensure_state_dirs()
+    materialized = materialize_pool_registries(lo)
+
+    blocks: list[str] = []
+    enabled = 0
+    for chain in [c for c in KNOWN_CHAINS if c in set(chains)]:
+        http_url = (store.get(f"rpc.{chain}.http") or "").strip()
+        ws_url = (store.get(f"rpc.{chain}.ws") or "").strip() or derive_ws_url(http_url)
+        if not http_url:
+            continue
+        pool_path = materialized.get(chain)
+        target = str(pool_path) if pool_path else str(lo.state_dir / "pools" / f"{chain}.toml")
+
+        if pool_path is None:
+            blocks.append(render_disabled_chain_block(chain, ws_url, http_url, target))
+            continue
+        if chain == "arbitrum":
+            full = arbitrum_quickstart_config(ws_url, http_url, target)
+            blocks.append(full[full.index("[[chains]]") : full.index("[cross_chain]")])
+        elif chain in _CHAIN_TEMPLATE:
+            blocks.append(render_chain_block(chain, ws_url, http_url, target, None))
+        else:  # pragma: no cover - every KNOWN_CHAIN is arbitrum or templated
+            blocks.append(render_disabled_chain_block(chain, ws_url, http_url, target))
+            continue
+        enabled += 1
+
+    if not enabled:
+        console.err("no chain has a usable endpoint + pool registry — nothing written")
+        return None
+
+    textio.write_text(lo.config_toml, multi_chain_config(blocks))
+    return lo.config_toml
+
+
 def run_setup_all_chains(
     lo: Layout,
     prompt: Prompt = input,
@@ -709,7 +759,7 @@ def run_setup_all_chains(
 
     cfg = multi_chain_config(blocks)
     lo.ensure_state_dirs()
-    lo.config_toml.write_text(cfg)
+    textio.write_text(lo.config_toml, cfg)
     console.ok(f"wrote {lo.config_toml}")
     if enabled_chains:
         console.ok(f"live-ready now: {', '.join(enabled_chains)}")

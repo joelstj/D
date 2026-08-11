@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import re
 
-from . import setup
+from . import console, setup, textio
 from .paths import Layout
 
 ENGINE_PORT = 8080
@@ -77,11 +77,17 @@ def ensure_config_toml(lo: Layout) -> str:
     if not dst.exists():
         example = lo.ingestion / "config" / "config.example.toml"
         if example.exists():
-            text = example.read_text()
+            text = textio.read_text(example)
             for chain, pool_path in setup.materialize_pool_registries(lo).items():
                 placeholder = f'pool_registry = "config/pools/{chain}.toml"'
                 text = text.replace(placeholder, f"pool_registry = {setup._toml_str(str(pool_path))}", 1)
-            dst.write_text(text)
+            textio.write_text(dst, text)
+    elif textio.repair_encoding(dst):
+        # An install predating the UTF-8 fix (see textio.py) left a config the
+        # Rust ingestion binary cannot read at all, so `l2-ingest` died on every
+        # start and the health HUD showed it permanently "failed". Heal it here
+        # rather than making the user find and delete a file under AppData.
+        console.warn(f"repaired the text encoding of {dst} (it was not valid UTF-8; original kept as .bak)")
     return str(dst)
 
 
@@ -89,7 +95,7 @@ def config_is_live_ready(lo: Layout) -> bool:
     """True only when config.toml has been filled with real endpoints/pools."""
     if not lo.config_toml.exists():
         return False
-    text = lo.config_toml.read_text()
+    text = textio.read_text(lo.config_toml)
     if any(marker in text for marker in _PLACEHOLDER_MARKERS):
         return False
     return not _has_non_hex_0x_token(text)

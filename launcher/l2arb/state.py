@@ -12,6 +12,7 @@ import json
 import time
 from dataclasses import dataclass
 
+from . import textio
 from .paths import Layout
 
 
@@ -61,7 +62,7 @@ def next_step(ready: ComponentReadiness, live_ready: bool) -> str:
 
 def read(lo: Layout) -> dict:
     try:
-        return json.loads(lo.state_file.read_text())
+        return json.loads(textio.read_text(lo.state_file))
     except (OSError, ValueError):
         return {}
 
@@ -71,7 +72,7 @@ def write(lo: Layout, **fields) -> None:
     data = read(lo)
     data.update(fields)
     data["updated_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-    lo.state_file.write_text(json.dumps(data, indent=2))
+    textio.write_text(lo.state_file, json.dumps(data, indent=2))
 
 
 def mark_component(lo: Layout, component: str, version: str = "") -> None:

@@ -19,7 +19,7 @@ import urllib.error
 import urllib.request
 import webbrowser
 
-from . import config, console, state
+from . import config, console, credentials, healthcheck, state
 from .health import HealthMonitor
 from .paths import Layout
 from .proc import Service
@@ -100,23 +100,35 @@ def run(lo: Layout, *, live: bool, port: int, open_browser: bool = True) -> int:
     _install_sigterm_handler()
     services: list[Service] = []
 
+    # Hand the child services whatever the guided setup collected. Without this
+    # a stored API key or tuning override would pass the health check and then
+    # never reach the process that reads it.
+    try:
+        with credentials.store(lo) as st:
+            stored_env = healthcheck.env_overrides(st)
+    except Exception:  # noqa: BLE001 - a bad/locked database must not stop the stack
+        console.warn("could not read stored credentials; using environment defaults")
+        stored_env = {}
+
     try:
         if live:
             console.banner("Starting live stack (engine → ingestion → dashboard)")
-            engine = _service(lo, "engine", config.engine_cmd(lo), lo.engine, {}, port=port)
+            engine = _service(lo, "engine", config.engine_cmd(lo), lo.engine, dict(stored_env), port=port)
             engine.start()
             services.append(engine)
             if not wait_http(f"http://127.0.0.1:{config.ENGINE_PORT}/health", 40):
                 console.warn("engine did not become healthy in time; check .l2arb/logs/engine.log")
             ingestion = _service(
-                lo, "ingestion", config.ingestion_cmd(lo), lo.ingestion, {}, port=port
+                lo, "ingestion", config.ingestion_cmd(lo), lo.ingestion, dict(stored_env), port=port
             )
             ingestion.start()
             services.append(ingestion)
         else:
             console.banner("Starting dashboard (paper / simulation mode)")
 
-        dash_env = config.dashboard_env(lo, live=live, port=port)
+        # dashboard_env last: its PORT/EXECUTION_MODE/DATA_SOURCE are decided by
+        # this run's flags and safety invariants, and must win over a stored value.
+        dash_env = {**stored_env, **config.dashboard_env(lo, live=live, port=port)}
         dashboard = _service(
             lo, "dashboard", config.dashboard_cmd(lo), lo.dashboard / "backend", dash_env, port=port
         )

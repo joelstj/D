@@ -15,6 +15,7 @@ or directly once the payload is staged:
 import os
 
 from PyInstaller.building.datastruct import Tree
+from PyInstaller.utils.hooks import collect_submodules
 
 # SPECPATH is injected by PyInstaller = the dir containing this spec (repo/scripts).
 ROOT = os.path.abspath(os.path.join(SPECPATH, os.pardir))
@@ -29,21 +30,14 @@ a = Analysis(
     pathex=[LAUNCHER],
     binaries=[],
     datas=[],
-    hiddenimports=[
-        "l2arb",
-        "l2arb.cli",
-        "l2arb.installer",
-        "l2arb.run",
-        "l2arb.setup",
-        "l2arb.health",
-        "l2arb.proc",
-        "l2arb.config",
-        "l2arb.prereqs",
-        "l2arb.state",
-        "l2arb.payload",
-        "l2arb.paths",
-        "l2arb.console",
-    ],
+    # Collected rather than hand-listed: this was previously an explicit
+    # enumeration of every `l2arb.*` module, which silently goes stale the
+    # moment a module is added — the frozen exe would then be missing code the
+    # dev checkout has, a difference that only shows up on Windows at runtime.
+    # `sqlite3` is named explicitly because the credential store is the
+    # launcher's one non-pure-Python stdlib dependency (it needs the `_sqlite3`
+    # extension module), so a packaging miss there would break setup entirely.
+    hiddenimports=collect_submodules("l2arb") + ["sqlite3"],
     hookspath=[],
     runtime_hooks=[],
     excludes=["tkinter", "numpy", "pandas", "PIL"],
