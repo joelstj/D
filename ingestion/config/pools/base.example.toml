@@ -1,13 +1,15 @@
 # Base pool registry.
 #
-# Real, on-chain-verified pools: each was confirmed live via a direct eth_call
-# to the Uniswap V3 factory's getPool() (not a search/summary), reading
-# token0/token1/liquidity() at the time of writing. The startup validation gate
-# (docs/ARCHITECTURE.md §7) re-proves every entry on-chain before it enters the
-# live set regardless — a stale entry is rejected loudly, never silently trusted.
-# See config/pools/README.md for the full schema.
+# Real, on-chain-verified pools: every entry was independently confirmed live
+# via a direct eth_call to the Uniswap V3 factory's getPool() (not a
+# search/summary) — the factory is fingerprinted on-chain before use
+# (scripts/discover_pools.py), and each pool's own token0()/token1()/fee() is
+# cross-checked against what was asked for. The startup validation gate
+# (docs/ARCHITECTURE.md §7) re-proves every entry on-chain again before it
+# enters the live set regardless — a stale entry is rejected loudly, never
+# silently trusted. See config/pools/README.md for the full schema.
 
-# Uniswap V3 — WETH/USDC 0.01% (deepest of the three tiers checked here).
+# Uniswap V3 — WETH/USDC 0.01%.
 [[pool]]
 dex      = "uniswap_v3"
 kind     = "v3"
@@ -23,6 +25,16 @@ dex      = "uniswap_v3"
 kind     = "v3"
 address  = "0xd0b53D9277642d899DF5C87A3966A349A798F224"
 fee_pips = 500
+token0   = "0x4200000000000000000000000000000000000006"  # WETH
+token1   = "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913"  # USDC (native)
+factory  = "0x33128a8fC17869897dcE68Ed026d694621f6FDfD"
+
+# Uniswap V3 — WETH/USDC 0.30%.
+[[pool]]
+dex      = "uniswap_v3"
+kind     = "v3"
+address  = "0x6c561B446416E1A00E8E93E221854d6eA4171372"
+fee_pips = 3000
 token0   = "0x4200000000000000000000000000000000000006"  # WETH
 token1   = "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913"  # USDC (native)
 factory  = "0x33128a8fC17869897dcE68Ed026d694621f6FDfD"

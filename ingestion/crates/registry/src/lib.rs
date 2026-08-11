@@ -53,3 +53,39 @@ pub enum RegistryLoadError {
         source: toml::de::Error,
     },
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Every shipped `*.example.toml` pool registry must load and parse cleanly
+    /// with `>=1` pool — this is what `config.example.toml`'s `pool_registry`
+    /// fields point at (once copied), and what `scripts/discover_pools.py`
+    /// writes for chains a user hasn't curated yet. A regression here means a
+    /// freshly-generated or freshly-copied config is broken before it ever
+    /// reaches the on-chain validation gate.
+    #[test]
+    fn every_shipped_example_registry_loads_with_pools() {
+        let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/../../config/pools");
+        let mut checked = 0;
+        for entry in std::fs::read_dir(dir).expect("config/pools exists") {
+            let entry = entry.unwrap();
+            let path = entry.path();
+            if path.extension().and_then(|e| e.to_str()) != Some("toml") {
+                continue;
+            }
+            let reg = load_registry_file(&path)
+                .unwrap_or_else(|e| panic!("{} failed to load: {e}", path.display()));
+            assert!(
+                !reg.pools.is_empty(),
+                "{} has zero pools — not a useful example",
+                path.display()
+            );
+            checked += 1;
+        }
+        assert!(
+            checked >= 3,
+            "expected at least arbitrum/base/optimism examples, found {checked}"
+        );
+    }
+}

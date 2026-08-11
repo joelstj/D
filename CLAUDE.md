@@ -145,6 +145,8 @@ python3 -m l2arb doctor      # check toolchains + install state (+ next-step gui
 python3 -m l2arb install     # build engine venv + dashboard + ingestion binary
 python3 -m l2arb run         # paper mode, opens the dashboard at :8787
 python3 -m l2arb setup       # guided live setup — paste one Arbitrum RPC URL
+python3 -m l2arb setup --all-chains  # every chain: auto-detects env RPC creds, prompts
+                                      # individually for the rest, auto-discovers pools
 python3 -m l2arb run --live  # full stack (setup writes a live-ready .l2arb/config.toml)
 ```
 
@@ -1087,3 +1089,123 @@ overlap. All five gates re-verified green **after** the merge, not just before i
 (untouched by either session, reconfirmed), contracts 73 (66 + §15's 7 new cross-chain-fork-script
 tests), ingestion (`fmt` + `clippy -D warnings` + full workspace suite, all green), dashboard
 (typecheck + 67 frontend + backend + build, all green), launcher 97 (this section's 87 + §15's ~10).
+
+---
+
+## 17. Ingestion engine endpoint/pool loading + multi-chain guided setup (2026-08-10)
+
+An 8th pass (`claude/ingestion-engine-endpoints-rx9h18`), task: *"debug and fix the ingestion
+engine and ensure it is loading up websocket and RPC endpoints, or at least [prompt] the user to
+individually add all ingestion routes and endpoints and also pools if not automatically
+generated."* Tier-A reconfirmed green before any change — the gap was operational, not a broken
+build. Full detail: `docs/notes-ingestion-engine-endpoints.md`.
+
+**The real bug.** `Config::validate()` checked that `ws_url`/`http_url` were non-empty for every
+enabled chain but never checked *what* they were — so a config still carrying the shipped
+`config.example.toml`'s literal template text (`wss://YOUR_ARBITRUM_WS`, ...) passed
+`--check-config` clean. At runtime, `AlloyProvider::connect`'s HTTP side is lazy (no round-trip
+at construction) and a failing WS candidate just logs a warning and falls back to no subscription
+— so the failure only ever surfaced as an opaque connect/DNS error on the first real RPC call,
+then looped forever with a generic "chain ingestor exited — reconnecting" that never explained
+why. The same "looks valid, isn't ready" shape §9/§11/§12 already found and fixed elsewhere in
+this repo, just never previously found for endpoints. Fixed: `validate()` now rejects, for every
+*enabled* chain, an endpoint containing the shipped placeholder marker or not shaped like an
+absolute `ws(s)://`/`http(s)://` URL — enforced at the Rust layer itself, not just the Python
+launcher's pre-existing heuristic. Regression-tested against the *actual* shipped example file
+(config crate 12 → 16 tests).
+
+**Pools were the other half of "not loading."** Only Arbitrum had a real, committed pool
+registry; `config/pools/README.md` had said since inception "a discovery script can seed them,"
+with none existing. Built `ingestion/scripts/discover_pools.py` (stdlib-only Python): fingerprints
+a candidate Uniswap V3 factory on-chain before trusting it (never by reputation/memory alone),
+then calls `getPool()` directly per fee tier — one cheap read, not a millions-of-blocks log crawl
+— and independently re-verifies every result. The two extra ABI selectors it needs are pinned
+against alloy's real, tested Keccak256 in a new `crates/registry/src/abi.rs` assertion rather than
+trusted from memory. Run live against this session's real RPC credentials: found and verified 4
+real WETH/USDC pools (every standard fee tier) each on **Base** and **Optimism** — now committed
+as `config/pools/{base,optimism}.example.toml`, closing 2 of the 4 missing-registry gaps this repo
+has carried since inception. (Unichain — native V4, a different discovery mechanism entirely — and
+Ink — no confidently-known factory anywhere in this repo — are honestly left for the fallback
+below rather than guessed at.) A real bug found building it: some RPC gateways 403 the stdlib
+default `Python-urllib` User-Agent as bot traffic — fixed by sending a normal one, confirmed live.
+16 offline tests, including an end-to-end replay of the real, already-committed Arbitrum pool as a
+fixture.
+
+**The literal fallback the task asked for: `l2arb setup --all-chains`.** Generalizes the existing
+Arbitrum-only quick-start (kept unchanged, still the default) to every target chain: auto-detects
+an RPC endpoint already in the environment (`RPC_URL_<CHAIN>`, `<CHAIN>_RPC_URL`, the engine's
+existing `L2ARB__CHAINS__<CHAIN>__{HTTP,WSS}` convention) before ever prompting; anything not
+found is asked for individually, skippable. Pools: live discovery first, then a shipped example,
+then — never a guess — the chain is written **disabled with the endpoint preserved** and the exact
+next command spelled out in the file itself, never silently dropped. 29 new launcher tests (90 →
+119), all offline/deterministic.
+
+**Live-proven, this session's real environment, not just unit-tested.** Built the release binary
+and ran the real CLI against this container's actual credentials: all 5 chains auto-detected from
+the environment with zero prompts; Base + Optimism got live-discovered pools; Arbitrum fell back
+to its shipped example (rate-limited at the time — the honest fallback path working as designed,
+not a failure); Unichain/Ink correctly landed disabled. The real built `l2-ingest --check-config`
+passed cleanly against the real generated config. Running the real binary live: `/health`/`/metrics`
+responded, and **the validation gate + mirror-seeding completed successfully for Base and Optimism
+against real, live on-chain state** — genuine, live proof the HTTP RPC + pool-loading path works
+end-to-end.
+
+**What didn't get proven live — an environment limit, not a code defect.** Every WS connection
+attempt (three unrelated providers — dRPC, QuikNode, Alchemy) failed identically with a TLS
+`UnknownIssuer` error. This sandbox's own agent-proxy documentation (`/root/.ccr/README.md`) lists
+**WebSocket upgrades** explicitly under "not supported through the proxy — report, do not work
+around." Plain HTTPS to the same three providers worked fine in the same run (proof above); only
+the WS upgrade handshake specifically isn't supported by this sandbox's egress proxy. The
+ingestion engine's own behavior was correct throughout: it attempted every WS endpoint, logged a
+specific error, and retried through the existing tested backoff/supervisor path without crashing —
+exactly the designed degrade path. On a real deployment with direct internet access these are the
+same publicly-trusted-CA endpoints already proven to work for HTTP in this run, so WS would connect
+the same way. Recorded rather than worked around, per this sandbox's own instructions.
+
+**Net result:** ingestion config crate 12→16 tests, registry crate +3, full workspace 221 tests —
+Tier-A green throughout, re-run after every change. 8 real, independently-verified, on-chain pools
+newly shipped (Base + Optimism). Launcher 90→119 tests. Every one of the 5 target chains now has a
+working, tested path to a real config: automatic wherever this session could verify real data
+on-chain, and an explicit, individually-prompted, never-fabricating fallback everywhere it
+couldn't — with a config that's still template text now failing loudly at `--check-config` time
+instead of degrading into a silent, unexplained reconnect loop.
+
+**Post-merge reconciliation with §16.** This branch and `claude/arbitrage-gui-compile-deploy-
+0cvfjn` (§16) were developed in parallel from the same base and both independently built pool
+auto-discovery/curation for the same chains — real add/add conflicts on `config/pools/
+{base,optimism}.example.toml`, resolved by hand, not auto-merged. Every overlapping pool address
+between the two sessions' independently-derived data matched exactly (case-insensitive) — strong
+cross-validation that both approaches (this session's live `getPool()` fingerprint-and-verify tool,
+§16's live `eth_call`-verified manual research) produced genuinely correct on-chain data, not just
+internally-consistent data. Resolution merged rather than picked a side: `base.example.toml` kept
+this session's 4th fee-tier pool §16's research had missed; `optimism.example.toml` was regenerated
+via this session's discovery script with §16's wider WETH/USDT/DAI/USDC token set (every one of
+§16's claimed addresses re-verified live before accepting), yielding 22 independently-verified pools
+(up from either session's partial set alone) — `arbitrum.example.toml` and the new `unichain.example.toml`/
+`ink.example.toml` are §16's unmodified, separately-verified work.
+
+§16's Unichain/Ink factory research (real, chain-specific Uniswap V3 deployments — not the
+cross-chain-default factory address) was itself independently re-verified live during this
+reconciliation (both factories re-fingerprinted, every claimed pool re-derived via fresh
+`getPool()` calls, all matching exactly) — which corrected this session's own original, overly
+conservative framing that Unichain/Ink couldn't be auto-discovered (§16's research disproved that
+directly). `discover_pools.py`'s `CHAIN_CANDIDATES` and `setup.py`'s `_CHAIN_TEMPLATE` are extended
+accordingly (3 → 5 chains), so `l2arb setup --all-chains` can now fully auto-assemble every one of
+the 5 target chains, not just 3, wherever an RPC endpoint is available.
+
+`launcher/l2arb/setup.py`/`config.py` merged with no logical conflict: §16's `materialize_pool_
+registries()`/`ensure_config_toml()` rewrite (the default `install` path, all 5 chains' pool data)
+and this session's `run_setup_all_chains()`/`materialize_chain_pools()` (the `--all-chains` guided
+wizard, live discovery + per-chain endpoint prompting) touch different call paths entirely and are
+complementary, not competing: the former guarantees every fresh install ships real pool data even
+in paper mode; the latter is what actually wires up live RPC endpoints per chain. A new launcher
+test proves the extension concretely: given an endpoint and their real shipped example, Unichain
+and Ink now render *enabled* through `--all-chains`, not disabled-with-endpoint-preserved.
+
+All gates independently re-verified green **after** the merge, by this session directly: ingestion
+(`fmt` + `clippy -D warnings` + full workspace suite, 222 tests — up from either session's own count
+alone), `discover_pools.py`'s own offline suite (16 tests, unaffected by the new candidates — pure
+functions, chain-agnostic), launcher (127 tests — 119 from this session + §16's own additions, +1
+new for the Unichain/Ink extension above). Dashboard/contracts/engine were untouched by this merge
+resolution (no conflicts on those trees) and were already independently verified green by §16
+before landing.

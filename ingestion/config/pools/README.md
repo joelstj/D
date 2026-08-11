@@ -14,9 +14,26 @@ Uniswap-V3-style concentrated liquidity (`v3`), and Uniswap **V4** pools with a
 
 Pool addresses are intentionally **not** committed as a curated set here — they
 are environment/DEX-specific and must be gathered and verified for your
-deployment. Populate these files (a discovery script can seed them from factory
-`PairCreated`/`PoolCreated` events filtered by your token allow-list and a
-liquidity floor), then let the startup gate prove each one.
+deployment. Every one of the 5 target chains ships a real, on-chain-verified
+`<chain>.example.toml` starting point (copy to `<chain>.toml` and curate) —
+`arbitrum`/`base`/`optimism` WETH/USDC across every standard fee tier,
+`optimism` also WETH/USDT/DAI and USDC/USDT/DAI, `unichain` USDC/WETH/USDT via
+its own chain-specific Uniswap V3 deployment (Unichain's *majority* liquidity
+is Uniswap V4 — a singleton `PoolManager`, not a per-pool factory — these V3
+pools are real but not the whole picture), and `ink` one real WETH/USDC pool
+(a genuinely thin chain today, not an under-researched one).
+
+**Populate these automatically**: `../scripts/discover_pools.py --chain <name>
+--http-url <your RPC URL> --out config/pools/<name>.toml` fingerprints a
+candidate Uniswap V3 factory on-chain (never trusted by address alone), then
+queries `getPool()` directly per fee tier for a named token set (WETH/USDC by
+default, `--token NAME=0xADDRESS` to add more) — a handful of cheap reads, not a
+`PairCreated`/`PoolCreated` log crawl over the chain's whole history. Every one
+of the 5 target chains has a known-good candidate factory built in. `l2arb
+setup --all-chains` (the launcher) runs this automatically per chain and falls
+back to a shipped example, or prompting, when live discovery can't confirm
+anything (e.g. a chain whose configured RPC is unreachable). Either way, let
+the startup gate prove each entry — this script only proposes candidates.
 
 ## Schema
 

@@ -25,6 +25,17 @@ sol! {
     function symbol() external view returns (string);
     /// UniswapV2Pair `getReserves()`.
     function getReserves() external view returns (uint112 reserve0, uint112 reserve1, uint32 blockTimestampLast);
+    /// Uniswap V3 Factory `getPool(tokenA, tokenB, fee)` — the zero address means
+    /// no pool exists for that pair/fee. Used by pool discovery, never by the
+    /// live path (the gate validates *declared* pools; it never looks any up).
+    function getPool(address tokenA, address tokenB, uint24 fee) external view returns (address pool);
+    /// Uniswap V3 Factory `feeAmountTickSpacing(fee)` — a standard, non-zero fee
+    /// tier (500/3000/10000) always maps to a non-zero tick spacing on a genuine
+    /// factory. Discovery fingerprints a candidate factory address with this
+    /// before trusting anything it reports; a look-alike/wrong-address contract
+    /// answers something else (or reverts) and is rejected, never silently
+    /// treated as real.
+    function feeAmountTickSpacing(uint24 fee) external view returns (int24 tickSpacing);
 
     /// V4 `StateView.getSlot0(poolId)`.
     function getSlot0(bytes32 poolId) external view returns (uint160 sqrtPriceX96, int24 tick, uint24 protocolFee, uint24 lpFee);
@@ -83,6 +94,24 @@ pub fn decimals_calldata() -> Bytes {
 pub fn symbol_calldata() -> Bytes {
     symbolCall {}.abi_encode().into()
 }
+/// Calldata for `getPool(tokenA, tokenB, fee)`.
+pub fn get_pool_calldata(token_a: Address, token_b: Address, fee: u32) -> Bytes {
+    getPoolCall {
+        tokenA: token_a,
+        tokenB: token_b,
+        fee: U24::from(fee),
+    }
+    .abi_encode()
+    .into()
+}
+/// Calldata for `feeAmountTickSpacing(fee)`.
+pub fn fee_amount_tick_spacing_calldata(fee: u32) -> Bytes {
+    feeAmountTickSpacingCall {
+        fee: U24::from(fee),
+    }
+    .abi_encode()
+    .into()
+}
 
 /// Decode an `address` return (`token0`/`token1`/`factory`).
 pub fn decode_address(ret: &[u8]) -> Result<Address, GateError> {
@@ -120,6 +149,18 @@ pub fn decode_symbol(ret: &[u8]) -> Result<String, GateError> {
     ))
 }
 
+/// Decode a `getPool` return (an `address`; the zero address means no pool).
+pub fn decode_pool_address(ret: &[u8]) -> Result<Address, GateError> {
+    getPoolCall::abi_decode_returns(ret).map_err(|e| GateError::Decode(format!("getPool: {e}")))
+}
+
+/// Decode a `feeAmountTickSpacing` return into a plain `i32`.
+pub fn decode_tick_spacing(ret: &[u8]) -> Result<i32, GateError> {
+    let v = feeAmountTickSpacingCall::abi_decode_returns(ret)
+        .map_err(|e| GateError::Decode(format!("feeAmountTickSpacing: {e}")))?;
+    i32::try_from(v).map_err(|e| GateError::Decode(format!("feeAmountTickSpacing: {e}")))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -133,6 +174,29 @@ mod tests {
         assert_eq!(decimalsCall::SELECTOR, [0x31, 0x3c, 0xe5, 0x67]);
         assert_eq!(symbolCall::SELECTOR, [0x95, 0xd8, 0x9b, 0x41]);
         assert_eq!(factoryCall::SELECTOR, [0xc4, 0x5a, 0x01, 0x55]);
+        // Uniswap V3 Factory selectors used by pool discovery — pinned here so a
+        // hand-rolled ABI encoder elsewhere in the repo (e.g. a Python discovery
+        // script that can't compute Keccak256 itself without a new dependency)
+        // has one real, tested source of truth to hardcode against instead of
+        // trusting anyone's memory of the spec.
+        assert_eq!(getPoolCall::SELECTOR, [0x16, 0x98, 0xee, 0x82]);
+        assert_eq!(feeAmountTickSpacingCall::SELECTOR, [0x22, 0xaf, 0xcc, 0xcb]);
+    }
+
+    #[test]
+    fn decodes_tick_spacing_and_pool_address() {
+        // int24 tickSpacing = 10, right-aligned in a 32-byte word.
+        let mut ret = [0u8; 32];
+        ret[31] = 10;
+        assert_eq!(decode_tick_spacing(&ret).unwrap(), 10);
+
+        // address pool, left-zero-padded in a 32-byte word.
+        let mut ret = [0u8; 32];
+        ret[12..].copy_from_slice(&[0x11; 20]);
+        assert_eq!(
+            decode_pool_address(&ret).unwrap(),
+            Address::from([0x11; 20])
+        );
     }
 
     #[test]

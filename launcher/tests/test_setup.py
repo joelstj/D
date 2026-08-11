@@ -5,6 +5,7 @@ Run with:  python -m unittest discover -s launcher/tests
 
 from __future__ import annotations
 
+import json
 import sys
 import tempfile
 import types
@@ -246,6 +247,284 @@ class ValidateConfigTest(unittest.TestCase):
         ok, note = setup.validate_config(lo, runner=_never)  # runner unused when no binary
         self.assertTrue(ok)
         self.assertIn("not built", note)
+
+
+# ── Multi-chain guided setup (`l2arb setup --all-chains`) ────────────────────
+
+
+class DetectEnvEndpointsTest(unittest.TestCase):
+    def test_finds_rpc_url_chain_pattern(self):
+        env = {"RPC_URL_BASE": "https://a"}
+        self.assertEqual(setup.detect_env_endpoints("base", env), ("https://a", None))
+
+    def test_finds_chain_rpc_url_pattern(self):
+        env = {"OPTIMISM_RPC_URL": "https://b"}
+        self.assertEqual(setup.detect_env_endpoints("optimism", env), ("https://b", None))
+
+    def test_finds_l2arb_prefixed_http_and_wss(self):
+        env = {"L2ARB__CHAINS__ARBITRUM__HTTP": "https://c", "L2ARB__CHAINS__ARBITRUM__WSS": "wss://c"}
+        self.assertEqual(setup.detect_env_endpoints("arbitrum", env), ("https://c", "wss://c"))
+
+    def test_absent_returns_none_each(self):
+        self.assertEqual(setup.detect_env_endpoints("ink", {}), (None, None))
+
+    def test_blank_value_is_treated_as_absent(self):
+        self.assertEqual(setup.detect_env_endpoints("base", {"RPC_URL_BASE": "   "}), (None, None))
+
+    def test_earlier_pattern_wins_over_later(self):
+        env = {"RPC_URL_BASE": "https://first", "BASE_RPC_URL": "https://second"}
+        http, _ws = setup.detect_env_endpoints("base", env)
+        self.assertEqual(http, "https://first")
+
+
+class ResolveChainEndpointsTest(unittest.TestCase):
+    def test_env_endpoint_used_without_prompting(self):
+        got = setup.resolve_chain_endpoints("base", {"RPC_URL_BASE": "https://base.example/x"}, _never)
+        self.assertEqual(got, ("wss://base.example/x", "https://base.example/x"))
+
+    def test_env_ws_preferred_over_derived(self):
+        env = {"RPC_URL_ARBITRUM": "https://a", "L2ARB__CHAINS__ARBITRUM__WSS": "wss://real-ws"}
+        got = setup.resolve_chain_endpoints("arbitrum", env, _never)
+        self.assertEqual(got, ("wss://real-ws", "https://a"))
+
+    def test_prompts_when_nothing_in_env(self):
+        got = setup.resolve_chain_endpoints("ink", {}, lambda _m: "https://ink.example/x")
+        self.assertEqual(got, ("wss://ink.example/x", "https://ink.example/x"))
+
+    def test_empty_prompt_answer_skips_the_chain(self):
+        self.assertIsNone(setup.resolve_chain_endpoints("ink", {}, lambda _m: ""))
+
+
+class DiscoverPoolsJsonTest(unittest.TestCase):
+    def _lo_with_script(self) -> Layout:
+        root = Path(tempfile.mkdtemp())
+        (root / "ingestion" / "scripts").mkdir(parents=True)
+        (root / "ingestion" / "scripts" / "discover_pools.py").write_text("# stub\n")
+        return Layout(root)
+
+    def test_parses_the_runner_stdout_as_json(self):
+        lo = self._lo_with_script()
+        payload = {"chain": "base", "pools": [], "toml": None}
+        result = setup._discover_pools_json(lo, "base", "https://x", lambda cmd, cwd=None: (1, json.dumps(payload)))
+        self.assertEqual(result, payload)
+
+    def test_missing_script_returns_none_without_calling_runner(self):
+        lo = Layout(Path(tempfile.mkdtemp()))  # no ingestion/ tree at all
+        result = setup._discover_pools_json(lo, "base", "https://x", _never)
+        self.assertIsNone(result)
+
+    def test_non_json_output_returns_none(self):
+        lo = self._lo_with_script()
+        result = setup._discover_pools_json(lo, "base", "https://x", lambda cmd, cwd=None: (1, "not json"))
+        self.assertIsNone(result)
+
+
+class PickNativePricePoolTest(unittest.TestCase):
+    WETH = "0x4200000000000000000000000000000000000006"
+    USDC = "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913"
+
+    def test_prefers_the_500_fee_tier(self):
+        result = {
+            "pools": [
+                {"token0": self.WETH, "token1": self.USDC, "fee_pips": 3000, "address": "0xA"},
+                {"token0": self.WETH, "token1": self.USDC, "fee_pips": 500, "address": "0xB"},
+            ]
+        }
+        self.assertEqual(setup._pick_native_price_pool(result, self.WETH, self.USDC), "0xB")
+
+    def test_falls_back_to_any_match_when_500_absent(self):
+        result = {"pools": [{"token0": self.WETH, "token1": self.USDC, "fee_pips": 3000, "address": "0xA"}]}
+        self.assertEqual(setup._pick_native_price_pool(result, self.WETH, self.USDC), "0xA")
+
+    def test_ignores_pools_for_a_different_pair(self):
+        other = "0x0000000000000000000000000000000000dEaD"
+        result = {"pools": [{"token0": self.WETH, "token1": other, "fee_pips": 500, "address": "0xA"}]}
+        self.assertIsNone(setup._pick_native_price_pool(result, self.WETH, self.USDC))
+
+    def test_none_result_or_no_pools_returns_none(self):
+        self.assertIsNone(setup._pick_native_price_pool(None, self.WETH, self.USDC))
+        self.assertIsNone(setup._pick_native_price_pool({"pools": []}, self.WETH, self.USDC))
+
+
+class MaterializeChainPoolsTest(unittest.TestCase):
+    def _lo(self) -> Layout:
+        root = Path(tempfile.mkdtemp())
+        (root / "ingestion" / "scripts").mkdir(parents=True)
+        (root / "ingestion" / "scripts" / "discover_pools.py").write_text("# stub\n")
+        (root / "ingestion" / "config" / "pools").mkdir(parents=True)
+        return Layout(root)
+
+    def test_uses_discovered_pools_when_available(self):
+        lo = self._lo()
+        payload = {"pools": [{"address": "0xA"}], "toml": "[[pool]]\naddress='0xA'\n"}
+        runner = lambda cmd, cwd=None: (0, json.dumps(payload))  # noqa: E731
+        path, note, discovery = setup.materialize_chain_pools(lo, "base", "https://x", runner)
+        self.assertEqual(path, lo.state_dir / "pools" / "base.toml")
+        self.assertIn("discovered 1", note)
+        self.assertEqual(path.read_text(), payload["toml"])
+        self.assertEqual(discovery, payload)
+
+    def test_falls_back_to_shipped_example_when_discovery_finds_nothing(self):
+        lo = self._lo()
+        (lo.ingestion / "config" / "pools" / "base.example.toml").write_text("# shipped real pools\n")
+        runner = lambda cmd, cwd=None: (1, json.dumps({"pools": [], "toml": None}))  # noqa: E731
+        path, note, _discovery = setup.materialize_chain_pools(lo, "base", "https://x", runner)
+        self.assertEqual(path, lo.state_dir / "pools" / "base.toml")
+        self.assertIn("shipped example", note)
+        self.assertEqual(path.read_text(), "# shipped real pools\n")
+
+    def test_neither_available_returns_none(self):
+        lo = self._lo()  # no base.example.toml shipped
+        runner = lambda cmd, cwd=None: (1, json.dumps({"pools": [], "toml": None}))  # noqa: E731
+        path, note, _discovery = setup.materialize_chain_pools(lo, "unichain", "https://x", runner)
+        self.assertIsNone(path)
+        self.assertIn("no pool registry", note)
+
+
+class RenderChainBlockTest(unittest.TestCase):
+    def test_enabled_block_has_real_fields_and_native_price_pool(self):
+        block = setup.render_chain_block("base", "wss://w", "https://h", "/pools/base.toml", "0xNATIVEPOOL")
+        self.assertIn('name          = "base"', block)
+        self.assertIn("enabled       = true", block)
+        self.assertIn('ws_url        = "wss://w"', block)
+        self.assertIn('"0xNATIVEPOOL"', block)
+
+    def test_omits_native_price_pools_section_when_none_found(self):
+        block = setup.render_chain_block("optimism", "wss://w", "https://h", "/pools/optimism.toml", None)
+        self.assertNotIn("native_price_pools", block)
+
+    @unittest.skipUnless(sys.version_info >= (3, 11), "tomllib needs 3.11+")
+    def test_produces_valid_toml_as_part_of_a_full_config(self):
+        import tomllib
+
+        block = setup.render_chain_block("base", "wss://w", "https://h", "/pools/base.toml", "0x" + "1" * 40)
+        parsed = tomllib.loads(block + "\n[cross_chain]\nenabled = false\n")
+        self.assertTrue(parsed["chains"][0]["enabled"])
+        self.assertEqual(parsed["chains"][0]["chain_id"], 8453)
+
+
+class RenderDisabledChainBlockTest(unittest.TestCase):
+    def test_disabled_block_preserves_the_endpoint(self):
+        block = setup.render_disabled_chain_block("unichain", "wss://saved-ws", "https://saved-http", "/pools/unichain.toml")
+        self.assertIn("enabled       = false", block)
+        self.assertIn('ws_url        = "wss://saved-ws"', block)
+        self.assertIn('http_url      = "https://saved-http"', block)
+        self.assertIn("discover_pools.py", block)  # points at the concrete next step
+
+    @unittest.skipUnless(sys.version_info >= (3, 11), "tomllib needs 3.11+")
+    def test_produces_valid_toml(self):
+        import tomllib
+
+        block = setup.render_disabled_chain_block("ink", "wss://w", "https://h", "/pools/ink.toml")
+        parsed = tomllib.loads(block + "\n[cross_chain]\nenabled = false\n")
+        self.assertFalse(parsed["chains"][0]["enabled"])
+        self.assertEqual(parsed["chains"][0]["hubs"], [])
+
+
+class MultiChainConfigTest(unittest.TestCase):
+    @unittest.skipUnless(sys.version_info >= (3, 11), "tomllib needs 3.11+")
+    def test_assembles_a_valid_multi_chain_config(self):
+        import tomllib
+
+        blocks = [
+            setup.render_chain_block("base", "wss://b", "https://b", "/pools/base.toml", None),
+            setup.render_disabled_chain_block("ink", "wss://i", "https://i", "/pools/ink.toml"),
+        ]
+        text = setup.multi_chain_config(blocks)
+        parsed = tomllib.loads(text)
+        self.assertEqual(parsed["schema_version"], 1)
+        self.assertFalse(parsed["cross_chain"]["enabled"])
+        names = [c["name"] for c in parsed["chains"]]
+        self.assertEqual(names, ["base", "ink"])
+
+
+class RunSetupAllChainsTest(unittest.TestCase):
+    def _lo_with_shipped_arbitrum_pools(self) -> Layout:
+        root = Path(tempfile.mkdtemp())
+        (root / "ingestion" / "scripts").mkdir(parents=True)
+        (root / "ingestion" / "scripts" / "discover_pools.py").write_text("# stub\n")
+        pools = root / "ingestion" / "config" / "pools"
+        pools.mkdir(parents=True)
+        (pools / "arbitrum.example.toml").write_text(
+            '[[pool]]\ndex="uniswap_v3"\nkind="v3"\naddress="0x' + "1" * 40 + '"\n'
+            'fee_pips=500\ntoken0="0x' + "2" * 40 + '"\ntoken1="0x' + "3" * 40 + '"\n'
+        )
+        return Layout(root)
+
+    def _fake_runner_finds_pools_only_for(self, chains_with_pools: set[str]):
+        weth, usdc = "0x" + "4" * 40, "0x" + "5" * 40
+
+        def runner(cmd, cwd=None):
+            chain = cmd[cmd.index("--chain") + 1]
+            if chain in chains_with_pools:
+                payload = {
+                    "chain": chain,
+                    "pools": [{"dex": "uniswap_v3", "address": "0x" + "6" * 40, "fee_pips": 500, "token0": weth, "token1": usdc}],
+                    "toml": "[[pool]]\n# discovered\n",
+                }
+                return 0, json.dumps(payload)
+            return 1, json.dumps({"chain": chain, "pools": [], "toml": None, "error": "no candidate"})
+
+        return runner
+
+    def test_env_detected_and_prompted_chains_both_go_live(self):
+        lo = self._lo_with_shipped_arbitrum_pools()
+        env = {"ARBITRUM_RPC_URL": "https://arb.example/x", "BASE_RPC_URL": "https://base.example/x"}
+        answers = iter(["", "", ""])  # optimism, unichain, ink: all skipped
+        rc = setup.run_setup_all_chains(
+            lo, prompt=lambda _m: next(answers), env=env, runner=self._fake_runner_finds_pools_only_for({"base"})
+        )
+        self.assertEqual(rc, 0)
+        self.assertTrue(lo.config_toml.exists())
+        text = lo.config_toml.read_text()
+        self.assertIn('name          = "arbitrum"', text)
+        self.assertIn('name          = "base"', text)
+        self.assertNotIn('name          = "optimism"', text)  # skipped chains are omitted entirely
+        self.assertTrue(config.config_is_live_ready(lo))
+
+    def test_chain_with_endpoint_but_no_pools_is_written_disabled_not_dropped(self):
+        lo = self._lo_with_shipped_arbitrum_pools()
+        env = {}
+        # Prompt order matches KNOWN_CHAINS: arbitrum, base, optimism, unichain, ink.
+        answers = iter(["https://arb.example/x", "", "", "https://unichain.example/x", ""])
+        rc = setup.run_setup_all_chains(
+            lo, prompt=lambda _m: next(answers), env=env, runner=self._fake_runner_finds_pools_only_for(set())
+        )
+        self.assertEqual(rc, 0)
+        text = lo.config_toml.read_text()
+        self.assertIn('name          = "unichain"', text)
+        self.assertIn("enabled       = false", text)
+        self.assertIn('ws_url        = "wss://unichain.example/x"', text)
+
+    def test_no_chain_resolved_is_a_clean_non_fatal_failure(self):
+        lo = self._lo_with_shipped_arbitrum_pools()
+        rc = setup.run_setup_all_chains(lo, prompt=lambda _m: "", env={}, runner=self._fake_runner_finds_pools_only_for(set()))
+        self.assertEqual(rc, 1)
+        self.assertFalse(lo.config_toml.exists())
+
+    def test_unichain_and_ink_go_live_via_their_shipped_examples(self):
+        # Regression for the _CHAIN_TEMPLATE extension (root CLAUDE.md §17's
+        # post-merge reconciliation with §16): unichain/ink are now templated
+        # chains too, not just arbitrum/base/optimism — given an endpoint and
+        # their real shipped example (live discovery finding nothing, same as
+        # the other chains in this test class), they render *enabled*, not
+        # disabled-with-endpoint-preserved.
+        lo = self._lo_with_shipped_arbitrum_pools()
+        for chain in ("unichain", "ink"):
+            (lo.ingestion / "config" / "pools" / f"{chain}.example.toml").write_text(
+                '[[pool]]\ndex="uniswap_v3"\nkind="v3"\naddress="0x' + "9" * 40 + '"\n'
+                'fee_pips=500\ntoken0="0x' + "4" * 40 + '"\ntoken1="0x' + "5" * 40 + '"\n'
+            )
+        env = {c.upper() + "_RPC_URL": f"https://{c}.example/x" for c in ("unichain", "ink")}
+        rc = setup.run_setup_all_chains(
+            lo, prompt=lambda _m: "", env=env, runner=self._fake_runner_finds_pools_only_for(set())
+        )
+        self.assertEqual(rc, 0)
+        text = lo.config_toml.read_text()
+        for chain in ("unichain", "ink"):
+            block_start = text.index(f'name          = "{chain}"')
+            block = text[block_start : block_start + 400]
+            self.assertIn("enabled       = true", block, f"{chain} should be enabled, got:\n{block}")
 
 
 if __name__ == "__main__":

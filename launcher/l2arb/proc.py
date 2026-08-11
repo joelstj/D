@@ -84,6 +84,34 @@ def run(cmd: list[str], cwd: Path | None = None, env: dict | None = None, prefix
     return proc.wait()
 
 
+def capture(cmd: list[str], cwd: Path | None = None, env: dict | None = None, timeout: float | None = 30.0) -> tuple[int, str]:
+    """Run a short helper command to completion, returning `(exit_code, stdout)`
+    instead of streaming it — for a command whose output the caller parses
+    (e.g. `discover_pools.py --json`) rather than watches. Unlike `run`, never
+    raises: a failed spawn or a timeout comes back as a non-zero code with an
+    explanatory string in place of stdout, so a discovery helper failing never
+    takes the whole setup wizard down with it.
+    """
+    full_env = {**os.environ, **(env or {})}
+    try:
+        result = subprocess.run(
+            _resolve(cmd, full_env),
+            cwd=str(cwd) if cwd else None,
+            env=full_env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=timeout,
+        )
+        return result.returncode, result.stdout
+    except OSError as exc:
+        return 127, str(exc)
+    except subprocess.TimeoutExpired:
+        return 124, "timed out"
+
+
 class Service:
     """A supervised long-running child process writing to its own log file.
 
