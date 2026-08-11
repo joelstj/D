@@ -4,12 +4,16 @@ from __future__ import annotations
 
 import os
 import stat
+import sys
 import tempfile
 import unittest
 from pathlib import Path
 
-from l2arb import credentials
-from l2arb.paths import Layout
+# Make the launcher package importable when run from the repo root.
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from l2arb import credentials  # noqa: E402
+from l2arb.paths import Layout  # noqa: E402
 
 
 class MaskTest(unittest.TestCase):

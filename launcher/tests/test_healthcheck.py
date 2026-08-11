@@ -3,13 +3,17 @@
 from __future__ import annotations
 
 import shutil
+import sys
 import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
 
-from l2arb import credentials, healthcheck, requirements, textio
-from l2arb.paths import Layout
+# Make the launcher package importable when run from the repo root.
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from l2arb import credentials, healthcheck, requirements, textio  # noqa: E402
+from l2arb.paths import Layout  # noqa: E402
 
 REPO = Path(__file__).resolve().parents[2]
 

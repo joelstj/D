@@ -2,10 +2,15 @@
 
 from __future__ import annotations
 
+import sys
 import unittest
+from pathlib import Path
 
-from l2arb import requirements
-from l2arb.requirements import BLOCKING, OPTIONAL, RECOMMENDED
+# Make the launcher package importable when run from the repo root.
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from l2arb import requirements  # noqa: E402
+from l2arb.requirements import BLOCKING, OPTIONAL, RECOMMENDED  # noqa: E402
 
 
 class ValidatorTest(unittest.TestCase):
