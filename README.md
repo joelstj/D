@@ -68,15 +68,26 @@ python3 -m l2arb run         # paper mode: builds the dashboard if needed, opens
 
 `python3 -m l2arb run` with no config launches the **paper dashboard** at
 <http://localhost:8787> — real detection wiring, simulated fills, zero setup. For
-the full live stack, `setup` handles the config for you — paste **one** Arbitrum
-RPC URL (get a free one from alchemy.com / infura.io) and it writes a complete,
-validated, live-ready config from real on-chain-verified addresses:
+the full live stack you don't need to know what to configure in advance: **every
+launch runs a full health check** over each RPC endpoint, WebSocket URL, API key
+and wallet address the stack needs, scores it out of 100%, and walks you through
+anything missing — explaining what each value is, where to get it, and what a
+correct one looks like, with a box to paste it into. Answers are validated and
+endpoints are *proved* with a real `eth_chainId` call, then stored in a local
+SQLite database (`.l2arb/credentials.db`) so you're asked once:
 
 ```bash
 python3 -m l2arb install     # build engine venv + dashboard + ingestion binary
-python3 -m l2arb setup        # paste one RPC URL (or: --http <url> / --provider alchemy --key <k>)
+python3 -m l2arb setup       # guided: prompts for everything still missing
+python3 -m l2arb health      # just the report (exit 0 when at 100%)
 python3 -m l2arb run --live  # engine + ingestion + dashboard on real data
 ```
+
+In practice that is usually **one paste**: the WebSocket URL is derived from the
+HTTPS one, and token/DEX/pool addresses are never prompted for — they're
+on-chain facts, shipped verified and re-proven by the startup gate. **No private
+key is ever requested**; the only wallet value collected is your public address,
+for profit to be paid to.
 
 (Prefer to hand-edit? `.l2arb/config.toml` is the full surface — real RPC
 endpoints + pool registries per chain, using `ingestion/config/config.example.toml`
