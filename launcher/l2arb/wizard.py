@@ -51,6 +51,9 @@ _STATUS_MARK = {
     healthcheck.INVALID: "✗",
     healthcheck.UNREACHABLE: "!",
     healthcheck.WRONG_CHAIN: "!",
+    # Satisfied, but with a caveat the detail line spells out — so it is marked
+    # apart from a clean "✓" rather than either hidden or shown as a failure.
+    healthcheck.RATE_LIMITED: "~",
 }
 
 

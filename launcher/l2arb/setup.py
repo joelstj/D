@@ -39,7 +39,7 @@ from pathlib import Path
 from typing import Callable
 
 from . import console, proc, textio
-from .paths import Layout
+from .paths import Layout, bundle_dir
 
 # ── Real, on-chain-verified Arbitrum One addresses ───────────────────────────
 # Sourced from ingestion/config/pools/arbitrum.example.toml. The startup gate
@@ -270,11 +270,36 @@ def resolve_arbitrum_endpoints(args, prompt: Prompt) -> tuple[str, str] | None:
 # ── Materialisation + validation (file I/O) ──────────────────────────────────
 
 
+def shipped_pool_dir(lo: Layout) -> Path:
+    """The directory holding the pool registries *this build* ships.
+
+    When frozen, prefer the copy inside the running ``.exe`` over the one
+    unpacked on disk. :func:`l2arb.payload.ensure_payload` deliberately skips a
+    component whose directory already exists, so the unpacked tree is written
+    exactly once — on the very first launch — and never refreshed. Upgrading the
+    ``.exe`` therefore leaves the *old* build's component sources in place
+    forever, and with them the old build's pool registries.
+
+    That is not theoretical: it is why a real install reported ``base: missing``
+    and ``optimism: missing`` while both registries have shipped since, and why
+    Arbitrum showed 2 pools when the shipped file has had 4 since it was
+    expanded. The bundle is the one copy guaranteed to match the executable
+    actually running, so it wins. A dev checkout is unfrozen and falls through to
+    the source tree unchanged.
+    """
+    bundled = bundle_dir()
+    if bundled:
+        candidate = bundled / "payload" / "ingestion" / "config" / "pools"
+        if candidate.is_dir():
+            return candidate
+    return lo.ingestion / "config" / "pools"
+
+
 def materialize_arbitrum_pools(lo: Layout, source: Path | None = None) -> Path | None:
     """Copy the shipped **real** Arbitrum pool registry into the state dir and return
     its path (absolute), so the generated config can point at it regardless of cwd.
     Returns None if the shipped example is missing."""
-    src = source or (lo.ingestion / "config" / "pools" / "arbitrum.example.toml")
+    src = source or (shipped_pool_dir(lo) / "arbitrum.example.toml")
     if not src.exists():
         return None
     dst = lo.state_dir / "pools" / "arbitrum.toml"
@@ -301,7 +326,7 @@ def materialize_pool_registries(lo: Layout, source_dir: Path | None = None) -> d
     missing are simply omitted from the result, not an error — a caller that
     requires one checks for it.
     """
-    src_dir = source_dir or (lo.ingestion / "config" / "pools")
+    src_dir = source_dir or shipped_pool_dir(lo)
     dst_dir = lo.state_dir / "pools"
     dst_dir.mkdir(parents=True, exist_ok=True)
     out: dict[str, Path] = {}
@@ -530,7 +555,7 @@ def materialize_chain_pools(
         textio.write_text(dst, result["toml"])
         return dst, f"discovered {len(result['pools'])} real pool(s) on-chain", result
 
-    shipped = lo.ingestion / "config" / "pools" / f"{chain}.example.toml"
+    shipped = shipped_pool_dir(lo) / f"{chain}.example.toml"
     if shipped.exists():
         shutil.copyfile(shipped, dst)
         return dst, "used the shipped example pool registry (discovery found nothing usable)", result

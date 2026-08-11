@@ -11,6 +11,7 @@ import tempfile
 import types
 import unittest
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -239,6 +240,66 @@ class MaterializePoolRegistriesTest(unittest.TestCase):
     def test_empty_ingestion_tree_yields_no_chains(self):
         lo = Layout(Path(tempfile.mkdtemp()))
         self.assertEqual(setup.materialize_pool_registries(lo), {})
+
+
+class ShippedPoolDirTest(unittest.TestCase):
+    """Where the shipped pool registries are read from on a frozen install.
+
+    `payload.ensure_payload` skips any component whose directory already exists,
+    so the unpacked source tree is written once — on the very first launch — and
+    never refreshed. Upgrading the .exe therefore leaves the *old* build's
+    component sources on disk indefinitely, and with them the old build's pool
+    registries. That is what a real run reported as `base: missing` and
+    `optimism: missing` while both have shipped for some time, alongside a stale
+    2-pool Arbitrum registry against a shipped file that has 4.
+    """
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.root = Path(self._tmp.name)
+        self.lo = Layout(self.root / "install")
+
+        # The stale tree an old .exe unpacked once and nothing ever refreshed.
+        self.unpacked = self.lo.ingestion / "config" / "pools"
+        self.unpacked.mkdir(parents=True)
+        (self.unpacked / "arbitrum.example.toml").write_text("# stale\n[[pool]]\nkind='v3'\n")
+
+        # What the .exe running *right now* carries inside itself.
+        self.bundled = self.root / "mei" / "payload" / "ingestion" / "config" / "pools"
+        self.bundled.mkdir(parents=True)
+        for chain in ("arbitrum", "base", "optimism"):
+            (self.bundled / f"{chain}.example.toml").write_text(
+                f"# current {chain}\n[[pool]]\nkind='v3'\n[[pool]]\nkind='v3'\n"
+            )
+
+    def _frozen(self):
+        return mock.patch.object(setup, "bundle_dir", return_value=self.root / "mei")
+
+    def test_a_dev_checkout_reads_the_source_tree(self):
+        # Unfrozen: no bundle, behaviour unchanged.
+        with mock.patch.object(setup, "bundle_dir", return_value=None):
+            self.assertEqual(setup.shipped_pool_dir(self.lo), self.unpacked)
+
+    def test_a_frozen_build_prefers_its_own_bundle(self):
+        with self._frozen():
+            self.assertEqual(setup.shipped_pool_dir(self.lo), self.bundled)
+
+    def test_chains_missing_from_a_stale_unpacked_tree_are_still_materialised(self):
+        # The reported failure: base/optimism absent on disk, present in the exe.
+        with self._frozen():
+            result = setup.materialize_pool_registries(self.lo)
+        self.assertEqual(set(result), {"arbitrum", "base", "optimism"})
+        for path in result.values():
+            self.assertIn("current", path.read_text())
+
+    def test_falls_back_to_the_source_tree_when_the_bundle_has_no_pools(self):
+        # A frozen build whose payload was staged without pool registries must
+        # not lose access to the unpacked ones.
+        empty = self.root / "empty-mei"
+        empty.mkdir()
+        with mock.patch.object(setup, "bundle_dir", return_value=empty):
+            self.assertEqual(setup.shipped_pool_dir(self.lo), self.unpacked)
 
 
 class ValidateConfigTest(unittest.TestCase):

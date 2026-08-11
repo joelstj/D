@@ -31,6 +31,7 @@ import json
 import os
 import socket
 import ssl
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -47,9 +48,23 @@ MISSING = "missing"
 INVALID = "invalid"
 UNREACHABLE = "unreachable"
 WRONG_CHAIN = "wrong_chain"
+#: The endpoint answered, but with a rate-limit response rather than a result.
+#: A distinct status because it is *not* a fault in what the operator supplied —
+#: see :data:`_SATISFIED`.
+RATE_LIMITED = "rate_limited"
 
 #: Statuses that mean "this requirement is satisfied".
-_SATISFIED = frozenset({OK})
+#:
+#: ``RATE_LIMITED`` counts as satisfied on purpose. A 429 is proof the endpoint
+#: is real, routable, and serving RPC — the host answered, it just declined this
+#: particular call. Scoring it as a failure was wrong in three compounding ways:
+#: it told the operator a perfectly good URL was "unreachable", it put 100% out
+#: of reach for anyone on a free tier through no fault of their configuration,
+#: and because the launcher drops to paper mode below 100% it turned a momentary
+#: throttle into a silent downgrade of the whole run. What the probe genuinely
+#: cannot confirm under a throttle is the *chain id*, and the report says so in
+#: those words rather than implying a verification that did not happen.
+_SATISFIED = frozenset({OK, RATE_LIMITED})
 
 # ── Value sources ────────────────────────────────────────────────────────────
 SRC_ENV = "environment"
@@ -58,6 +73,19 @@ SRC_DEFAULT = "default"
 SRC_NONE = "-"
 
 PROBE_TIMEOUT = 6.0
+
+#: Returned by :func:`probe_chain_id` in place of a chain id when the endpoint
+#: answered with a rate limit. Real chain ids are always positive, so a negative
+#: sentinel is unambiguous and keeps the ``(chain_id, detail)`` return shape.
+PROBE_RATE_LIMITED = -1
+
+#: How long to wait before the single retry after a rate-limited reply, and the
+#: ceiling applied to a server-supplied ``Retry-After``. Capped low on purpose:
+#: this runs on every launch, and a provider asking us to back off for a minute
+#: must not hold the app's startup hostage — one quick retry clears the common
+#: burst case, and anything longer is reported rather than waited out.
+RATE_LIMIT_RETRY_SECONDS = 1.5
+RATE_LIMIT_RETRY_MAX_SECONDS = 3.0
 
 
 @dataclass
@@ -209,16 +237,37 @@ def resolve(
 # ── Network probes ───────────────────────────────────────────────────────────
 
 
-def probe_chain_id(http_url: str, timeout: float = PROBE_TIMEOUT) -> tuple[int | None, str]:
-    """``(chain_id, detail)`` from a real ``eth_chainId`` call.
+#: Phrases providers use to say "you are being throttled" in a JSON-RPC error
+#: body served with HTTP 200. Not every provider uses the 429 status — some
+#: return a normal 200 carrying an error object instead — and the two mean the
+#: same thing to an operator, so both map to :data:`RATE_LIMITED`.
+_RATE_LIMIT_PHRASES = ("rate limit", "rate-limit", "too many requests", "request limit", "throttl")
 
-    Only the first endpoint of a comma-separated failover list is probed — it is
-    the one the bot reaches for first, and probing every backup would multiply
-    launch latency for little extra signal. Returns ``(None, reason)`` on any
-    failure; never raises, because a flaky network must not stop the app
-    starting.
-    """
-    endpoint = http_url.split(",")[0].strip()
+
+def _looks_rate_limited(error: object) -> bool:
+    """Whether a JSON-RPC ``error`` object is a throttle rather than a real fault."""
+    return any(phrase in str(error).casefold() for phrase in _RATE_LIMIT_PHRASES)
+
+
+def _retry_after_seconds(exc: urllib.error.HTTPError) -> float:
+    """How long to wait before the single retry, honouring ``Retry-After`` when
+    the server sends a sane one. A malformed or absent header falls back to the
+    default, and anything longer than the cap is clamped — the header is a hint,
+    not permission to stall the launch."""
+    raw = ""
+    try:
+        raw = (exc.headers.get("Retry-After") or "").strip() if exc.headers else ""
+    except AttributeError:  # pragma: no cover - defensive; headers is always mapping-like
+        raw = ""
+    try:
+        return min(max(float(raw), 0.0), RATE_LIMIT_RETRY_MAX_SECONDS)
+    except (TypeError, ValueError):
+        return RATE_LIMIT_RETRY_SECONDS
+
+
+def _chain_id_once(endpoint: str, timeout: float) -> tuple[int | None, str, float | None]:
+    """One ``eth_chainId`` attempt. Returns ``(chain_id, detail, retry_after)``
+    where a non-None ``retry_after`` means "throttled; worth retrying once"."""
     payload = json.dumps({"jsonrpc": "2.0", "id": 1, "method": "eth_chainId", "params": []}).encode()
     request = urllib.request.Request(
         endpoint,
@@ -229,22 +278,54 @@ def probe_chain_id(http_url: str, timeout: float = PROBE_TIMEOUT) -> tuple[int |
         with urllib.request.urlopen(request, timeout=timeout) as resp:  # noqa: S310 - operator-supplied endpoint
             body = json.loads(resp.read().decode("utf-8", errors="replace"))
     except urllib.error.HTTPError as exc:
+        if exc.code == 429:
+            return None, f"HTTP 429 {exc.reason}", _retry_after_seconds(exc)
         hint = " (check the API key in the URL)" if exc.code in (401, 403) else ""
-        return None, f"HTTP {exc.code} {exc.reason}{hint}"
+        return None, f"HTTP {exc.code} {exc.reason}{hint}", None
     except (urllib.error.URLError, OSError) as exc:
-        return None, f"could not connect: {getattr(exc, 'reason', exc)}"
+        return None, f"could not connect: {getattr(exc, 'reason', exc)}", None
     except (ValueError, TypeError):
-        return None, "endpoint did not return JSON — is it really an RPC URL?"
+        return None, "endpoint did not return JSON — is it really an RPC URL?", None
 
     if isinstance(body, dict) and "error" in body:
-        return None, f"RPC error: {body['error']}"
+        error = body["error"]
+        if _looks_rate_limited(error):
+            return None, f"rate-limited by the provider: {error}", RATE_LIMIT_RETRY_SECONDS
+        return None, f"RPC error: {error}", None
     raw = body.get("result") if isinstance(body, dict) else None
     if not isinstance(raw, str):
-        return None, "RPC reply had no result"
+        return None, "RPC reply had no result", None
     try:
-        return int(raw, 16), ""
+        return int(raw, 16), "", None
     except ValueError:
-        return None, f"unparseable chain id {raw!r}"
+        return None, f"unparseable chain id {raw!r}", None
+
+
+def probe_chain_id(http_url: str, timeout: float = PROBE_TIMEOUT) -> tuple[int | None, str]:
+    """``(chain_id, detail)`` from a real ``eth_chainId`` call.
+
+    Only the first endpoint of a comma-separated failover list is probed — it is
+    the one the bot reaches for first, and probing every backup would multiply
+    launch latency for little extra signal. Returns ``(None, reason)`` on any
+    failure; never raises, because a flaky network must not stop the app
+    starting.
+
+    A throttled endpoint is reported as :data:`PROBE_RATE_LIMITED` rather than a
+    failure, after one short retry — a burst limit usually clears immediately,
+    and a 429 is evidence the endpoint *works*, not that it is broken. The chain
+    id genuinely cannot be confirmed in that case, and the detail says so.
+    """
+    endpoint = http_url.split(",")[0].strip()
+    found, detail, retry_after = _chain_id_once(endpoint, timeout)
+    if found is None and retry_after is not None:
+        time.sleep(retry_after)
+        found, retry_detail, still_limited = _chain_id_once(endpoint, timeout)
+        if found is not None:
+            return found, retry_detail
+        if still_limited is not None:
+            return PROBE_RATE_LIMITED, f"{retry_detail} (retried once)"
+        return None, retry_detail
+    return found, detail
 
 
 def probe_ws_reachable(ws_url: str, timeout: float = PROBE_TIMEOUT) -> tuple[bool, str]:
@@ -303,7 +384,12 @@ def check_pools(lo: Layout, chains: list[str], *, repair: bool = True) -> list[P
     for chain in chains:
         target = lo.state_dir / "pools" / f"{chain}.toml"
         if repair and not target.exists():
-            shipped = lo.ingestion / "config" / "pools" / f"{chain}.example.toml"
+            # `shipped_pool_dir` — not the unpacked source tree — because a
+            # frozen install's unpacked tree is written once and never
+            # refreshed, so an upgraded .exe would look here and honestly
+            # conclude "this chain ships no registry" while carrying one
+            # inside itself. See `setup.shipped_pool_dir`.
+            shipped = setup_mod.shipped_pool_dir(lo) / f"{chain}.example.toml"
             if shipped.exists():
                 setup_mod.materialize_pool_registries(lo)
 
@@ -408,6 +494,14 @@ def _probe(item: ItemResult) -> ItemResult:
         found, detail = probe_chain_id(value)
         if found is None:
             return ItemResult(req, UNREACHABLE, value=value, source=source, detail=detail)
+        if found == PROBE_RATE_LIMITED:
+            return ItemResult(
+                req,
+                RATE_LIMITED,
+                value=value,
+                source=source,
+                detail=f"{detail} — endpoint is live; chain id not confirmed this run",
+            )
         expected = requirements.CHAINS[req.chain].chain_id
         if found != expected:
             other = next(
