@@ -10,15 +10,17 @@ showing ingestion permanently ``failed`` while the other services stayed green.
 
 from __future__ import annotations
 
+import argparse
 import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 # Make the launcher package importable when run from the repo root.
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from l2arb import config, setup, textio  # noqa: E402
+from l2arb import cli, config, setup, textio  # noqa: E402
 from l2arb.paths import Layout  # noqa: E402
 
 
@@ -76,6 +78,37 @@ class TextIoTest(unittest.TestCase):
         self.assertFalse(textio.repair_encoding(path))
         self.assertEqual(path.read_bytes(), before)
         self.assertFalse((self.root / "g.toml.bak").exists())
+
+    def test_read_text_recovers_legacy_bytes_instead_of_raising(self) -> None:
+        """The second half of the field failure: fixing the *writer* left the
+        *reader* strict, so a config already corrupted by the old writer — the
+        exact population `repair_encoding` exists to rescue — killed the launcher
+        on the way to being healed, with `UnicodeDecodeError: invalid start byte`.
+        """
+        path = self.root / "h.toml"
+        original = "# L2 Arbitrage Bot — Arbitrum quick-start\nschema_version = 1\n"
+        path.write_bytes(original.encode("cp1252"))
+
+        self.assertEqual(textio.read_text(path), original)
+
+    def test_read_text_still_raises_for_a_missing_file(self) -> None:
+        # Tolerating a *decodable* file must not blur into tolerating an absent
+        # one — callers distinguish the two, and silently returning "" for a
+        # missing config would make it look empty rather than absent.
+        with self.assertRaises(OSError):
+            textio.read_text(self.root / "does-not-exist.toml")
+
+    def test_read_text_recovery_agrees_with_repair_encoding(self) -> None:
+        # A read and a repair must never disagree about what the file says,
+        # otherwise a value could be validated before the repair and a different
+        # one used after it.
+        path = self.root / "i.toml"
+        original = "# — §  ±\nschema_version = 1\n"
+        path.write_bytes(original.encode("cp1252"))
+
+        via_read = textio.read_text(path)
+        textio.repair_encoding(path)
+        self.assertEqual(via_read, textio.read_text(path))
 
 
 class GeneratedConfigEncodingTest(unittest.TestCase):
@@ -139,6 +172,56 @@ class GeneratedConfigEncodingTest(unittest.TestCase):
         body = setup.arbitrum_quickstart_config("wss://a", "https://a", "/p.toml")
         self.lo.config_toml.write_bytes(b"\xef\xbb\xbf" + body.encode("utf-8"))
         self.assertTrue(config.config_is_live_ready(self.lo))
+
+    def test_config_is_live_ready_survives_a_legacy_encoded_config(self) -> None:
+        """The reported crash, reproduced end to end.
+
+        `l2arb run` on an install predating the UTF-8 fix went straight into
+        `_effective_live` -> `config_is_live_ready` -> `read_text`, which raised
+        ``UnicodeDecodeError: 'utf-8' codec can't decode byte 0x97 in position
+        19`` and took the whole launch down. Position 19 is the em dash in the
+        generated header, encoded by cp1252 as the single byte 0x97.
+        """
+        self.lo.ensure_state_dirs()
+        body = setup.arbitrum_quickstart_config("wss://a", "https://a", "/p.toml")
+        self.lo.config_toml.write_bytes(body.encode("cp1252"))
+        # Guard the premise: this really is the byte from the reported traceback.
+        self.assertEqual(self.lo.config_toml.read_bytes()[19], 0x97)
+
+        self.assertTrue(config.config_is_live_ready(self.lo))
+
+
+class AutoLaunchRepairsConfigTest(unittest.TestCase):
+    """`ensure_config_toml` carries the encoding self-heal, but `cmd_auto` only
+    called it while *installing* — so an install that already existed, which is
+    the only kind that can hold a config written by an older launcher, never
+    reached the repair. The next thing to touch the config crashed instead.
+    """
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        self.addCleanup(self._tmp.cleanup)
+        self.lo = Layout(self.root)
+        self.lo.ensure_state_dirs()
+
+    def test_auto_repairs_the_config_on_an_already_installed_workspace(self) -> None:
+        good = setup.arbitrum_quickstart_config("wss://a", "https://a", "/p.toml")
+        self.lo.config_toml.write_bytes(good.encode("cp1252"))
+
+        args = argparse.Namespace(
+            paper_only=False, no_setup=True, no_probe=True, no_browser=True,
+            live=False, paper=True, port=None,
+        )
+        with mock.patch.object(cli.state, "probe", return_value=cli.state.ComponentReadiness(True, True, True)), \
+                mock.patch.object(cli, "cmd_run", return_value=0) as run_cmd:
+            self.assertEqual(cli.cmd_auto(self.lo, args), 0)
+
+        run_cmd.assert_called_once()
+        # Healed on disk, so the Rust ingestion binary — which has no fallback —
+        # can read it too, and with its original text intact.
+        self.assertTrue(textio.is_valid_utf8(self.lo.config_toml))
+        self.assertEqual(textio.read_text(self.lo.config_toml), good)
 
 
 if __name__ == "__main__":  # pragma: no cover

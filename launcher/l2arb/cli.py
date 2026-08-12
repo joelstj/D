@@ -245,12 +245,22 @@ def _health_gate(lo, args) -> None:
 
 
 def cmd_auto(lo, args) -> int:
+    # Unconditional, and before anything else touches the config.
+    # `ensure_config_toml` is idempotent — it creates the file when absent and
+    # repairs its encoding when present — but it used to run only on the install
+    # branch below, so an install that *already existed* never reached it. That
+    # is exactly backwards: the encoding repair (see textio.py) exists for
+    # configs written by an older launcher, which by definition only occur on
+    # installs that already exist. So the repair was unreachable for every user
+    # who needed it, and the next thing to read the config — `config_is_live_ready`,
+    # via `cmd_run` — crashed the launch on the unreadable file instead of
+    # healing it.
+    config.ensure_config_toml(lo)
     ready = state.probe(lo)
     if not ready.dashboard:
         _welcome()
         console.banner("Installing (one-time)…")
         opts = installer.InstallOptions(paper_only=getattr(args, "paper_only", False))
-        config.ensure_config_toml(lo)
         if not installer.install(lo, opts):
             console.err("installation failed; see output above")
             console.info("Tip: run `l2arb doctor` to see which toolchain is missing.")

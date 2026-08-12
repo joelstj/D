@@ -1317,3 +1317,89 @@ one module), and heals itself on already-broken installs. `l2arb health` gives a
 0–100% score over what the app genuinely cannot run without; `l2arb setup` walks an operator
 from nothing to a live-ready config in one paste, and every answer persists in the new SQLite
 database. Other components were untouched, so their gates are unaffected.
+
+---
+
+## 19. The UTF-8 crash that survived its own fix, + health-check honesty (2026-08-11)
+
+Branch `claude/l2arbbot-health-check-qgahn9`. Reported from a real `.exe` run: the guided
+health check from §18 rendered correctly, scored **66.7% (6/9)**, and then the launcher died
+on the way to starting the stack:
+
+```
+UnicodeDecodeError: 'utf-8' codec can't decode byte 0x97 in position 19: invalid start byte
+  l2arb/cli.py:194 _effective_live → l2arb/config.py:98 config_is_live_ready
+  → l2arb/textio.py:49 read_text
+```
+
+Four confirmed defects, each reproduced first and each covered by a regression test that was
+**verified to fail against the pre-fix source** before being accepted (19 new tests, launcher
+257 → 276). Every one of them is a second-order failure of a fix a previous session shipped —
+the fix was right, its reach was not.
+
+1. **The §18 UTF-8 fix was unreachable by the users who needed it (the reported crash).**
+   §18 fixed the *writer* and added `repair_encoding()` so a broken install self-heals. Two
+   things then stopped that from ever happening. First, `textio.read_text()` stayed **strict**,
+   so a config already corrupted by the old writer — the only population the repair exists for —
+   crashed the launcher *on the way to being healed*. Second, `cmd_auto` called
+   `ensure_config_toml()` (where the repair lives) **only inside the `if not ready.dashboard`
+   install branch**, which is exactly backwards: a config written by an older launcher can only
+   exist on an install that already exists, so the repair ran only where there was nothing to
+   repair. Fixed on both counts — `read_text` now recovers legacy bytes via the same decode
+   `repair_encoding` uses (a read and a repair can never disagree), and `ensure_config_toml`
+   runs unconditionally as the first statement of `cmd_auto`. `OSError` still propagates:
+   tolerating a *decodable* file must not blur into tolerating a missing one.
+
+2. **An upgraded `.exe` keeps the first install's component sources forever** — the cause of
+   the report's `base: missing` / `optimism: missing`, and of `arbitrum: 2 pool(s)` against a
+   shipped registry that has had 4 since §16. `payload.ensure_payload` skips any component whose
+   directory already exists, so the unpacked tree is written once, on the very first launch, and
+   never refreshed. Every pool lookup then read that stale tree and honestly concluded the chain
+   ships no registry — while the running executable carried it the whole time. New
+   `setup.shipped_pool_dir()` prefers the bundle inside the running `.exe`
+   (`sys._MEIPASS/payload/ingestion/config/pools`) and falls back to the source tree, so a dev
+   checkout is unchanged. Verified the payload really does carry them (`build_exe.py`'s ignore
+   list excludes build artifacts, not `config/`) rather than assuming.
+
+3. **A rate-limited RPC endpoint was scored as a broken one.** The report's Base endpoint
+   answered `HTTP 429 Too Many Requests` and the check called it *unreachable*. A 429 is proof
+   the endpoint is real, routable and serving RPC — it answered. Counting it as a failure was
+   wrong three times over: it told the operator a working URL was dead, it put 100% out of reach
+   for anyone on a free tier through no fault of their configuration, and since the launcher
+   degrades to paper mode below 100% (§18) it silently downgraded the whole run over a momentary
+   throttle. Now: one short retry (honouring `Retry-After`, capped at 3s so a provider cannot
+   stall startup), then a distinct `RATE_LIMITED` status that **counts as satisfied** and says
+   plainly what could not be proven — `endpoint is live; chain id not confirmed this run` —
+   rather than implying a verification that did not happen. Providers that signal throttling in a
+   JSON-RPC error body with HTTP 200 are matched too; guard tests prove a genuine RPC error and
+   an auth failure are still failures, so the net did not over-broaden.
+
+**Verified against the real artifacts, not just unit tests.** PyInstaller was installed and
+`scripts/build_exe.py` run to completion, then the frozen binary driven through the reported
+scenario — a workspace whose four component dirs already exist (so `ensure_payload` skips them)
+carrying only a 2-pool Arbitrum registry, plus a `config.toml` written in cp1252. The real
+`.exe` reported `arbitrum: 4 / base: 4 / optimism: 22 pool(s)` from its own bundle, and on the
+already-installed launch path repaired the config in place with the original kept as `.bak`.
+
+The `l2-ingest` binary was also built (`cargo build --release`) to close the loop on the
+component that produced the original error, and it reproduces the field failure exactly:
+
+```
+$ l2-ingest --check-config --config <cp1252 config>
+config error: reading config …: stream did not contain valid UTF-8     # exit 1
+$ # …after the launcher's repair, same binary, same file:
+l2-ingest config OK (schema_version 1)                                  # exit 0
+```
+
+**Environment note, recorded not worked around.** Partway through this session
+`/usr/bin/python3.12` in this container began blocking for exactly 30s on every exec
+(`--version` costs 30s wall / 0.005s CPU; `-S` and `-v` stall identically with no output, so it
+hangs before the interpreter starts). That makes the launcher suite appear to hang, because
+`healthcheck.check_build` → `prereqs.find_engine_python()` probes interpreters on every run.
+It is a container condition, not a repo defect — **the pre-fix source stalls identically**, and
+`prereqs._run` already bounds each probe at 30s so it cannot hang indefinitely. Left alone:
+shortening that bound could break a legitimately slow first `py -3.12` launch on Windows, and
+there is no evidence here about what a safe lower bound would be.
+
+**Gates:** launcher 257 → 276 tests, green. No other component was touched, so their gates are
+unaffected and were not re-run.

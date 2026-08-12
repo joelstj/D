@@ -26,8 +26,18 @@ already UTF-8, which is why every test passed.
 So: **all** launcher text I/O goes through this module. Reads tolerate a UTF-8
 BOM (Windows editors such as Notepad add one, and a BOM is valid UTF-8 but is
 *not* valid TOML — it would move the failure from "invalid UTF-8" to an opaque
-parse error). Writes emit UTF-8 with no BOM and LF newlines, so a generated file
-is byte-identical on every platform.
+parse error), and tolerate a file already written in the legacy codepage,
+recovering its text instead of raising. Writes emit UTF-8 with no BOM and LF
+newlines, so a generated file is byte-identical on every platform.
+
+**Reading is deliberately forgiving; the files themselves are still repaired.**
+An earlier version of this module fixed the *writer* but left the *reader*
+strict, which meant a config already corrupted by the old writer — precisely the
+population :func:`repair_encoding` exists to rescue — crashed the launcher on
+the way to being healed. Recovery on read and repair on disk are two halves of
+the same fix: :func:`read_text` never dies on a decodable file, and
+:func:`repair_encoding` rewrites it as UTF-8 so the Rust ingestion binary (which
+has no such fallback) can read it too.
 """
 
 from __future__ import annotations
@@ -44,9 +54,39 @@ ENCODING = "utf-8"
 READ_ENCODING = "utf-8-sig"
 
 
+def decode(raw: bytes) -> str:
+    """Decode ``raw`` as UTF-8, falling back to the legacy codepage it was most
+    likely written in rather than raising.
+
+    **Never raises on decodable bytes.** The whole premise of this module is that
+    files written by an older launcher in the platform codepage exist in the
+    wild; a reader that dies on one turns a recoverable file into a crash. That
+    is not hypothetical — it is the field failure this function was added for:
+    ``config_is_live_ready`` read a cp1252 ``config.toml`` and the resulting
+    ``UnicodeDecodeError`` propagated out of ``l2arb run``, killing the launch
+    outright. The fallback is the same recovery :func:`repair_encoding` performs,
+    so a read and a repair always agree on what the file says.
+
+    This is *recovery*, not acceptance: the file is still wrong for the Rust
+    ingestion binary, which reads UTF-8 only. :func:`is_valid_utf8` keeps
+    reporting the unvarnished truth, and :func:`repair_encoding` still rewrites
+    the file and tells the operator it did.
+    """
+    try:
+        return raw.decode(READ_ENCODING)
+    except UnicodeDecodeError:
+        return _legacy_decode(raw)
+
+
 def read_text(path: Path) -> str:
-    """Read ``path`` as UTF-8, transparently stripping a BOM if present."""
-    return Path(path).read_text(encoding=READ_ENCODING)
+    """Read ``path`` as UTF-8, transparently stripping a BOM if present.
+
+    A file that is not valid UTF-8 is recovered via :func:`decode` instead of
+    raising — see that function for why. ``OSError`` still propagates: a missing
+    or unreadable file is a genuinely different situation from a decodable one
+    and callers already distinguish it.
+    """
+    return decode(Path(path).read_bytes())
 
 
 def write_text(path: Path, text: str) -> None:

@@ -5,7 +5,10 @@ from __future__ import annotations
 import shutil
 import sys
 import tempfile
+import threading
 import unittest
+import urllib.error
+from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from unittest import mock
 
@@ -192,6 +195,36 @@ class PoolCheckTest(_Base):
         result = healthcheck.check_pools(self.lo, ["base"], repair=False)[0]
         self.assertEqual(result.status, healthcheck.INVALID)
 
+    def test_a_stale_unpacked_tree_does_not_hide_registries_the_exe_ships(self) -> None:
+        """The reported `base: missing` / `optimism: missing`, end to end.
+
+        An upgraded .exe keeps the first install's unpacked component sources
+        forever (`payload.ensure_payload` never refreshes them), so chains whose
+        registries shipped *after* that first install looked absent — while the
+        running executable carried them the whole time.
+        """
+        from l2arb import setup as setup_mod
+
+        bundle_root = Path(self._tmp.name) / "mei"
+        bundled = bundle_root / "payload" / "ingestion" / "config" / "pools"
+        bundled.mkdir(parents=True)
+        for path in (REPO / "ingestion" / "config" / "pools").glob("*.example.toml"):
+            shutil.copyfile(path, bundled / path.name)
+
+        # The stale tree: only Arbitrum, as an early build shipped.
+        unpacked = self.lo.ingestion / "config" / "pools"
+        for path in unpacked.glob("*.example.toml"):
+            if path.name != "arbitrum.example.toml":
+                path.unlink()
+
+        with mock.patch.object(setup_mod, "bundle_dir", return_value=bundle_root):
+            results = healthcheck.check_pools(self.lo, ["base", "optimism"])
+
+        for result in results:
+            with self.subTest(result.chain):
+                self.assertEqual(result.status, healthcheck.OK)
+                self.assertGreater(result.pool_count, 0)
+
 
 class ProbeTest(_Base):
     def test_probe_confirms_the_expected_chain_id(self) -> None:
@@ -252,6 +285,162 @@ class ProbeTest(_Base):
     def test_ws_probe_rejects_a_url_with_no_host(self) -> None:
         reachable, _ = healthcheck.probe_ws_reachable("wss://", timeout=1.0)
         self.assertFalse(reachable)
+
+
+class _StubRpcServer:
+    """A real HTTP server that replies with a scripted sequence.
+
+    Deliberately a real socket rather than a mock: the rate-limit handling reads
+    an HTTP status code and a ``Retry-After`` header off a live
+    ``urllib.error.HTTPError``, and mocking that away would test the test.
+    """
+
+    def __init__(self, responses: list[tuple[int, dict, str]]) -> None:
+        self._responses = list(responses)
+        self.hits = 0
+        outer = self
+
+        class Handler(BaseHTTPRequestHandler):
+            def do_POST(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler API
+                length = int(self.headers.get("Content-Length") or 0)
+                self.rfile.read(length)
+                index = min(outer.hits, len(outer._responses) - 1)
+                outer.hits += 1
+                code, headers, body = outer._responses[index]
+                raw = body.encode()
+                self.send_response(code)
+                for name, value in headers.items():
+                    self.send_header(name, value)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(raw)))
+                self.end_headers()
+                self.wfile.write(raw)
+
+            def log_message(self, *args) -> None:  # keep the test output clean
+                pass
+
+        self._server = HTTPServer(("127.0.0.1", 0), Handler)
+        self._thread = threading.Thread(target=self._server.serve_forever, daemon=True)
+        self._thread.start()
+
+    @property
+    def url(self) -> str:
+        host, port = self._server.server_address[:2]
+        return f"http://{host}:{port}"
+
+    def close(self) -> None:
+        self._server.shutdown()
+        self._server.server_close()
+        self._thread.join(timeout=5)
+
+
+_OK_BODY = '{"jsonrpc":"2.0","id":1,"result":"0xa4b1"}'  # 42161
+_THROTTLED = (429, {"Retry-After": "0"}, '{"error":"Too Many Requests"}')
+
+
+class RateLimitProbeTest(_Base):
+    """A throttled endpoint is not a broken one.
+
+    Reported from a real run: a Base HTTPS endpoint answered ``HTTP 429 Too Many
+    Requests`` and the check called it *unreachable*, scoring it as a failure.
+    That was wrong three times over — it told the operator a working URL was
+    dead, it made 100%% unreachable for anyone on a free tier, and since the
+    launcher runs in paper mode below 100%% it silently downgraded the run over
+    a momentary throttle.
+    """
+
+    def _serve(self, responses: list[tuple[int, dict, str]]) -> _StubRpcServer:
+        server = _StubRpcServer(responses)
+        self.addCleanup(server.close)
+        return server
+
+    def test_a_burst_throttle_clears_on_the_single_retry(self) -> None:
+        # The common case: one 429, then a normal answer. The retry means the
+        # operator never even sees a caveat.
+        server = self._serve([_THROTTLED, (200, {}, _OK_BODY)])
+        found, _ = healthcheck.probe_chain_id(server.url, timeout=5.0)
+        self.assertEqual(found, 42161)
+        self.assertEqual(server.hits, 2)
+
+    def test_a_persistent_throttle_reports_rate_limited_not_unreachable(self) -> None:
+        server = self._serve([_THROTTLED])
+        found, detail = healthcheck.probe_chain_id(server.url, timeout=5.0)
+        self.assertEqual(found, healthcheck.PROBE_RATE_LIMITED)
+        self.assertIn("429", detail)
+        self.assertEqual(server.hits, 2)  # retried exactly once, not in a loop
+
+    def test_a_json_rpc_body_throttle_counts_too(self) -> None:
+        # Not every provider uses the 429 status; some return HTTP 200 carrying
+        # an error object saying the same thing.
+        body = '{"jsonrpc":"2.0","id":1,"error":{"code":-32005,"message":"rate limit exceeded"}}'
+        server = self._serve([(200, {}, body)])
+        with mock.patch.object(healthcheck.time, "sleep"):
+            found, detail = healthcheck.probe_chain_id(server.url, timeout=5.0)
+        self.assertEqual(found, healthcheck.PROBE_RATE_LIMITED)
+        self.assertIn("rate limit", detail.casefold())
+
+    def test_a_real_rpc_error_is_still_a_failure(self) -> None:
+        # Guards against the rate-limit net over-broadening into "any error is
+        # fine" — a genuine fault must still fail.
+        body = '{"jsonrpc":"2.0","id":1,"error":{"code":-32601,"message":"method not found"}}'
+        server = self._serve([(200, {}, body)])
+        found, _ = healthcheck.probe_chain_id(server.url, timeout=5.0)
+        self.assertIsNone(found)
+
+    def test_an_auth_failure_is_still_a_failure(self) -> None:
+        server = self._serve([(401, {}, '{"error":"bad key"}')])
+        found, detail = healthcheck.probe_chain_id(server.url, timeout=5.0)
+        self.assertIsNone(found)
+        self.assertIn("API key", detail)
+
+    def test_retry_after_is_capped_rather_than_obeyed(self) -> None:
+        # A provider asking for a 300s backoff must not hold up the launch.
+        exc = urllib.error.HTTPError(
+            "http://x", 429, "Too Many Requests", {"Retry-After": "300"}, None
+        )
+        self.assertLessEqual(
+            healthcheck._retry_after_seconds(exc), healthcheck.RATE_LIMIT_RETRY_MAX_SECONDS
+        )
+
+    def test_a_malformed_retry_after_falls_back_to_the_default(self) -> None:
+        exc = urllib.error.HTTPError(
+            "http://x", 429, "Too Many Requests", {"Retry-After": "Wed, 21 Oct 2026 07:28:00 GMT"}, None
+        )
+        self.assertEqual(
+            healthcheck._retry_after_seconds(exc), healthcheck.RATE_LIMIT_RETRY_SECONDS
+        )
+
+    def test_rate_limited_item_is_satisfied_and_says_what_was_not_proven(self) -> None:
+        self.store.set("rpc.arbitrum.http", ALCHEMY_HTTP)
+        with mock.patch.object(
+            healthcheck, "probe_chain_id", return_value=(healthcheck.PROBE_RATE_LIMITED, "HTTP 429")
+        ):
+            item = next(i for i in self._run(probe=True).items if i.key == "rpc.arbitrum.http")
+        self.assertEqual(item.status, healthcheck.RATE_LIMITED)
+        self.assertTrue(item.satisfied)
+        # Honesty: it must not imply the chain id was verified, because it wasn't.
+        self.assertIn("chain id not confirmed", item.detail)
+
+    def test_a_throttled_endpoint_no_longer_blocks_one_hundred_percent(self) -> None:
+        """The user-visible consequence, end to end: with everything else in
+        place, a single throttled endpoint used to pin the score below 100% and
+        force paper mode."""
+        for chain in ("arbitrum", "base"):
+            self.store.set(f"rpc.{chain}.http", ALCHEMY_HTTP.replace("arb-", f"{chain}-"))
+            self.store.set(f"rpc.{chain}.ws", ALCHEMY_WS.replace("arb-", f"{chain}-"))
+        self.store.set(requirements.SELECTED_CHAINS_KEY, "arbitrum,base")
+
+        def fake_probe(url, timeout=None):
+            if "base-" in url:
+                return healthcheck.PROBE_RATE_LIMITED, "HTTP 429 Too Many Requests"
+            return 42161, ""
+
+        with mock.patch.object(healthcheck, "probe_chain_id", side_effect=fake_probe), \
+                mock.patch.object(healthcheck, "probe_ws_reachable", return_value=(True, "host reachable")):
+            report = self._run(probe=True, chains=["arbitrum", "base"])
+
+        self.assertEqual(report.percent, 100.0)
+        self.assertTrue(report.is_complete)
 
 
 class EnvOverridesTest(_Base):
