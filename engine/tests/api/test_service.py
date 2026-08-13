@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 import pytest
+import structlog.testing
 
 from graphkit import GraphKit
 from l2arb.api.service import run_detection
@@ -54,6 +55,31 @@ def test_unpriced_numeraire_is_rejected(gk: type[GraphKit]) -> None:
     # opportunity is charged infinite gas and never reported (conservative).
     resp = run_detection(_single_chain_request(gk, price_numeraire=False))
     assert resp["count"] == 0
+
+
+def test_a_chain_with_no_native_prices_says_so(gk: type[GraphKit]) -> None:
+    """A chain that can price *nothing* must announce it, not just return 0.
+
+    Rejecting an unpriceable numeraire is correct (we never invent a price), but
+    when a chain has no prices at all the rejection is total: every opportunity it
+    finds is dropped, forever. Silently, that is indistinguishable from a quiet
+    market -- and it is exactly the failure a placeholder `weth` /
+    `[chains.native_price_pools]` in the caller's config produces, which left the
+    whole live pipeline reporting nothing with every health check green (see
+    docs/notes-opportunities-display-audit.md). This asserts the diagnostic that
+    makes that state self-announcing.
+    """
+    with structlog.testing.capture_logs() as logs:
+        run_detection(_single_chain_request(gk, price_numeraire=False))
+    events = [entry for entry in logs if entry.get("event") == "chain_has_no_native_prices"]
+    assert events, f"expected a no-native-prices warning, got: {logs}"
+    assert events[0]["log_level"] == "warning"
+    assert events[0]["chain_id"] == gk.CHAIN
+
+    # ...and a chain that *can* price its numeraires must stay quiet.
+    with structlog.testing.capture_logs() as logs:
+        run_detection(_single_chain_request(gk, price_numeraire=True))
+    assert not [e for e in logs if e.get("event") == "chain_has_no_native_prices"]
 
 
 def test_top_n_is_respected(gk: type[GraphKit]) -> None:

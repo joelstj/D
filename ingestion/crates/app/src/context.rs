@@ -42,15 +42,36 @@ pub fn derive_native_prices(cfg: &ChainConfig, mirror: &Mirror) -> BTreeMap<Addr
     // first pool's inferred WETH and require the rest to agree — so a stray pool that
     // doesn't actually pair with WETH (e.g. a USDC/USDT pool) is dropped, never
     // registered with a ~1800×-wrong price.
-    let mut weth: Option<Address> = cfg
-        .weth
-        .as_deref()
-        .and_then(|s| Address::from_str(s.trim()).ok());
+    // A configured-but-unparseable `weth` is reported, never silently treated as
+    // "not configured": it collapses the whole map to empty (see the `match weth`
+    // below), which zeroes this chain's detection entirely.
+    let configured_weth = cfg.weth.as_deref().map(str::trim).filter(|s| !s.is_empty());
+    let mut weth: Option<Address> = configured_weth.and_then(|s| Address::from_str(s).ok());
+    if let Some(w) = configured_weth {
+        if weth.is_none() {
+            tracing::error!(
+                chain_id = cfg.chain_id, chain = %cfg.name, weth = %w,
+                "configured `weth` is not a 20-byte address — no numeraire on this chain \
+                 can be gas-costed, so it will report ZERO opportunities"
+            );
+        }
+    }
     for (num_str, pool_str) in &cfg.native_price_pools {
         let Ok(num_addr) = Address::from_str(num_str.trim()) else {
+            tracing::warn!(
+                chain_id = cfg.chain_id, chain = %cfg.name, numeraire = %num_str,
+                "native_price_pools key is not a 20-byte address — ignoring this entry \
+                 (the numeraire it names cannot be gas-costed)"
+            );
             continue;
         };
         let Some(pool_id) = parse_pool_identity(pool_str) else {
+            tracing::warn!(
+                chain_id = cfg.chain_id, chain = %cfg.name,
+                numeraire = %num_str, pool = %pool_str,
+                "native_price_pools value is not a pool address or V4 poolId — ignoring \
+                 this entry (its numeraire cannot be gas-costed)"
+            );
             continue;
         };
         let Some(ps) = mirror.get(&pool_id) else {
@@ -111,12 +132,48 @@ pub fn derive_native_prices(cfg: &ChainConfig, mirror: &Mirror) -> BTreeMap<Addr
     }
 }
 
+/// Parse a chain's configured `hubs` into addresses, **naming every entry that is
+/// dropped**.
+///
+/// This used to be a bare `filter_map(|s| s.parse().ok())`. An unparseable hub — the
+/// shipped `config.example.toml` spells all of them `"0xWETH"`/`"0xUSDC"` — was
+/// discarded with no log whatsoever, and `assemble_chain_context`'s own
+/// missing-native-price warning iterates the *surviving* hubs, so when every entry
+/// was dropped not even that fired. `l2i_config::Config::validate` now rejects such
+/// a config outright; this stays as defence in depth for any path that reaches here
+/// without validating, and because a silent drop on a data path is never acceptable
+/// (prime directive 1's "loud, never silent" corollary).
+fn parse_hubs(cfg: &ChainConfig) -> Vec<Address> {
+    let mut hubs = Vec::with_capacity(cfg.hubs.len());
+    for s in &cfg.hubs {
+        match s.trim().parse::<Address>() {
+            Ok(a) => hubs.push(a),
+            Err(_) => tracing::warn!(
+                chain_id = cfg.chain_id,
+                chain = %cfg.name,
+                hub = %s,
+                "configured hub is not a 20-byte address — ignoring it (fill a real \
+                 token address in config.toml; run `l2arb setup` to generate one)"
+            ),
+        }
+    }
+    if hubs.is_empty() && !cfg.hubs.is_empty() {
+        tracing::error!(
+            chain_id = cfg.chain_id,
+            chain = %cfg.name,
+            "every configured hub was unparseable — this chain has NO hubs, so the \
+             engine falls back to auto-selecting them from the graph"
+        );
+    }
+    hubs
+}
+
 /// An initial [`ChainContext`] built from config alone (no RPC): gas params + hubs,
 /// with a zero gas price and empty native-price map. It seeds the per-chain context
 /// channel before the first live refresh; the aggregator only sends verified pools,
 /// which don't exist until seeding completes and the ingestor has refreshed gas.
 pub fn initial_context(cfg: &ChainConfig) -> ChainContext {
-    let hubs: Vec<Address> = cfg.hubs.iter().filter_map(|s| s.parse().ok()).collect();
+    let hubs = parse_hubs(cfg);
     let gas_cfg = GasConfig {
         base_gas: cfg.base_gas,
         per_hop_gas: cfg.per_hop_gas,
@@ -190,8 +247,23 @@ pub async fn build_chain_context<P: ChainProvider + ?Sized>(
         cfg.chain_id,
         "L1 data fee",
     );
-    let hubs: Vec<Address> = cfg.hubs.iter().filter_map(|s| s.parse().ok()).collect();
+    let hubs = parse_hubs(cfg);
     let native = derive_native_prices(cfg, mirror);
+    if native.is_empty() {
+        // The engine cannot gas-cost a numeraire it has no native price for: its
+        // gas-cost fn returns an `_UNPRICED_GAS` sentinel (10^36) and *every*
+        // opportunity in that numeraire is dropped as unprofitable. An empty map
+        // therefore means this chain reports nothing, ever — the exact silent
+        // total outage a placeholder `weth`/`native_price_pools` produced, with a
+        // green `/health` and an OK `--check-config` throughout.
+        tracing::error!(
+            chain_id = cfg.chain_id,
+            chain = %cfg.name,
+            "native_price_in is EMPTY — the engine cannot gas-cost any numeraire on \
+             this chain, so it will report ZERO opportunities. Set a real `weth` \
+             address and/or a real [chains.native_price_pools] entry in config.toml"
+        );
+    }
     let gas_cfg = GasConfig {
         base_gas: cfg.base_gas,
         per_hop_gas: cfg.per_hop_gas,

@@ -343,6 +343,28 @@ fn first_invalid_endpoint(s: &str, check: impl Fn(&str) -> bool) -> Option<&str>
 /// a still-templated config.
 const PLACEHOLDER_ENDPOINT_MARKER: &str = "YOUR_";
 
+/// Whether `s` parses as a 20-byte hex address. The user-fillable address fields
+/// (`hubs`, `numeraires`, `weth`, `native_price_pools`) are kept as `String` (see
+/// this module's header) and only *reality*-checked later by the M2 gate — but the
+/// **shape** must be checked here, because every consumer of those fields parses
+/// them with a silently-discarding `filter_map(|s| s.parse().ok())` /
+/// `let Ok(..) else { continue }` (`app/context.rs`, `app/pipeline.rs`).
+fn is_address(s: &str) -> bool {
+    s.trim().parse::<Address>().is_ok()
+}
+
+/// Whether `s` is a pool identity: a 20-byte contract address **or** a 32-byte V4
+/// `poolId`. Mirrors `parse_pool_identity` in `app/context.rs` — the function whose
+/// silent `continue` this validation exists to pre-empt.
+fn is_pool_identity(s: &str) -> bool {
+    let t = s.trim();
+    match t.strip_prefix("0x").unwrap_or(t).len() {
+        40 => t.parse::<Address>().is_ok(),
+        64 => t.parse::<alloy_primitives::B256>().is_ok(),
+        _ => false,
+    }
+}
+
 /// A config error.
 #[derive(Debug, thiserror::Error)]
 pub enum ConfigError {
@@ -565,6 +587,83 @@ impl Config {
                     c.name
                 ));
             }
+
+            // ── The user-fillable address fields ────────────────────────────
+            // Filling in endpoints alone used to be enough to pass this gate,
+            // while `hubs`/`numeraires`/`weth`/`native_price_pools` still held the
+            // shipped template text (`"0xWETH"`, `"0xWETH_USDC_POOL"`). That
+            // config is *structurally* valid but *semantically inert*, and every
+            // consumer discards an unparseable entry silently — so the whole
+            // stack came up healthy and detected exactly nothing:
+            //
+            //   "0xWETH" fails to parse
+            //     -> app/context.rs `filter_map(..ok())` drops it, no log
+            //     -> `weth: None` + no usable native_price_pools entry
+            //     -> `native_price_in` is EMPTY
+            //     -> the engine's gas-cost fn returns its `_UNPRICED_GAS`
+            //        sentinel (10^36) for every numeraire
+            //     -> every opportunity is priced as catastrophically
+            //        unprofitable and dropped, on every chain, forever.
+            //
+            // `/health` stayed green and `--check-config` printed OK throughout.
+            // This is the same "looks valid, isn't ready" class the endpoint
+            // check above already closes; it just never covered these fields.
+            if let Some(bad) = c.hubs.iter().find(|s| !is_address(s)) {
+                return invalid(format!(
+                    "chain '{}' hub '{}' is not a 20-byte address — fill in the real \
+                     token address (the shipped example ships '0xWETH'-style \
+                     placeholders; see config/config.example.toml, or run `l2arb setup`)",
+                    c.name, bad
+                ));
+            }
+            if let Some(bad) = c.numeraires.iter().find(|s| !is_address(s)) {
+                return invalid(format!(
+                    "chain '{}' numeraire '{}' is not a 20-byte address — fill in the \
+                     real token address (see config/config.example.toml, or run `l2arb setup`)",
+                    c.name, bad
+                ));
+            }
+            if let Some(w) = c.weth.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+                if !is_address(w) {
+                    return invalid(format!(
+                        "chain '{}' weth '{}' is not a 20-byte address — fill in the real \
+                         wrapped-native address (see config/config.example.toml, or run \
+                         `l2arb setup`)",
+                        c.name, w
+                    ));
+                }
+            }
+            for (num, pool) in &c.native_price_pools {
+                if !is_address(num) {
+                    return invalid(format!(
+                        "chain '{}' native_price_pools key '{}' is not a 20-byte address — it \
+                         must be the numeraire token's real address",
+                        c.name, num
+                    ));
+                }
+                if !is_pool_identity(pool) {
+                    return invalid(format!(
+                        "chain '{}' native_price_pools['{}'] = '{}' is not a pool address or \
+                         V4 poolId — it must be the real WETH/<numeraire> pool",
+                        c.name, num, pool
+                    ));
+                }
+            }
+            // A chain with no way to price gas in *any* numeraire is inert: the
+            // engine rejects every opportunity whose numeraire it cannot
+            // gas-cost. `weth` alone is sufficient (it is always priced at 1.0
+            // against itself); otherwise at least one pricing pool is required.
+            if c.weth.as_deref().map(str::trim).unwrap_or("").is_empty()
+                && c.native_price_pools.is_empty()
+            {
+                return invalid(format!(
+                    "chain '{}' can price gas in no numeraire: set `weth` (the wrapped-native \
+                     address) and/or at least one [chains.native_price_pools] entry. Without \
+                     one, `native_price_in` is empty and the engine rejects every opportunity \
+                     on this chain as unpriceable",
+                    c.name
+                ));
+            }
         }
         Ok(())
     }
@@ -608,14 +707,96 @@ mod tests {
     }
 
     #[test]
-    fn example_config_is_structurally_valid_once_endpoints_are_filled() {
-        // Substituting real-shaped endpoints for the shipped placeholders proves
-        // the rest of the example's structure (addresses, cadence, gas models,
-        // cross-chain wiring) is genuinely valid — isolating the placeholder check
-        // above from every other validation rule.
+    fn filling_only_the_endpoints_is_not_enough_to_pass_validation() {
+        // This test previously asserted the *opposite* — that substituting real
+        // endpoints alone made the shipped example valid. It did pass validation,
+        // and that was the bug: `hubs`/`numeraires`/`weth`/`native_price_pools`
+        // were still the shipped `"0xWETH"` / `"0xWETH_USDC_POOL"` template text,
+        // every consumer discarded them silently, `native_price_in` came out
+        // empty, and the engine then rejected *every* opportunity on *every*
+        // chain as unpriceable — while `--check-config` printed OK and `/health`
+        // stayed green. `docker-compose.yml`'s quick start tells operators to do
+        // exactly this (copy the example, fill endpoints, run), so this was the
+        // documented path into a silent, total detection outage.
+        //
+        // Corrected rather than deleted: the assertion is inverted to encode the
+        // real requirement, and `example_live_ready()` below now fills the token
+        // addresses too, so it describes a genuinely runnable config.
+        let cfg = endpoints_only();
+        let err = cfg.validate().unwrap_err().to_string();
+        assert!(
+            err.contains("hub") && err.contains("0xWETH"),
+            "expected a placeholder-address error naming the unfilled hub, got: {err}"
+        );
+    }
+
+    #[test]
+    fn example_config_is_structurally_valid_once_endpoints_and_tokens_are_filled() {
+        // With endpoints *and* the user-fillable token addresses substituted, the
+        // rest of the example's structure (cadence, gas models, sink, cross-chain
+        // wiring) is genuinely valid — isolating the placeholder checks from every
+        // other validation rule.
         example_live_ready()
             .validate()
-            .expect("config.example.toml is structurally valid once endpoints are real");
+            .expect("config.example.toml is valid once endpoints and tokens are real");
+    }
+
+    #[test]
+    fn rejects_placeholder_numeraire_weth_and_native_price_pool() {
+        // Each user-fillable address field is checked independently, so a config
+        // that fills some but forgets another still fails loudly and says which.
+        let mut cfg = example_live_ready();
+        cfg.chains[0].numeraires = vec!["0xUSDC".into()];
+        assert!(cfg
+            .validate()
+            .unwrap_err()
+            .to_string()
+            .contains("numeraire"));
+
+        let mut cfg = example_live_ready();
+        cfg.chains[0].weth = Some("0xWETH".into());
+        assert!(cfg.validate().unwrap_err().to_string().contains("weth"));
+
+        let mut cfg = example_live_ready();
+        cfg.chains[0].native_price_pools = [(REAL_USDC[0].to_string(), "0xWETH_USDC_POOL".into())]
+            .into_iter()
+            .collect();
+        assert!(cfg
+            .validate()
+            .unwrap_err()
+            .to_string()
+            .contains("native_price_pools"));
+
+        // A real 20-byte pool address and a 32-byte V4 poolId are both accepted.
+        let mut cfg = example_live_ready();
+        cfg.chains[0].native_price_pools = [(
+            REAL_USDC[0].to_string(),
+            "0xC6962004f452bE9203591991D15f6b388e09E8D0".to_string(),
+        )]
+        .into_iter()
+        .collect();
+        assert!(cfg.validate().is_ok(), "a real pool address is accepted");
+
+        let mut cfg = example_live_ready();
+        cfg.chains[0].native_price_pools =
+            [(REAL_USDC[0].to_string(), format!("0x{}", "ab".repeat(32)))]
+                .into_iter()
+                .collect();
+        assert!(cfg.validate().is_ok(), "a 32-byte V4 poolId is accepted");
+    }
+
+    #[test]
+    fn rejects_a_chain_that_can_price_gas_in_no_numeraire() {
+        // No `weth` and no pricing pools => `native_price_in` is empty => the
+        // engine rejects every opportunity on the chain. Inert, so not runnable.
+        let mut cfg = example_live_ready();
+        cfg.chains[0].weth = None;
+        cfg.chains[0].native_price_pools.clear();
+        let err = cfg.validate().unwrap_err().to_string();
+        assert!(
+            err.contains("price gas in no numeraire"),
+            "expected an unpriceable-chain error, got: {err}"
+        );
     }
 
     #[test]
@@ -654,16 +835,58 @@ mod tests {
         .unwrap()
     }
 
-    /// `example()` with every chain's shipped placeholder `ws_url`/`http_url`
-    /// replaced by realistic (but fake) non-placeholder endpoints. Tests that
-    /// target a *different* validation rule use this as their base so they aren't
-    /// tripped up by the shipped example's own placeholder endpoints on chains
-    /// they never touch.
-    fn example_live_ready() -> Config {
+    /// Real, on-chain WETH per shipped chain, in `config.example.toml`'s own
+    /// `[[chains]]` order (arbitrum, base, optimism, unichain, ink). These are the
+    /// same addresses the file's `[cross_chain]` WETH asset already lists — reused
+    /// here rather than invented, so the test helpers describe a config that could
+    /// genuinely run.
+    const REAL_WETH: [&str; 5] = [
+        "0x82aF49447D8a07e3bd95BD0d56f35241523fBab1",
+        "0x4200000000000000000000000000000000000006",
+        "0x4200000000000000000000000000000000000006",
+        "0x4200000000000000000000000000000000000006",
+        "0x4200000000000000000000000000000000000006",
+    ];
+    /// Real, on-chain native USDC per shipped chain, same order and same source.
+    const REAL_USDC: [&str; 5] = [
+        "0xaf88d065e77c8cC2239327C5EDb3A432268e5831",
+        "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+        "0x0b2C639c533813f4Aa9D7837CAf62653d097Ff85",
+        "0x078D782b760474a361dDA0AF3839290b0EF57AD6",
+        "0x2D270e6886d130D724215A266106e6832161EAEd",
+    ];
+
+    /// `example()` with only the shipped placeholder `ws_url`/`http_url` replaced —
+    /// i.e. exactly what an operator has after following `docker-compose.yml`'s
+    /// quick start ("copy the example, fill endpoints, run"). The token addresses
+    /// are still template text, so this must NOT validate.
+    fn endpoints_only() -> Config {
         let mut cfg = example();
         for c in &mut cfg.chains {
             c.ws_url = format!("wss://{}.example-rpc.test/v2/KEY", c.name);
             c.http_url = format!("https://{}.example-rpc.test/v2/KEY", c.name);
+        }
+        cfg
+    }
+
+    /// `endpoints_only()` with the user-fillable token addresses filled in too — a
+    /// genuinely runnable config. Tests that target a *different* validation rule
+    /// use this as their base so they aren't tripped up by the shipped example's
+    /// own placeholders on chains they never touch.
+    ///
+    /// `native_price_pools` is cleared rather than given a fabricated pool: `weth`
+    /// alone is enough to price gas (it is 1.0 against itself), and inventing a
+    /// WETH/USDC pool address per chain would be exactly the kind of made-up
+    /// on-chain data prime directive 1 forbids. The pricing-pool field gets its own
+    /// focused coverage in `rejects_placeholder_numeraire_weth_and_native_price_pool`.
+    fn example_live_ready() -> Config {
+        let mut cfg = endpoints_only();
+        for (i, c) in cfg.chains.iter_mut().enumerate() {
+            let (weth, usdc) = (REAL_WETH[i], REAL_USDC[i]);
+            c.hubs = vec![weth.to_string(), usdc.to_string()];
+            c.numeraires = vec![weth.to_string(), usdc.to_string()];
+            c.weth = Some(weth.to_string());
+            c.native_price_pools.clear();
         }
         cfg
     }
