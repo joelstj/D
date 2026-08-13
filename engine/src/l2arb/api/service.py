@@ -16,6 +16,8 @@ from __future__ import annotations
 import time
 from typing import Any
 
+import structlog
+
 from l2arb.api.schema import AssetSpec, ChainConfig, DetectRequest, opportunity_to_dict
 from l2arb.config import get_settings
 from l2arb.detect.cross_chain import BridgeQuote, StaticBridgeModel
@@ -28,6 +30,8 @@ from l2arb.obs.latency import Stopwatch
 from l2arb.store.serde import pool_from_dict, token_from_dict
 
 __all__ = ["build_engine", "detect", "run_detection"]
+
+_log = structlog.get_logger(__name__)
 
 _UNPRICED_GAS = 10**36  # numeraire with no on-chain price -> reject the opportunity
 
@@ -42,6 +46,23 @@ def _gas_cost_fn(cfg: ChainConfig) -> GasCostFn:
     )
     prices = {addr.lower(): float(p) for addr, p in cfg.native_price_in.items()}
     default = cfg.default_native_price
+    if not prices and default is None:
+        # Every numeraire on this chain is unpriced, so `cost` below returns the
+        # _UNPRICED_GAS sentinel for all of them and the profit gate drops every
+        # opportunity — the chain reports nothing, ever. Rejecting is correct (we
+        # never invent a price), but doing it *silently* made a misconfigured
+        # caller indistinguishable from a genuinely quiet market. Logged once per
+        # chain per request, not inside `cost` (which is on the hot path).
+        _log.warning(
+            "chain_has_no_native_prices",
+            chain_id=cfg.chain_id,
+            detail=(
+                "native_price_in is empty and default_native_price is unset, so no "
+                "numeraire can be gas-costed and EVERY opportunity on this chain "
+                "will be rejected as unprofitable. The caller (l2-ingest) derives "
+                "this map from its `weth` / [chains.native_price_pools] config."
+            ),
+        )
 
     def cost(numeraire: TokenKey, hops: int) -> int:
         price = prices.get(numeraire[1], default)

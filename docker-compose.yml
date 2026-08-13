@@ -10,12 +10,25 @@
 #
 # Quick start:
 #   cp ingestion/config/config.example.toml ingestion/config.toml
-#   #  ↳ edit: real RPC ws/http endpoints per chain, curated pools, and set
-#   #    [engine] http_url = "http://engine:8080"
+#   #  ↳ edit, per enabled chain — ALL of these, not just the endpoints:
+#   #      ws_url / http_url        real RPC endpoints
+#   #      hubs / numeraires        real token addresses (ship as "0xWETH", ...)
+#   #      weth                     real wrapped-native address
+#   #      native_price_pools       real WETH/<numeraire> pool per numeraire
+#   #      pool_registry            a curated registry (see config/pools/)
+#   #    and set [engine] http_url = "http://engine:8080"
+#   ./ingestion/target/release/l2-ingest --check-config --config ingestion/config.toml
 #   docker compose up --build
 #   open http://localhost:8080
 #
-# Until ingestion/config.toml has real endpoints, the engine + ingestion run but
+# Run `--check-config` first: it is the authoritative pre-flight and exits non-zero
+# with the exact field to fix. Filling in only the endpoints is NOT enough — the
+# token-address fields above ship as placeholders too, and a chain that keeps them
+# can price gas in no numeraire, so the engine correctly rejects every opportunity
+# it finds and the dashboard stays empty forever. That used to pass `--check-config`
+# silently; it is now rejected there (see l2i_config::Config::validate).
+#
+# Until ingestion/config.toml is genuinely filled in, the engine + ingestion run but
 # emit no opportunities (we never fabricate on-chain data). The dashboard is
 # still reachable and healthy.
 # ─────────────────────────────────────────────────────────────────────────────

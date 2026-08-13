@@ -67,6 +67,22 @@ arb_gas_info          = "0x000000000000000000000000000000000000006C"  # Arbitrum
 # error, sticking to whichever answers — so a provider hitting its rate limit hands
 # off to the backup with no lost reads. (These reads are also Multicall3-batched, so
 # far fewer requests are made in the first place.) A single URL still works fine.
+#
+# EVERY "0x..."-NAMED VALUE BELOW IS A PLACEHOLDER, NOT JUST THE ENDPOINTS.
+# `hubs`, `numeraires`, `weth` and `[chains.native_price_pools]` ship as literal
+# template text ("0xWETH", "0xWETH_USDC_POOL", ...) and MUST be replaced with real
+# addresses on every chain you leave `enabled = true`.
+#
+# Why it matters: `native_price_in` — the numeraire-per-wei map the engine needs to
+# gas-cost an opportunity — is derived from `weth` + `native_price_pools`. If those
+# are still placeholders the map comes out EMPTY, and the engine then charges every
+# numeraire an effectively infinite gas cost and rejects 100% of what it detects.
+# The stack stays healthy and reports nothing, forever. `--check-config` now fails
+# on this rather than printing OK, but the fix is here: fill the fields in.
+#
+# Don't want to curate these by hand? `l2arb setup` (Arbitrum, one RPC URL) and
+# `l2arb setup --all-chains` generate a fully-filled config with real, on-chain
+# -verified addresses and auto-discovered pools.
 # =============================================================================
 
 [[chains]]

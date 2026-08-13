@@ -1403,3 +1403,74 @@ there is no evidence here about what a safe lower bound would be.
 
 **Gates:** launcher 257 → 276 tests, green. No other component was touched, so their gates are
 unaffected and were not re-run.
+
+---
+
+## 20. Why no opportunities displayed — the silent zero-detection config (2026-08-13)
+
+Branch `claude/opportunities-display-audit-81ld6i`. Task: *"Run a granular audit to find out why
+no opportunities display."* An investigation-first pass tracing an opportunity from on-chain state
+to a dashboard row, hunting every place one can be dropped. Full ledger, with the evidence for
+every claim: `docs/notes-opportunities-display-audit.md`.
+
+**The answer: paper mode is fine; the live path was dark, and it went dark before the dashboard
+ever saw anything.** A `config.toml` with real RPC endpoints but the shipped `"0xWETH"` /
+`"0xWETH_USDC_POOL"` token placeholders still in place resolves to an **empty `native_price_in`
+map**. The engine cannot gas-cost a numeraire it has no native price for, so `_gas_cost_fn`
+charges every one of them its `_UNPRICED_GAS` sentinel (10^36) and **rejects 100% of what it
+detects**. Every layer reported success throughout — `--check-config` printed `config OK`,
+`/health` stayed green, envelopes kept broadcasting, the table stayed empty, and nothing logged a
+reason. The same "healthy-looking total outage" shape §9/§11/§12/§17 each found elsewhere.
+
+**Proven, not inferred.** The real `l2arb` engine was run over one genuinely profitable pool pair
+twice with byte-identical pools/gas/thresholds, varying only `native_price_in`: `{}` → **0
+opportunities**; `{USDC: 3e-9}` → **1, at 192.94 bps**. A 192-bps edge, discarded outright. The
+real `l2-ingest` binary was built and `--check-config`'d against the endpoints-only example:
+`config OK`, 5 chains "enabled", cross-chain "usable", **exit 0**.
+
+**Three things kept this hidden for five prior audits:**
+1. `launcher/l2arb/config.py::config_is_live_ready()` *does* catch it (the non-hex-`0x` heuristic
+   from §15 item 10) and downgrades to paper, so `l2arb run` users see simulated rows, not an
+   empty table. The exposed paths are the ones bypassing the Python launcher — `docker compose up`
+   and running `l2-ingest --config` directly, both of which this repo documents.
+2. `docker-compose.yml`'s quick start told operators to copy the example and fill *endpoints*,
+   with `DATA_SOURCE=external` hardcoded — the documented path straight into the failure.
+3. **`crates/config` had a test asserting the broken config was valid**
+   (`example_config_is_structurally_valid_once_endpoints_are_filled`). It was right that the
+   config is *structurally* valid; it encoded as correct the state that is *semantically* inert.
+   Corrected, not deleted (the §11 item 3 precedent).
+
+**Fixed:** `Config::validate()` now rejects, per *enabled* chain, an unparseable
+`hubs`/`numeraires`/`weth`/`native_price_pools` entry (accepting both a 20-byte pool address and a
+32-byte V4 `poolId`) and a chain that can price gas in **no** numeraire — each error naming the
+chain, field, offending value, and `l2arb setup`. Defence in depth for paths that skip validation:
+`app/context.rs` now warns per discarded hub / unusable pricing entry and `error!`s on an
+unparseable `weth` or an empty derived `native_price_in`, stating the consequence outright; the
+engine logs once per chain when it has no prices at all. Docs corrected in the same commit
+(`docker-compose.yml`, `config.example.toml`). Verified both directions on the rebuilt binary:
+endpoints-only → **exit 1** with the exact field; fully-filled → **exit 0**; and both configs the
+launcher actually generates (`arbitrum_quickstart_config`, `render_chain_block`) still validate.
+
+**Reported, deliberately not changed — visible, operator-adjustable settings, not silent
+failures.** Measured by running real mapped engine data through the actual `qualifies()` funnel:
+`networks` defaults to `["base","arbitrum"]` while ingestion ships all five enabled, so **Optimism
+— the largest shipped registry at 22 verified pools vs Arbitrum's 4 — is dropped by default**;
+`minProfitBps` defaults to 8 against every chain's `min_profit_bps = 5.0`, so 5–8 bps detections
+are discarded; `minProfitUsd` defaults to $25 on USD-denominated opportunities. First move for an
+operator facing an empty table on a live feed: enable all five network chips, set `minProfitBps`
+to 5, set `minProfitUsd` to 0, then re-tighten.
+
+**A wrong lead, recorded so it isn't re-derived.** The registry comment `# USDC.e (bridged)` made
+the default `tokens` allowlist look like a cause. A live `eth_call` disproved it:
+`0xFF970A61…5CC8` on Arbitrum returns symbol **`"USDC"`** — `.e` is an explorer convention, not
+the contract's symbol. Reading every token in all five shipped registries the same way returns
+only WETH/USDC/USDT/DAI, all already allowed. Not a cause.
+
+**Confirmed not the cause:** paper mode works (**158 opportunities over 200 ticks** at stock
+defaults through the real engine + `SimulatedProvider`); the display layer is a pure pass-through
+(sort + top-18, no filtering); and §9/§11's `qualifies()` fixes still hold.
+
+**Gates, run directly by this session:** ingestion `fmt` + `clippy -D warnings` clean +
+**225 tests** (was 222, +3 new); engine `make check` **469 tests**, 99.87% coverage; launcher
+**276 tests**; dashboard `pnpm verify` exit 0 (**131 backend + 67 frontend**). Contracts untouched,
+not re-run.
